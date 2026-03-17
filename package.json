@@ -1,0 +1,35 @@
+{
+  "name": "happytimes-ai-pipeline",
+  "version": "1.0.0",
+  "description": "AI publishing pipeline for HappyTimesAZ.com - generates and publishes articles to Sanity CMS",
+  "main": "dist/orchestrator.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/orchestrator.js",
+    "dev": "ts-node orchestrator.ts",
+    "type-check": "tsc --noEmit",
+    "repair": "ts-node scripts/repairPortableText.ts",
+    "pipeline": "npm run build && node dist/orchestrator.js"
+  },
+  "keywords": [
+    "ai",
+    "pipeline",
+    "cms",
+    "sanity",
+    "publishing"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@sanity/client": "^6.15.0",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
+

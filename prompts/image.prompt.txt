@@ -1,0 +1,19 @@
+Generate a detailed image generation prompt for editorial photography.
+
+Style Requirements:
+- Editorial photography style
+- Desert color palette (warm earth tones, sunset colors, sandy beiges)
+- No text overlays
+- 16:9 aspect ratio (hero image)
+- Professional, magazine-quality photography
+
+The prompt should describe:
+- Subject matter
+- Composition
+- Lighting
+- Color palette (desert tones)
+- Mood/atmosphere
+- Style (editorial, not stock photo)
+
+Output ONLY the enhanced image prompt text (20-500 characters), no JSON, no explanations.
+

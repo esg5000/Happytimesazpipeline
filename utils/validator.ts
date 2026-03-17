@@ -1,0 +1,81 @@
+import { z } from 'zod';
+
+/**
+ * Schema for article output validation
+ */
+export const ArticleSchema = z.object({
+  title: z.string().min(10).max(100),
+  slug: z.string().min(3).max(100),
+  excerpt: z.string().min(50).max(200),
+  seoTitle: z.string().min(10).max(70),
+  seoDescription: z.string().min(50).max(160),
+  categories: z.array(z.string()).min(1).max(5),
+  tags: z.array(z.string()).min(1).max(10),
+  heroImagePrompt: z.string().min(20).max(500),
+  bodyMarkdown: z.string().min(500).max(5000),
+});
+
+export type Article = z.infer<typeof ArticleSchema>;
+
+/**
+ * Validates article data against schema
+ */
+export function validateArticle(data: unknown): {
+  success: boolean;
+  data?: Article;
+  errors?: string[];
+} {
+  try {
+    const validated = ArticleSchema.parse(data);
+    return { success: true, data: validated };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return {
+        success: false,
+        errors: error.errors.map((e) => `${e.path.join('.')}: ${e.message}`),
+      };
+    }
+    return {
+      success: false,
+      errors: ['Unknown validation error'],
+    };
+  }
+}
+
+/**
+ * Schema for topic output validation
+ */
+export const TopicSchema = z.object({
+  title: z.string().min(10).max(100),
+  section: z.enum(['cannabis', 'mushrooms', 'nightlife', 'food', 'events', 'global']),
+  description: z.string().min(50).max(300),
+  keywords: z.array(z.string()).min(3).max(10),
+});
+
+export type Topic = z.infer<typeof TopicSchema>;
+
+/**
+ * Validates topic data against schema
+ */
+export function validateTopic(data: unknown): {
+  success: boolean;
+  data?: Topic;
+  errors?: string[];
+} {
+  try {
+    const validated = TopicSchema.parse(data);
+    return { success: true, data: validated };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return {
+        success: false,
+        errors: error.errors.map((e) => `${e.path.join('.')}: ${e.message}`),
+      };
+    }
+    return {
+      success: false,
+      errors: ['Unknown validation error'],
+    };
+  }
+}
+
