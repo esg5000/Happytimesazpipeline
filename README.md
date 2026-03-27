@@ -54,7 +54,7 @@ Required environment variables:
 - `SANITY_DATASET`: Sanity dataset name (default: `production`)
 - `SANITY_API_TOKEN`: Sanity API token with write permissions
 - `SANITY_API_VERSION`: Sanity API version (default: `2024-01-01`)
-- `ARTICLES_PER_DAY`: Number of articles to generate (default: `3`)
+- `ARTICLES_PER_DAY`: Number of articles to generate (default: `1`)
 - `DEFAULT_SECTION`: Default section if not specified (default: `cannabis`)
 
 ### 3. Build the Project
@@ -105,6 +105,7 @@ Each article outputs the following JSON structure:
   "seoDescription": "SEO meta description",
   "categories": ["category1", "category2"],
   "tags": ["tag1", "tag2", "tag3"],
+  "visualStyle": "editorial_realistic | cinematic_hyperreal | film_35mm_grain | documentary_candid | neon_night_street | illustrated_watercolor | bold_vector_flat | playful_cartoon | clay_3d",
   "heroImagePrompt": "Detailed image generation prompt",
   "bodyMarkdown": "Full article body in Markdown"
 }
@@ -123,7 +124,7 @@ All outputs are validated against strict schemas before publishing.
 
 ## Image Guidelines
 
-- **Style**: Editorial photography
+- **Style**: Profile-driven (visualStyle), while staying on-brand for Phoenix
 - **Color Palette**: Desert colors (warm earth tones, sunset colors)
 - **Format**: 16:9 aspect ratio (hero images)
 - **No Text Overlays**: Clean editorial photography only

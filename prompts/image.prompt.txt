@@ -1,11 +1,22 @@
-Generate a detailed image generation prompt for editorial photography.
+Generate a detailed image generation prompt that matches the article scene and applies the requested visual style.
 
 Style Requirements:
-- Editorial photography style
-- Desert color palette (warm earth tones, sunset colors, sandy beiges)
+- Use the provided VISUAL_STYLE exactly
+- Desert/Sonoran-friendly color palette (warm earth tones, sunset colors, sandy beiges) unless the style implies night/neon
 - No text overlays
 - 16:9 aspect ratio (hero image)
-- Professional, magazine-quality photography
+- Professional, magazine-quality result (even for illustration styles)
+
+VISUAL_STYLE options (one will be provided in the user message):
+- editorial_realistic: modern editorial photo, natural light, clean composition
+- cinematic_hyperreal: cinematic lighting, high detail, shallow depth of field
+- film_35mm_grain: 35mm film look, subtle grain, slightly imperfect candid vibe
+- documentary_candid: candid documentary moment, real-life feel, less posed
+- neon_night_street: Phoenix night street photography vibe, neon/sign glow, high contrast
+- illustrated_watercolor: watercolor illustration, soft washes, hand-painted feel
+- bold_vector_flat: flat vector illustration, bold shapes, limited palette, crisp edges
+- playful_cartoon: playful cartoon illustration, expressive shapes, friendly vibe
+- clay_3d: claymation-style 3D render, soft studio lighting, tactile textures
 
 The prompt should describe:
 - Subject matter
@@ -13,7 +24,7 @@ The prompt should describe:
 - Lighting
 - Color palette (desert tones)
 - Mood/atmosphere
-- Style (editorial, not stock photo)
+- Style/medium based on VISUAL_STYLE
 
 Output ONLY the enhanced image prompt text (20-500 characters), no JSON, no explanations.
 

@@ -9,7 +9,10 @@
     "dev": "ts-node orchestrator.ts",
     "type-check": "tsc --noEmit",
     "repair": "ts-node scripts/repairPortableText.ts",
-    "pipeline": "npm run build && node dist/orchestrator.js"
+    "pipeline": "npm run build && node dist/orchestrator.js",
+    "telegram": "npm run build && node dist/telegramServer.js",
+    "telegram:dev": "ts-node telegramServer.ts",
+    "telegram:polling:dev": "ts-node telegramPollingDev.ts"
   },
   "keywords": [
     "ai",
@@ -24,12 +27,14 @@
     "@sanity/client": "^6.15.0",
     "axios": "^1.6.2",
     "dotenv": "^16.3.1",
+    "express": "^5.2.1",
+    "grammy": "^1.41.1",
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^20.10.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }
 }
-

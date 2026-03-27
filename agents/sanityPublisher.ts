@@ -47,6 +47,26 @@ export async function uploadImageToSanity(
 }
 
 /**
+ * Uploads an image buffer to Sanity assets (e.g., Telegram photo)
+ */
+export async function uploadImageBufferToSanity(
+  imageBuffer: Buffer,
+  filename: string
+): Promise<string> {
+  const sanityClient = getSanityClient();
+
+  try {
+    const asset = await sanityClient.assets.upload('image', imageBuffer, {
+      filename,
+    });
+    return asset._id;
+  } catch (error) {
+    console.error('Error uploading image buffer to Sanity:', error);
+    throw error;
+  }
+}
+
+/**
  * Publishes an article to Sanity as a draft
  */
 /**
@@ -287,6 +307,7 @@ export async function publishArticleToSanity(
     excerpt: article.excerpt,
     seoTitle: article.seoTitle,
     seoDescription: article.seoDescription,
+    visualStyle: article.visualStyle,
     category: categoryRef ? {
       _type: 'reference',
       _ref: categoryRef._ref

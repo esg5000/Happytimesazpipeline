@@ -63,7 +63,10 @@ async function runPipeline(): Promise<void> {
 
         // Step 3: Generate image prompt
         console.log('   🎨 Generating image prompt...');
-        const enhancedImagePrompt = await generateImagePrompt(article.heroImagePrompt);
+        const enhancedImagePrompt = await generateImagePrompt(
+          article.heroImagePrompt,
+          article.visualStyle
+        );
         console.log('   ✅ Image prompt generated');
 
         // Step 4: Generate image

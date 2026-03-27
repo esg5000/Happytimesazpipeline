@@ -17,6 +17,13 @@ export const config = {
     articlesPerDay: parseInt(process.env.ARTICLES_PER_DAY || '1', 10),
     defaultSection: process.env.DEFAULT_SECTION || 'cannabis',
   },
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    allowedUserId: parseInt(process.env.TELEGRAM_ALLOWED_USER_ID || '', 10),
+    webhookBaseUrl: process.env.TELEGRAM_WEBHOOK_BASE_URL || '',
+    webhookPathSecret: process.env.TELEGRAM_WEBHOOK_PATH_SECRET || '',
+    port: parseInt(process.env.PORT || '3000', 10),
+  },
 };
 
 // Validate required environment variables
@@ -34,6 +41,48 @@ export function validateConfig(): void {
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}`
+    );
+  }
+}
+
+export function validateTelegramBaseConfig(): void {
+  const requiredTelegramVars = [
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_ALLOWED_USER_ID',
+  ];
+
+  const missing = requiredTelegramVars.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required Telegram environment variables: ${missing.join(', ')}`
+    );
+  }
+
+  if (!Number.isFinite(config.telegram.allowedUserId)) {
+    throw new Error(
+      'Invalid TELEGRAM_ALLOWED_USER_ID: must be a numeric Telegram user id'
+    );
+  }
+}
+
+export function validateTelegramConfig(): void {
+  validateTelegramBaseConfig();
+
+  const requiredWebhookVars = [
+    'TELEGRAM_WEBHOOK_BASE_URL',
+    'TELEGRAM_WEBHOOK_PATH_SECRET',
+  ];
+
+  const missingWebhookVars = requiredWebhookVars.filter((key) => !process.env[key]);
+  if (missingWebhookVars.length > 0) {
+    throw new Error(
+      `Missing required Telegram webhook environment variables: ${missingWebhookVars.join(', ')}`
+    );
+  }
+
+  if (!config.telegram.webhookBaseUrl.startsWith('https://')) {
+    throw new Error(
+      'Invalid TELEGRAM_WEBHOOK_BASE_URL: must start with https://'
     );
   }
 }

@@ -32,9 +32,15 @@ Output ONLY valid JSON in this exact format:
   "seoDescription": "SEO meta description (50-160 chars)",
   "categories": ["category1", "category2"],
   "tags": ["tag1", "tag2", "tag3"],
-  "heroImagePrompt": "Detailed image prompt for 16:9 editorial photography, desert color palette, no text overlays (20-500 chars)",
+  "visualStyle": "one of: editorial_realistic, cinematic_hyperreal, film_35mm_grain, documentary_candid, neon_night_street, illustrated_watercolor, bold_vector_flat, playful_cartoon, clay_3d",
+  "heroImagePrompt": "Hero image scene description for a 16:9 image (no style words, no text overlays) (20-500 chars)",
   "bodyMarkdown": "Full article body in Markdown format (500-5000 chars)"
 }
+
+Visual Style Requirements:
+- Choose visualStyle that fits the article's section and vibe (food/nightlife/events can use neon_night_street; deep-dive culture can use film_35mm_grain; general lifestyle can use editorial_realistic; playful pieces can use playful_cartoon or bold_vector_flat).
+- heroImagePrompt must describe the specific scene/subject/location and composition for the hero image.
+- Do NOT hardcode a medium/style inside heroImagePrompt (no "watercolor", "vector", "cartoon", etc.). Style will be applied separately using visualStyle.
 
 Markdown Formatting:
 - Use ## for main subheaders

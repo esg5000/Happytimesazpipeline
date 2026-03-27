@@ -1,53 +1,88 @@
 import { z } from 'zod';
 
 /**
- * Ad placement locations
+ * All ad placement locations — must stay in sync with ad.ts placement list
  */
 export const AdPlacement = z.enum([
+  'homepage_leaderboard',
+  'homepage_grid_sponsored',
+  'homepage_native_mid',
+  'spotlight_cannabis_sidebar',
+  'spotlight_events_sidebar',
+  'category_leaderboard',
+  'category_sidebar_mpu',
+  'category_grid_sponsored',
+  'category_native_mid',
+  'article_inline_banner',
+  'article_sidebar_mpu',
+  'article_partner_mid',
+  'article_related_card',
+  'food_in_content_top',
+  'food_in_content_mid',
+  'food_in_content_lower',
+  'listing_sidebar_mpu',
+  'cannabis_listing_leaderboard',
+  'cannabis_listing_rectangle',
+  'cannabis_footer_leaderboard',
+  'nightlife_listings_top',
+  'nightlife_grid_tile',
+  'nightlife_listings_mid',
+  'nightlife_footer_leaderboard',
+  'mushroom_guide_top',
+  'mushroom_guide_mid',
+  'mushroom_guide_lower',
+  'mushroom_footer_leaderboard',
+  'events_listing_leaderboard',
+  // Legacy placements
+  'homepage_major',
+  'homepage_sidebar',
   'section_header',
-  'section_banner',
-  'article_header',
-  'article_inline',
-  'article_mid',
-  'article_footer',
+  'inline_banner',
+  'footer_banner',
 ]);
 
 export type AdPlacement = z.infer<typeof AdPlacement>;
 
 /**
- * Ad section categories
+ * Ad type (image or HTML embed)
  */
-export const AdSection = z.enum([
-  'cannabis',
-  'mushrooms',
-  'nightlife',
-  'food',
-  'events',
-  'global',
-]);
+export const AdType = z.enum(['image', 'html']);
 
-export type AdSection = z.infer<typeof AdSection>;
+export type AdType = z.infer<typeof AdType>;
 
 /**
- * Schema for ad documents in Sanity CMS
+ * Schema for ad documents in Sanity CMS — mirrors ad.ts field-for-field
  */
 export const AdSchema = z.object({
-  name: z.string().min(1).max(100),
-  advertiser: z.string().min(1).max(100),
-  image: z.object({
-    _type: z.literal('image'),
-    asset: z.object({
-      _type: z.literal('reference'),
-      _ref: z.string(),
-    }),
-  }),
-  clickUrl: z.string().url(),
+  title: z.string().min(1).max(200),
+  advertiser: z.string().min(1).max(200),
   placement: AdPlacement,
-  section: AdSection,
-  startDate: z.string().datetime().or(z.date()),
-  endDate: z.string().datetime().or(z.date()).nullable(),
-  priority: z.number().int().min(0).max(100).default(50),
+  adType: AdType.default('image'),
+  image: z
+    .object({
+      _type: z.literal('image'),
+      asset: z.object({
+        _type: z.literal('reference'),
+        _ref: z.string(),
+      }),
+    })
+    .optional(),
+  html: z.string().optional(),
+  headline: z.string().optional(),
+  cta: z.string().optional(),
+  url: z.string().url().optional(),
+  startDate: z.string().datetime().or(z.date()).optional(),
+  endDate: z.string().datetime().or(z.date()).nullable().optional(),
+  priority: z.number().int().min(0).max(100).default(1),
   active: z.boolean().default(true),
+  categories: z
+    .array(
+      z.object({
+        _type: z.literal('reference'),
+        _ref: z.string(),
+      })
+    )
+    .optional(),
 });
 
 export type Ad = z.infer<typeof AdSchema>;
@@ -83,10 +118,7 @@ export function validateAd(data: unknown): {
         errors: error.errors.map((e) => `${e.path.join('.')}: ${e.message}`),
       };
     }
-    return {
-      success: false,
-      errors: ['Unknown validation error'],
-    };
+    return { success: false, errors: ['Unknown validation error'] };
   }
 }
 
@@ -108,10 +140,7 @@ export function validateSanityAd(data: unknown): {
         errors: error.errors.map((e) => `${e.path.join('.')}: ${e.message}`),
       };
     }
-    return {
-      success: false,
-      errors: ['Unknown validation error'],
-    };
+    return { success: false, errors: ['Unknown validation error'] };
   }
 }
 
@@ -119,46 +148,41 @@ export function validateSanityAd(data: unknown): {
  * Helper to check if an ad is currently active based on dates
  */
 export function isAdActive(ad: Ad | SanityAd): boolean {
-  if (!ad.active) {
-    return false;
-  }
+  if (!ad.active) return false;
 
   const now = new Date();
-  const startDate = typeof ad.startDate === 'string' ? new Date(ad.startDate) : ad.startDate;
-  const endDate = ad.endDate
-    ? typeof ad.endDate === 'string'
-      ? new Date(ad.endDate)
-      : ad.endDate
-    : null;
 
-  if (now < startDate) {
-    return false;
+  if (ad.startDate) {
+    const startDate = typeof ad.startDate === 'string' ? new Date(ad.startDate) : ad.startDate;
+    if (now < startDate) return false;
   }
 
-  if (endDate && now > endDate) {
-    return false;
+  if (ad.endDate) {
+    const endDate = typeof ad.endDate === 'string' ? new Date(ad.endDate) : ad.endDate;
+    if (now > endDate) return false;
   }
 
   return true;
 }
 
 /**
- * Query helper for fetching ads by placement and section
- * This is what the frontend would use to fetch ads
+ * Query helper for fetching active ads by placement
  */
-export function getAdQuery(placement: AdPlacement, section: AdSection): string {
-  return `*[_type == "ad" && placement == "${placement}" && section == "${section}" && active == true] | order(priority desc, _createdAt desc) {
+export function getAdQuery(placement: AdPlacement): string {
+  return `*[_type == "ad" && placement == "${placement}" && active == true] | order(priority desc, _createdAt desc) {
     _id,
-    name,
+    title,
     advertiser,
-    image,
-    clickUrl,
     placement,
-    section,
+    adType,
+    image,
+    html,
+    headline,
+    cta,
+    url,
     startDate,
     endDate,
     priority,
     active
   }`;
 }
-

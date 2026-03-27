@@ -2,6 +2,7 @@ import axios from 'axios';
 import { config } from '../config';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { VisualStyle } from '../utils/validator';
 
 // Resolve prompt path - works in both dev and compiled dist
 const IMAGE_PROMPT_PATH = join(process.cwd(), 'prompts', 'image.prompt.txt');
@@ -10,7 +11,8 @@ const IMAGE_PROMPT_PATH = join(process.cwd(), 'prompts', 'image.prompt.txt');
  * Generates an enhanced image prompt for DALL-E or similar
  */
 export async function generateImagePrompt(
-  basePrompt: string
+  basePrompt: string,
+  visualStyle: VisualStyle
 ): Promise<string> {
   const systemPrompt = readFileSync(IMAGE_PROMPT_PATH, 'utf-8');
 
@@ -25,10 +27,12 @@ export async function generateImagePrompt(
         },
         {
           role: 'user',
-          content: `Enhance this image prompt: ${basePrompt}`,
+          content: `VISUAL_STYLE: ${visualStyle}\n\nEnhance this base hero image scene description into a final image prompt. Preserve the subject, setting, and composition from the base prompt. Apply the VISUAL_STYLE.\n\nBASE_PROMPT: ${basePrompt}`,
         },
       ],
-      temperature: 0.5,
+      temperature: 0.8,
+      top_p: 0.9,
+      presence_penalty: 0.8,
       max_tokens: 200,
     },
     {

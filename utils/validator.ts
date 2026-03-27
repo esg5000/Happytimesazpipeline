@@ -1,5 +1,19 @@
 import { z } from 'zod';
 
+export const VisualStyleSchema = z.enum([
+  'editorial_realistic',
+  'cinematic_hyperreal',
+  'film_35mm_grain',
+  'documentary_candid',
+  'neon_night_street',
+  'illustrated_watercolor',
+  'bold_vector_flat',
+  'playful_cartoon',
+  'clay_3d',
+]);
+
+export type VisualStyle = z.infer<typeof VisualStyleSchema>;
+
 /**
  * Schema for article output validation
  */
@@ -11,6 +25,7 @@ export const ArticleSchema = z.object({
   seoDescription: z.string().min(50).max(160),
   categories: z.array(z.string()).min(1).max(5),
   tags: z.array(z.string()).min(1).max(10),
+  visualStyle: VisualStyleSchema,
   heroImagePrompt: z.string().min(20).max(500),
   bodyMarkdown: z.string().min(500).max(5000),
 });
