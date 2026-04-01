@@ -44,6 +44,7 @@ Optional env **`PIPELINE_CRON`**: standard [cron](https://crontab.guru) expressi
   orchestrator.ts      # Main pipeline orchestrator
   daemonServer.ts      # Webhook + node-cron daily pipeline (long-lived)
   telegramServer.ts    # Telegram webhook only
+  telegramHttpServer.ts # Shared Express listen (0.0.0.0) + setWebhook + getWebhookInfo
   config.ts           # Configuration management
 ```
 

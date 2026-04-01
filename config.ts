@@ -22,11 +22,19 @@ export const config = {
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     allowedUserId: parseInt(process.env.TELEGRAM_ALLOWED_USER_ID || '', 10),
-    webhookBaseUrl: process.env.TELEGRAM_WEBHOOK_BASE_URL || '',
+    /** No trailing slash — avoids https://host//telegram/... when building webhook URL */
+    webhookBaseUrl: (process.env.TELEGRAM_WEBHOOK_BASE_URL || '').replace(/\/+$/, ''),
     webhookPathSecret: process.env.TELEGRAM_WEBHOOK_PATH_SECRET || '',
     port: parseInt(process.env.PORT || '3000', 10),
   },
 };
+
+/** Full HTTPS URL Telegram should POST updates to (matches Express route). */
+export function getTelegramWebhookFullUrl(): string {
+  const base = config.telegram.webhookBaseUrl;
+  const secret = config.telegram.webhookPathSecret;
+  return `${base}/telegram/webhook/${secret}`;
+}
 
 // Validate required environment variables
 const requiredEnvVars = [

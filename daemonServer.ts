@@ -1,10 +1,9 @@
-import express from 'express';
 import cron from 'node-cron';
-import { Bot, webhookCallback } from 'grammy';
+import { Bot } from 'grammy';
 
 import { config, validateConfig, validateTelegramConfig } from './config';
-import { registerTelegramHandlers } from './telegramBotCore';
 import { runPipeline } from './orchestrator';
+import { startTelegramWebhookExpress } from './telegramHttpServer';
 
 let scheduledPipelineRunning = false;
 
@@ -47,21 +46,7 @@ async function main(): Promise<void> {
   );
 
   const bot = new Bot(config.telegram.botToken);
-  const app = express();
-  app.use(express.json({ limit: '20mb' }));
-
-  const webhookPath = `/telegram/webhook/${config.telegram.webhookPathSecret}`;
-  app.post(webhookPath, webhookCallback(bot, 'express'));
-  app.get('/health', (_req, res) => res.status(200).send('ok'));
-
-  registerTelegramHandlers(bot);
-
-  app.listen(config.telegram.port, async () => {
-    const webhookUrl = `${config.telegram.webhookBaseUrl}${webhookPath}`;
-    await bot.api.setWebhook(webhookUrl);
-    console.log(`Telegram webhook set: ${webhookUrl}`);
-    console.log(`Listening on port ${config.telegram.port}`);
-  });
+  await startTelegramWebhookExpress(bot);
 }
 
 if (require.main === module) {
