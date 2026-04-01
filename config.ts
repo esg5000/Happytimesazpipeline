@@ -16,6 +16,8 @@ export const config = {
   pipeline: {
     articlesPerDay: parseInt(process.env.ARTICLES_PER_DAY || '1', 10),
     defaultSection: process.env.DEFAULT_SECTION || 'cannabis',
+    /** node-cron expression for daemonServer only (default 14:00 daily, server timezone e.g. UTC on Render) */
+    cronSchedule: process.env.PIPELINE_CRON || '0 14 * * *',
   },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',

@@ -1,6 +1,6 @@
 # HappyTimesAZ AI Publishing Pipeline
 
-A deterministic AI publishing pipeline that generates 3 articles per day and publishes them to Sanity CMS as drafts.
+A deterministic AI publishing pipeline that generates articles (see `ARTICLES_PER_DAY`) and publishes them to Sanity CMS as drafts.
 
 ## Architecture
 
@@ -9,6 +9,21 @@ A deterministic AI publishing pipeline that generates 3 articles per day and pub
 - **Schema-aligned publishing**: Articles match Sanity CMS schema
 - **No frontend logic**: Pure backend automation service
 - **Ad management**: Ads are managed via CMS, not embedded in AI text
+
+### Scheduled daily run vs Telegram (separate concerns)
+
+| Path | What runs | When |
+|------|-----------|------|
+| **GitHub Actions** | `npm run pipeline` → `orchestrator.ts` only | `.github/workflows/daily-pipeline.yml` (cron + `workflow_dispatch`) |
+| **Daemon (Render, etc.)** | **`daemonServer.ts`**: Express + Telegram webhook + **`node-cron`** → `runPipeline()` | Process stays up; cron fires on `PIPELINE_CRON` (default `0 14 * * *`) |
+| **Telegram webhook only** | `telegramServer.ts` | On-demand commands; no in-process scheduler |
+| **Local polling** | `telegramPollingDev.ts` | On-demand; dev only |
+
+- **`daemonServer`** keeps the Node process alive: after each scheduled pipeline run it **does not exit**. Telegram webhooks are handled on the same event loop and are **not blocked** by the scheduler (scheduled run is async; overlapping cron ticks are skipped if the previous run is still running).
+- **Do not** run GitHub’s daily workflow **and** `daemonServer` cron unless you want **two** automatic runs per day—disable one.
+- **Render start (all-in-one):** `npm run daemon` after setting env vars. **Webhook-only:** `npm run telegram`.
+
+Optional env **`PIPELINE_CRON`**: standard [cron](https://crontab.guru) expression; server timezone (often UTC on Render).
 
 ## Project Structure
 
@@ -27,6 +42,8 @@ A deterministic AI publishing pipeline that generates 3 articles per day and pub
     slug.ts            # Slug generation utilities
     validator.ts       # JSON schema validation
   orchestrator.ts      # Main pipeline orchestrator
+  daemonServer.ts      # Webhook + node-cron daily pipeline (long-lived)
+  telegramServer.ts    # Telegram webhook only
   config.ts           # Configuration management
 ```
 
@@ -65,7 +82,7 @@ npm run build
 
 ## Usage
 
-### Run the Pipeline
+### Run the Pipeline (one-shot CLI)
 
 ```bash
 npm start
@@ -75,6 +92,20 @@ Or run in development mode (with ts-node):
 
 ```bash
 npm run dev
+```
+
+### Telegram webhook + daily scheduler (long-lived, e.g. Render)
+
+```bash
+npm run daemon
+```
+
+Local dev: `npm run daemon:dev` (requires full webhook env).
+
+### Telegram webhook only (no in-process daily cron)
+
+```bash
+npm run telegram
 ```
 
 ### Type Checking

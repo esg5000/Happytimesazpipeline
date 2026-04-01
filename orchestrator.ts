@@ -166,16 +166,18 @@ async function runPipeline(): Promise<void> {
     console.log('\n✨ Pipeline complete!\n');
   } catch (error) {
     console.error('\n❌ Pipeline failed:', error);
-    process.exit(1);
+    throw error;
   }
 }
 
-// Run the pipeline
+// Run the pipeline (CLI only — exits process; daemon imports runPipeline without exiting)
 if (require.main === module) {
-  runPipeline().catch((error) => {
-    console.error('Fatal error:', error);
-    process.exit(1);
-  });
+  runPipeline()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      console.error('Fatal error:', error);
+      process.exit(1);
+    });
 }
 
 export { runPipeline };
