@@ -16,6 +16,7 @@ SEO Requirements:
 - Use subheaders (##) for scannability
 - Short, scannable paragraphs
 - Include relevant keywords organically
+- seoDescription (CRITICAL): Must be **155 characters or fewer** (count every character including spaces). Sanity rejects longer values (hard limit 160). Never exceed 155. If unsure, shorten until the string length is ≤ 155.
 
 Content Rules:
 - Focus on: food, nightlife, cannabis, mushrooms, or events
@@ -29,7 +30,7 @@ Output ONLY valid JSON in this exact format:
   "slug": "url-friendly-slug",
   "excerpt": "Compelling excerpt (50-200 chars)",
   "seoTitle": "SEO title (10-70 chars)",
-  "seoDescription": "SEO meta description (50-160 chars)",
+  "seoDescription": "SEO meta description: 50–155 chars only (strict max 155; must fit Sanity 160 limit)",
   "categories": ["category1", "category2"],
   "tags": ["tag1", "tag2", "tag3"],
   "visualStyle": "one of: editorial_realistic, cinematic_hyperreal, film_35mm_grain, documentary_candid, neon_night_street, illustrated_watercolor, bold_vector_flat, playful_cartoon, clay_3d",

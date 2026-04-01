@@ -102,7 +102,7 @@ Each article outputs the following JSON structure:
   "slug": "url-friendly-slug",
   "excerpt": "Compelling excerpt",
   "seoTitle": "SEO optimized title",
-  "seoDescription": "SEO meta description",
+  "seoDescription": "SEO meta description (50–155 chars; aligns with Sanity limit)",
   "categories": ["category1", "category2"],
   "tags": ["tag1", "tag2", "tag3"],
   "visualStyle": "editorial_realistic | cinematic_hyperreal | film_35mm_grain | documentary_candid | neon_night_street | illustrated_watercolor | bold_vector_flat | playful_cartoon | clay_3d",

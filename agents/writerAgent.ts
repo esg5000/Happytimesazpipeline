@@ -21,7 +21,8 @@ Section: ${topic.section}
 Description: ${topic.description}
 Keywords: ${topic.keywords.join(', ')}
 
-Generate a complete article following all guidelines.`;
+Generate a complete article following all guidelines.
+Remember: seoDescription must be at most 155 characters (count spaces).`;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',

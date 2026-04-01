@@ -3,6 +3,7 @@ import { Bot } from 'grammy';
 
 import { config } from './config';
 import { ingestToTopic } from './agents/ingestAgent';
+import { transcribeAudio } from './agents/transcribeAgent';
 import { writeArticle } from './agents/writerAgent';
 import { generateImagePrompt, generateImage } from './agents/imageAgent';
 import {
@@ -45,10 +46,22 @@ function isAllowedUser(fromId?: number): boolean {
 }
 
 async function downloadTelegramFile(bot: Bot, fileId: string): Promise<Buffer> {
+  const { buffer } = await downloadTelegramFileWithMeta(bot, fileId);
+  return buffer;
+}
+
+async function downloadTelegramFileWithMeta(
+  bot: Bot,
+  fileId: string
+): Promise<{ buffer: Buffer; filename: string }> {
   const file = await bot.api.getFile(fileId);
+  if (!file.file_path) {
+    throw new Error('Telegram file path missing');
+  }
   const url = `https://api.telegram.org/file/bot${config.telegram.botToken}/${file.file_path}`;
   const response = await axios.get(url, { responseType: 'arraybuffer' });
-  return Buffer.from(response.data);
+  const base = file.file_path.split('/').pop() || 'file.bin';
+  return { buffer: Buffer.from(response.data), filename: base };
 }
 
 async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
@@ -58,7 +71,7 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   if (!notes && !session.title) {
     await bot.api.sendMessage(
       chatId,
-      'Send some notes (and optionally a photo) first, then /publish.'
+      'Send some notes, a voice note, and/or a photo first, then /publish.'
     );
     return;
   }
@@ -109,9 +122,22 @@ export function registerTelegramHandlers(bot: Bot): void {
     await next();
   });
 
+  bot.command('start', async (ctx) => {
+    await ctx.reply(
+      [
+        'HappyTimesAZ draft bot — messages are processed on your machine when polling is running.',
+        '',
+        'Try: /new → send text and/or a voice note and/or a photo → /publish',
+        'Full list: /help',
+      ].join('\n')
+    );
+  });
+
   bot.command('new', async (ctx) => {
     resetSession(ctx.chat!.id);
-    await ctx.reply('Started a new draft. Send notes (and optional photo), then /publish.');
+    await ctx.reply(
+      'Started a new draft. Send text notes, a voice note, and/or a photo, then /publish.'
+    );
   });
 
   bot.command('help', async (ctx) => {
@@ -124,7 +150,8 @@ export function registerTelegramHandlers(bot: Bot): void {
         '- /keywords k1, k2, k3',
         '- /style <visualStyle>',
         '- (send a photo) — use as hero image (skips DALL·E)',
-        '- (send notes) — add to article notes',
+        '- (send a voice note) — transcribed with Whisper, added to notes',
+        '- (send text) — add to article notes',
         '- /publish — generate + publish draft immediately',
       ].join('\n')
     );
@@ -200,6 +227,29 @@ export function registerTelegramHandlers(bot: Bot): void {
     }
   });
 
+  bot.on('message:voice', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    const session = getSession(chatId);
+    const voice = ctx.message.voice;
+    if (!voice) return;
+
+    try {
+      await ctx.reply('Transcribing voice note…');
+      const { buffer, filename } = await downloadTelegramFileWithMeta(bot, voice.file_id);
+      const text = await transcribeAudio(buffer, filename);
+      if (!text) {
+        await ctx.reply('Transcription was empty. Try again or send text.');
+        return;
+      }
+      session.notes.push(text);
+      const preview = text.length > 600 ? `${text.slice(0, 600)}…` : text;
+      await ctx.reply(`Added to notes:\n\n${preview}`);
+    } catch (err: any) {
+      console.error('Voice transcribe error:', err?.message || err);
+      await ctx.reply(`Transcription failed: ${err?.message || 'Unknown error'}`);
+    }
+  });
+
   bot.on('message:photo', async (ctx) => {
     const chatId = ctx.chat!.id;
     const session = getSession(chatId);
@@ -217,6 +267,30 @@ export function registerTelegramHandlers(bot: Bot): void {
     const chatId = ctx.chat!.id;
     const session = getSession(chatId);
     session.notes.push(text);
+  });
+
+  bot.on('message:document', async (ctx) => {
+    await ctx.reply(
+      'Files/documents are not read yet. Paste the article as text, send a voice note, or send a photo for the hero image. /help'
+    );
+  });
+
+  bot.on('message').filter((ctx) => {
+    const m = ctx.message;
+    return (
+      !('text' in m && m.text) &&
+      !m.photo &&
+      !m.voice &&
+      !m.document &&
+      !m.sticker &&
+      !m.contact &&
+      !m.location &&
+      !m.poll
+    );
+  }, async (ctx) => {
+    await ctx.reply(
+      'That type of message is not handled. Use text, a voice note, or a photo. If you get no replies at all, start polling: npm run telegram:polling:dev'
+    );
   });
 }
 

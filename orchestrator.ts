@@ -74,22 +74,45 @@ async function runPipeline(): Promise<void> {
         const imageUrl = await generateImage(enhancedImagePrompt);
         console.log('   ✅ Image generated');
 
-        // Step 5: Upload image to Sanity
-        console.log('   📤 Uploading image to Sanity...');
-        const imageAssetId = await uploadImageToSanity(
-          imageUrl,
-          `${article.slug}-hero.jpg`
-        );
-        console.log('   ✅ Image uploaded');
+        let sanityId: string;
+        try {
+          // Step 5: Upload image to Sanity
+          console.log('   📤 Uploading image to Sanity...');
+          const imageAssetId = await uploadImageToSanity(
+            imageUrl,
+            `${article.slug}-hero.jpg`
+          );
+          console.log('   ✅ Image uploaded');
 
-        // Step 6: Publish article to Sanity (as draft)
-        console.log('   📝 Publishing article to Sanity...');
-        const sanityId = await publishArticleToSanity(
-          article,
-          imageAssetId,
-          topic.section
-        );
-        console.log(`   ✅ Article published as draft: ${sanityId}`);
+          // Step 6: Publish article to Sanity (as draft)
+          console.log('   📝 Publishing article to Sanity...');
+          sanityId = await publishArticleToSanity(
+            article,
+            imageAssetId,
+            topic.section
+          );
+          console.log(`   ✅ Article published as draft: ${sanityId}`);
+        } catch (sanityError: unknown) {
+          const sanityMessage =
+            sanityError instanceof Error ? sanityError.message : String(sanityError);
+          console.error(
+            `   ❌ Sanity upload/publish failed for "${article.title}": ${sanityMessage}`
+          );
+          const errAny = sanityError as { response?: { body?: unknown } };
+          if (errAny?.response?.body !== undefined) {
+            console.error(
+              '   Sanity response:',
+              typeof errAny.response.body === 'string'
+                ? errAny.response.body
+                : JSON.stringify(errAny.response.body)
+            );
+          }
+          results.push({
+            success: false,
+            error: `Sanity: ${sanityMessage}`,
+          });
+          continue;
+        }
 
         results.push({
           success: true,

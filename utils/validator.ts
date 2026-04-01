@@ -22,7 +22,7 @@ export const ArticleSchema = z.object({
   slug: z.string().min(3).max(100),
   excerpt: z.string().min(50).max(200),
   seoTitle: z.string().min(10).max(70),
-  seoDescription: z.string().min(50).max(160),
+  seoDescription: z.string().min(50).max(155),
   categories: z.array(z.string()).min(1).max(5),
   tags: z.array(z.string()).min(1).max(10),
   visualStyle: VisualStyleSchema,
