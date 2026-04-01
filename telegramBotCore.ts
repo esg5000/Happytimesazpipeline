@@ -14,31 +14,13 @@ import {
 } from './agents/sanityPublisher';
 import { ensureUniqueSlug } from './utils/slug';
 import { VisualStyle } from './utils/validator';
-
-type Session = {
-  section?: 'cannabis' | 'mushrooms' | 'nightlife' | 'food' | 'events' | 'global';
-  title?: string;
-  keywords?: string[];
-  visualStyle?: VisualStyle;
-  notes: string[];
-  photoFileId?: string;
-};
-
-const sessions = new Map<number, Session>();
-
-function getSession(chatId: number): Session {
-  const existing = sessions.get(chatId);
-  if (existing) return existing;
-  const created: Session = { notes: [] };
-  sessions.set(chatId, created);
-  return created;
-}
-
-function resetSession(chatId: number): Session {
-  const created: Session = { notes: [] };
-  sessions.set(chatId, created);
-  return created;
-}
+import {
+  getTelegramSession,
+  hydrateTelegramSessionsFromDisk,
+  persistTelegramSessions,
+  resetTelegramSession,
+  type TelegramDraftSession,
+} from './telegramSessionStore';
 
 function isAllowedUser(fromId?: number): boolean {
   if (!fromId) return false;
@@ -64,16 +46,24 @@ async function downloadTelegramFileWithMeta(
   return { buffer: Buffer.from(response.data), filename: base };
 }
 
+const PHOTO_ONLY_INGEST_SEED =
+  'The editor submitted only a hero photo via Telegram (no text notes). Infer a specific Phoenix-area HappyTimesAZ-style article angle; keep factual claims conservative if the image is ambiguous.';
+
 async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
-  const session = getSession(chatId);
-  const notes = session.notes.join('\n').trim();
+  const session = getTelegramSession(chatId);
+  let notes = session.notes.join('\n').trim();
+  const hasPhoto = Boolean(session.photoFileId);
 
   if (!notes && !session.title) {
-    await bot.api.sendMessage(
-      chatId,
-      'Send some notes, a voice note, and/or a photo first, then /publish.'
-    );
-    return;
+    if (hasPhoto) {
+      notes = PHOTO_ONLY_INGEST_SEED;
+    } else {
+      await bot.api.sendMessage(
+        chatId,
+        'Send some notes, a voice note, and/or a photo first, then /publish.'
+      );
+      return;
+    }
   }
 
   const topic = await ingestToTopic({
@@ -112,10 +102,17 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
     `Published draft:\n- Title: ${article.title}\n- Slug: ${article.slug}\n- Sanity ID: ${sanityId}`
   );
 
-  resetSession(chatId);
+  resetTelegramSession(chatId);
 }
 
+let telegramSessionsHydrated = false;
+
 export function registerTelegramHandlers(bot: Bot): void {
+  if (!telegramSessionsHydrated) {
+    hydrateTelegramSessionsFromDisk();
+    telegramSessionsHydrated = true;
+  }
+
   bot.use(async (ctx, next) => {
     const fromId = ctx.from?.id;
     if (!isAllowedUser(fromId)) return;
@@ -134,7 +131,7 @@ export function registerTelegramHandlers(bot: Bot): void {
   });
 
   bot.command('new', async (ctx) => {
-    resetSession(ctx.chat!.id);
+    resetTelegramSession(ctx.chat!.id);
     await ctx.reply(
       'Started a new draft. Send text notes, a voice note, and/or a photo, then /publish.'
     );
@@ -159,13 +156,14 @@ export function registerTelegramHandlers(bot: Bot): void {
 
   bot.command('section', async (ctx) => {
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     const section = ctx.match?.toString().trim().toLowerCase();
     if (
       section &&
       ['cannabis', 'mushrooms', 'nightlife', 'food', 'events', 'global'].includes(section)
     ) {
-      session.section = section as Session['section'];
+      session.section = section as TelegramDraftSession['section'];
+      persistTelegramSessions();
       await ctx.reply(`Section set to: ${session.section}`);
     } else {
       await ctx.reply(
@@ -176,26 +174,28 @@ export function registerTelegramHandlers(bot: Bot): void {
 
   bot.command('title', async (ctx) => {
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     session.title = ctx.match?.toString().trim() || '';
+    persistTelegramSessions();
     await ctx.reply('Title set.');
   });
 
   bot.command('keywords', async (ctx) => {
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     const raw = ctx.match?.toString().trim() || '';
     const keywords = raw
       .split(',')
       .map((k: string) => k.trim())
       .filter(Boolean);
     session.keywords = keywords;
+    persistTelegramSessions();
     await ctx.reply(`Keywords set (${keywords.length}).`);
   });
 
   bot.command('style', async (ctx) => {
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     const style = (ctx.match?.toString().trim() || '') as VisualStyle;
     const allowed: VisualStyle[] = [
       'editorial_realistic',
@@ -210,6 +210,7 @@ export function registerTelegramHandlers(bot: Bot): void {
     ];
     if (allowed.includes(style)) {
       session.visualStyle = style;
+      persistTelegramSessions();
       await ctx.reply(`Visual style set to: ${style}`);
     } else {
       await ctx.reply(`Invalid style. Use one of: ${allowed.join(', ')}`);
@@ -229,35 +230,52 @@ export function registerTelegramHandlers(bot: Bot): void {
 
   bot.on('message:voice', async (ctx) => {
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     const voice = ctx.message.voice;
     if (!voice) return;
+
+    const caption = ctx.message.caption?.trim();
+    if (caption) {
+      session.notes.push(`[photo/voice caption] ${caption}`);
+    }
 
     try {
       await ctx.reply('Transcribing voice note…');
       const { buffer, filename } = await downloadTelegramFileWithMeta(bot, voice.file_id);
       const text = await transcribeAudio(buffer, filename);
       if (!text) {
+        persistTelegramSessions();
         await ctx.reply('Transcription was empty. Try again or send text.');
         return;
       }
       session.notes.push(text);
+      persistTelegramSessions();
       const preview = text.length > 600 ? `${text.slice(0, 600)}…` : text;
       await ctx.reply(`Added to notes:\n\n${preview}`);
     } catch (err: any) {
       console.error('Voice transcribe error:', err?.message || err);
+      persistTelegramSessions();
       await ctx.reply(`Transcription failed: ${err?.message || 'Unknown error'}`);
     }
   });
 
   bot.on('message:photo', async (ctx) => {
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     const photos = ctx.message.photo;
     if (!photos || photos.length === 0) return;
     const best = photos[photos.length - 1];
     session.photoFileId = best.file_id;
-    await ctx.reply('Photo received. Send notes, then /publish.');
+    const caption = ctx.message.caption?.trim();
+    if (caption) {
+      session.notes.push(caption);
+    }
+    persistTelegramSessions();
+    await ctx.reply(
+      caption
+        ? 'Photo and caption saved. Send more notes or /publish.'
+        : 'Photo received. Send notes or /publish.'
+    );
   });
 
   bot.on('message:text', async (ctx) => {
@@ -265,8 +283,9 @@ export function registerTelegramHandlers(bot: Bot): void {
     if (!text) return;
     if (text.startsWith('/')) return;
     const chatId = ctx.chat!.id;
-    const session = getSession(chatId);
+    const session = getTelegramSession(chatId);
     session.notes.push(text);
+    persistTelegramSessions();
   });
 
   bot.on('message:document', async (ctx) => {
