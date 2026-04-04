@@ -49,6 +49,47 @@ async function downloadTelegramFileWithMeta(
 const PHOTO_ONLY_INGEST_SEED =
   'The editor submitted only a hero photo via Telegram (no text notes). Infer a specific Phoenix-area HappyTimesAZ-style article angle; keep factual claims conservative if the image is ambiguous.';
 
+/**
+ * Run bot actions from the HTTP API (daemon). Uses the allowed user's private chat id.
+ */
+export async function executeTelegramDaemonCommand(
+  bot: Bot,
+  chatId: number,
+  command: '/publish' | '/new' | '/start'
+): Promise<void> {
+  switch (command) {
+    case '/start':
+      await bot.api.sendMessage(
+        chatId,
+        [
+          'HappyTimesAZ draft bot — messages are processed on your machine when polling is running.',
+          '',
+          'Try: /new → send text and/or a voice note and/or a photo → /publish',
+          'Full list: /help',
+        ].join('\n')
+      );
+      return;
+    case '/new':
+      resetTelegramSession(chatId);
+      await bot.api.sendMessage(
+        chatId,
+        'Started a new draft. Send text notes, a voice note, and/or a photo, then /publish.'
+      );
+      return;
+    case '/publish':
+      await bot.api.sendMessage(chatId, 'Publishing…');
+      try {
+        await publishFromSession(bot, chatId);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('Publish error:', msg);
+        await bot.api.sendMessage(chatId, `Publish failed: ${msg || 'Unknown error'}`);
+        throw err;
+      }
+      return;
+  }
+}
+
 async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();

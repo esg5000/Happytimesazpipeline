@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { Bot } from 'grammy';
 
 import { config, validateConfig, validateTelegramConfig } from './config';
+import { recordScheduledPipelineFinish } from './pipelineStatus';
 import { runPipeline } from './orchestrator';
 import { startTelegramWebhookExpress } from './telegramHttpServer';
 
@@ -22,8 +23,11 @@ async function runScheduledPipeline(): Promise<void> {
   try {
     console.log('[scheduler] Starting scheduled daily pipeline…');
     await runPipeline();
+    recordScheduledPipelineFinish(true);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error('[scheduler] Scheduled pipeline failed:', err);
+    recordScheduledPipelineFinish(false, msg);
   } finally {
     scheduledPipelineRunning = false;
   }

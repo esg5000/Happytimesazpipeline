@@ -398,3 +398,12 @@ export async function getExistingSlugs(): Promise<string[]> {
   }
 }
 
+/**
+ * Total number of post documents in the configured dataset (for API status).
+ */
+export async function countPostDocuments(): Promise<number> {
+  const sanityClient = getSanityClient();
+  const n = await sanityClient.fetch<number>('count(*[_type == "post"])');
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+

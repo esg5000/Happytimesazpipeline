@@ -2,9 +2,99 @@ import express from 'express';
 import { Bot, webhookCallback } from 'grammy';
 
 import { config, getTelegramWebhookFullUrl } from './config';
-import { registerTelegramHandlers } from './telegramBotCore';
+import { countPostDocuments } from './agents/sanityPublisher';
+import { getPipelineStatusSnapshot } from './pipelineStatus';
+import { executeTelegramDaemonCommand, registerTelegramHandlers } from './telegramBotCore';
 
 const RENDER_HOST = '0.0.0.0';
+
+function corsMiddleware(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type, X-API-Key, Authorization'
+  );
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+}
+
+function getConfiguredApiKey(): string {
+  return process.env.API_KEY?.trim() || '';
+}
+
+function requireApiKey(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): void {
+  const configured = getConfiguredApiKey();
+  if (!configured) {
+    res.status(503).json({ error: 'API_KEY is not configured on the server' });
+    return;
+  }
+  const headerKey = req.header('x-api-key')?.trim();
+  const auth = req.header('authorization');
+  const bearer =
+    auth && /^Bearer\s+/i.test(auth) ? auth.replace(/^Bearer\s+/i, '').trim() : '';
+  const key = headerKey || bearer;
+  if (key !== configured) {
+    res.status(401).json({ error: 'Invalid or missing API key' });
+    return;
+  }
+  next();
+}
+
+function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
+  app.use(corsMiddleware);
+
+  app.get('/api/status', requireApiKey, async (_req, res) => {
+    try {
+      const snapshot = getPipelineStatusSnapshot();
+      const articleCount = await countPostDocuments();
+      res.json({
+        ...snapshot,
+        articleCount,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[api] /api/status failed:', msg);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  app.post('/api/command', requireApiKey, async (req, res) => {
+    const raw = req.body?.command;
+    const command =
+      typeof raw === 'string' ? raw.trim() : '';
+    const isDaemonCommand = (
+      s: string
+    ): s is '/publish' | '/new' | '/start' =>
+      s === '/publish' || s === '/new' || s === '/start';
+    if (!isDaemonCommand(command)) {
+      res.status(400).json({
+        error: 'Body must be JSON: { "command": "/publish" | "/new" | "/start" }',
+      });
+      return;
+    }
+    const chatId = config.telegram.allowedUserId;
+    try {
+      await executeTelegramDaemonCommand(bot, chatId, command);
+      res.json({ ok: true, command });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[api] /api/command failed:', msg);
+      res.status(500).json({ error: msg });
+    }
+  });
+}
 
 /**
  * Express app + Telegram webhook route, bound for cloud hosts (Render requires 0.0.0.0 + PORT).
@@ -18,6 +108,7 @@ export async function startTelegramWebhookExpress(bot: Bot): Promise<void> {
   app.post(webhookPath, webhookCallback(bot, 'express'));
   app.get('/health', (_req, res) => res.status(200).send('ok'));
 
+  registerDaemonApiRoutes(app, bot);
   registerTelegramHandlers(bot);
 
   const webhookUrl = getTelegramWebhookFullUrl();
