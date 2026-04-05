@@ -9,6 +9,46 @@ import { executeTelegramDaemonCommand, registerTelegramHandlers } from './telegr
 
 const RENDER_HOST = '0.0.0.0';
 
+/** Coerce API body fields into one trimmed notes string for /publish. */
+function coerceToNotesString(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') {
+    const t = value.trim();
+    return t.length > 0 ? t : undefined;
+  }
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((x) => (typeof x === 'string' ? x.trim() : String(x)))
+      .filter((s) => s.length > 0)
+      .join('\n');
+    return joined.length > 0 ? joined : undefined;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return undefined;
+}
+
+/**
+ * Read editorial notes from POST /api/command JSON body.
+ * Accepts `notes`, `editorialNotes`, `editorNotes`, or `topicNotes` (first non-empty wins).
+ */
+function extractPublishNotesFromBody(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const o = body as Record<string, unknown>;
+  const keys = [
+    'notes',
+    'editorialNotes',
+    'editorNotes',
+    'topicNotes',
+  ] as const;
+  for (const k of keys) {
+    const s = coerceToNotesString(o[k]);
+    if (s) return s;
+  }
+  return undefined;
+}
+
 /** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
 function getCorsAllowlist(): string[] {
   const raw = process.env.CORS_ORIGINS?.trim();
@@ -108,11 +148,14 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
 
     if (command === '/publish') {
-      const notesRaw = req.body?.notes;
-      const notesTrim =
-        typeof notesRaw === 'string' ? notesRaw.trim() : '';
+      const notesTrim = extractPublishNotesFromBody(req.body);
       const pipelineOpts =
-        notesTrim.length > 0 ? { notes: notesTrim } : undefined;
+        notesTrim !== undefined ? { notes: notesTrim } : undefined;
+      if (notesTrim !== undefined) {
+        console.log(
+          `[api] /publish editorial notes (${notesTrim.length} chars) → runPipelineJob`
+        );
+      }
       try {
         const { skipped } = await runPipelineJob(pipelineOpts);
         if (skipped) {

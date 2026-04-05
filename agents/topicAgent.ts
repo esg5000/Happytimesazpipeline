@@ -22,6 +22,11 @@ export async function generateTopics(
   const prompt = readFileSync(TOPIC_PROMPT_PATH, 'utf-8');
   const topics: Topic[] = [];
   const editorialNotes = options?.notes?.trim();
+  if (editorialNotes) {
+    console.log(
+      `[topicAgent] Applying editorial notes to each topic request (${editorialNotes.length} chars)`
+    );
+  }
 
   for (let i = 0; i < count; i++) {
     try {
@@ -45,11 +50,20 @@ async function generateSingleTopic(
   existingTopics: Topic[] = [],
   editorialNotes?: string
 ): Promise<Topic> {
-  // Build context about existing topics to avoid repetition
-  let userPrompt = 'Generate a new article topic for HappyTimesAZ.com';
+  const systemContent = editorialNotes
+    ? `${systemPrompt.trim()}\n\n---\nWhen the user message includes EDITOR DIRECTION, you MUST prioritize it: title, section, description, and keywords must clearly reflect that direction while staying Phoenix-local and on-brand for HappyTimesAZ.`
+    : systemPrompt;
 
+  let userPrompt: string;
   if (editorialNotes) {
-    userPrompt += `\n\nEditorial direction / notes from the editor (incorporate into the topic angle, title, and section choice where appropriate):\n${editorialNotes}`;
+    userPrompt = [
+      'EDITOR DIRECTION (primary constraint — the topic must satisfy this):',
+      editorialNotes,
+      '',
+      'Generate exactly one new article topic JSON for HappyTimesAZ.com that fulfills the editor direction above.',
+    ].join('\n');
+  } else {
+    userPrompt = 'Generate a new article topic for HappyTimesAZ.com';
   }
 
   if (existingTopics.length > 0) {
@@ -64,7 +78,7 @@ async function generateSingleTopic(
       messages: [
         {
           role: 'system',
-          content: systemPrompt,
+          content: systemContent,
         },
         {
           role: 'user',

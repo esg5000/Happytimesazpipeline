@@ -43,6 +43,11 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
 
     // Step 1: Generate topics
     console.log(`📝 Generating ${config.pipeline.articlesPerDay} topics...`);
+    if (options?.notes?.trim()) {
+      console.log(
+        `   Editorial notes → topic agent (${options.notes.trim().length} chars)`
+      );
+    }
     const topics = await generateTopics(config.pipeline.articlesPerDay, options);
     console.log(`✅ Generated ${topics.length} topics\n`);
 
