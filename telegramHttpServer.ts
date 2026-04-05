@@ -4,21 +4,42 @@ import { Bot, webhookCallback } from 'grammy';
 import { config, getTelegramWebhookFullUrl } from './config';
 import { countPostDocuments } from './agents/sanityPublisher';
 import { getPipelineStatusSnapshot } from './pipelineStatus';
+import { runPipelineJob } from './pipelineRunner';
 import { executeTelegramDaemonCommand, registerTelegramHandlers } from './telegramBotCore';
 
 const RENDER_HOST = '0.0.0.0';
+
+/** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
+function getCorsAllowlist(): string[] {
+  const raw = process.env.CORS_ORIGINS?.trim();
+  if (!raw) return [];
+  return raw.split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+}
 
 function corsMiddleware(
   req: express.Request,
   res: express.Response,
   next: express.NextFunction
 ): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowlist = getCorsAllowlist();
+  const origin = req.header('Origin');
+
+  if (allowlist.length === 0) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin && allowlist.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else if (origin) {
+    // Browser sent Origin but it is not in CORS_ORIGINS — omit ACAO so the browser blocks.
+  }
+
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
     'Content-Type, X-API-Key, Authorization'
   );
+  res.setHeader('Access-Control-Max-Age', '86400');
+
   if (req.method === 'OPTIONS') {
     res.status(204).end();
     return;
@@ -80,10 +101,39 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       s === '/publish' || s === '/new' || s === '/start';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
-        error: 'Body must be JSON: { "command": "/publish" | "/new" | "/start" }',
+        error:
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start", "notes"?: string } — optional notes steer the batch pipeline when command is /publish',
       });
       return;
     }
+
+    if (command === '/publish') {
+      const notesRaw = req.body?.notes;
+      const notesTrim =
+        typeof notesRaw === 'string' ? notesRaw.trim() : '';
+      const pipelineOpts =
+        notesTrim.length > 0 ? { notes: notesTrim } : undefined;
+      try {
+        const { skipped } = await runPipelineJob(pipelineOpts);
+        if (skipped) {
+          res.status(409).json({
+            error: 'Pipeline is already running',
+          });
+          return;
+        }
+        res.json({
+          ok: true,
+          command: '/publish',
+          ...(pipelineOpts ? { notesApplied: true } : {}),
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command /publish failed:', msg);
+        res.status(500).json({ error: msg });
+      }
+      return;
+    }
+
     const chatId = config.telegram.allowedUserId;
     try {
       await executeTelegramDaemonCommand(bot, chatId, command);

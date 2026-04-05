@@ -7,17 +7,26 @@ import { validateTopic, Topic } from '../utils/validator';
 // Resolve prompt path - works in both dev and compiled dist
 const TOPIC_PROMPT_PATH = join(process.cwd(), 'prompts', 'topic.prompt.txt');
 
+export type GenerateTopicsOptions = {
+  /** Passed into each topic request to steer angles (e.g. API /publish). */
+  notes?: string;
+};
+
 /**
  * Generates article topics using OpenAI
  */
-export async function generateTopics(count: number = 3): Promise<Topic[]> {
+export async function generateTopics(
+  count: number = 3,
+  options?: GenerateTopicsOptions
+): Promise<Topic[]> {
   const prompt = readFileSync(TOPIC_PROMPT_PATH, 'utf-8');
   const topics: Topic[] = [];
+  const editorialNotes = options?.notes?.trim();
 
   for (let i = 0; i < count; i++) {
     try {
       // Pass context about previously generated topics to avoid repetition
-      const topic = await generateSingleTopic(prompt, topics);
+      const topic = await generateSingleTopic(prompt, topics, editorialNotes);
       topics.push(topic);
     } catch (error) {
       console.error(`Error generating topic ${i + 1}:`, error);
@@ -33,11 +42,16 @@ export async function generateTopics(count: number = 3): Promise<Topic[]> {
  */
 async function generateSingleTopic(
   systemPrompt: string,
-  existingTopics: Topic[] = []
+  existingTopics: Topic[] = [],
+  editorialNotes?: string
 ): Promise<Topic> {
   // Build context about existing topics to avoid repetition
   let userPrompt = 'Generate a new article topic for HappyTimesAZ.com';
-  
+
+  if (editorialNotes) {
+    userPrompt += `\n\nEditorial direction / notes from the editor (incorporate into the topic angle, title, and section choice where appropriate):\n${editorialNotes}`;
+  }
+
   if (existingTopics.length > 0) {
     const existingTitles = existingTopics.map(t => `- ${t.title} (${t.section})`).join('\n');
     userPrompt += `\n\nIMPORTANT: Avoid generating topics similar to these already generated topics:\n${existingTitles}\n\nEnsure your new topic is unique, different in angle, and ideally in a different section when possible.`;

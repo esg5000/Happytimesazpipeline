@@ -20,10 +20,15 @@ interface PipelineResult {
   error?: string;
 }
 
+/** Optional steering for topic generation (e.g. API /publish body `notes`). */
+export type RunPipelineOptions = {
+  notes?: string;
+};
+
 /**
  * Main orchestrator for the AI publishing pipeline
  */
-async function runPipeline(): Promise<void> {
+async function runPipeline(options?: RunPipelineOptions): Promise<void> {
   console.log('🚀 Starting HappyTimesAZ AI Publishing Pipeline\n');
 
   try {
@@ -38,7 +43,7 @@ async function runPipeline(): Promise<void> {
 
     // Step 1: Generate topics
     console.log(`📝 Generating ${config.pipeline.articlesPerDay} topics...`);
-    const topics = await generateTopics(config.pipeline.articlesPerDay);
+    const topics = await generateTopics(config.pipeline.articlesPerDay, options);
     console.log(`✅ Generated ${topics.length} topics\n`);
 
     const results: PipelineResult[] = [];

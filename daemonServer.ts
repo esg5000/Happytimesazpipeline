@@ -2,8 +2,7 @@ import cron from 'node-cron';
 import { Bot } from 'grammy';
 
 import { config, validateConfig, validateTelegramConfig } from './config';
-import { recordScheduledPipelineFinish } from './pipelineStatus';
-import { runPipeline } from './orchestrator';
+import { runPipelineJob } from './pipelineRunner';
 import { startTelegramWebhookExpress } from './telegramHttpServer';
 
 let scheduledPipelineRunning = false;
@@ -22,12 +21,14 @@ async function runScheduledPipeline(): Promise<void> {
   scheduledPipelineRunning = true;
   try {
     console.log('[scheduler] Starting scheduled daily pipeline…');
-    await runPipeline();
-    recordScheduledPipelineFinish(true);
+    const { skipped } = await runPipelineJob();
+    if (skipped) {
+      console.log(
+        '[scheduler] Skipping: a pipeline run is already in progress (e.g. API /publish)'
+      );
+    }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     console.error('[scheduler] Scheduled pipeline failed:', err);
-    recordScheduledPipelineFinish(false, msg);
   } finally {
     scheduledPipelineRunning = false;
   }
@@ -36,6 +37,8 @@ async function runScheduledPipeline(): Promise<void> {
 /**
  * Long-lived process for Render (or similar): Telegram webhook + daily pipeline via node-cron.
  * Does not exit after a pipeline run. Telegram and the scheduler share the process only; handlers are independent.
+ *
+ * Browser CORS for /api/* is configured in `telegramHttpServer.ts` via `CORS_ORIGINS` (e.g. your Vercel dashboard URL).
  */
 async function main(): Promise<void> {
   validateConfig();
