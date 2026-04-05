@@ -148,14 +148,17 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
 
     if (command === '/publish') {
+      console.log(
+        '[api] /publish req.body:',
+        JSON.stringify(req.body ?? null, null, 2)
+      );
       const notesTrim = extractPublishNotesFromBody(req.body);
+      console.log(
+        '[api] /publish extracted notes (passed to runPipelineJob):',
+        notesTrim === undefined ? '(none)' : notesTrim
+      );
       const pipelineOpts =
         notesTrim !== undefined ? { notes: notesTrim } : undefined;
-      if (notesTrim !== undefined) {
-        console.log(
-          `[api] /publish editorial notes (${notesTrim.length} chars) → runPipelineJob`
-        );
-      }
       try {
         const { skipped } = await runPipelineJob(pipelineOpts);
         if (skipped) {
