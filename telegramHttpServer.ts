@@ -3,6 +3,7 @@ import multer from 'multer';
 import { Bot, webhookCallback } from 'grammy';
 
 import { config, getTelegramWebhookFullUrl } from './config';
+import { transcribeAudio } from './agents/transcribeAgent';
 import {
   countPostDocuments,
   uploadImageBufferToSanity,
@@ -21,6 +22,12 @@ const RENDER_HOST = '0.0.0.0';
 const multerUploadImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
+});
+
+/** Whisper API accepts up to 25 MB per file. */
+const multerUploadAudio = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
 /** Coerce API body fields into one trimmed notes string for /publish. */
@@ -170,6 +177,55 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/upload failed:', msg);
+        res.status(500).json({ error: msg });
+      }
+    }
+  );
+
+  app.post(
+    '/api/upload-voice',
+    requireApiKey,
+    (req, res, next) => {
+      multerUploadAudio.single('audio')(req, res, (err: unknown) => {
+        if (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          res.status(400).json({ error: msg });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      try {
+        const file = req.file;
+        if (!file?.buffer) {
+          res.status(400).json({
+            error: 'Missing audio file (multipart field name: audio)',
+          });
+          return;
+        }
+        const name = file.originalname || 'voice.webm';
+        const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'voice.webm';
+        const text = await transcribeAudio(file.buffer, safeName);
+        if (!text.trim()) {
+          res.status(400).json({ error: 'Transcription was empty' });
+          return;
+        }
+        const chatId = config.telegram.allowedUserId;
+        const session = getTelegramSession(chatId);
+        session.notes.push(text);
+        persistTelegramSessions();
+        console.log(
+          `[api] POST /api/upload-voice → appended transcript (${text.length} chars) for chat ${chatId}`
+        );
+        res.json({
+          ok: true,
+          text,
+          transcription: text,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/upload-voice failed:', msg);
         res.status(500).json({ error: msg });
       }
     }

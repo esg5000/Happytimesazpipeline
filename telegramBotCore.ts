@@ -104,13 +104,16 @@ export async function publishStoryFromSourceNotes(
   if (!text) {
     throw new Error('Story source notes are empty');
   }
-  const preserveHero = getTelegramSession(chatId).heroSanityAssetId;
+  const prior = getTelegramSession(chatId);
+  const preserveHero = prior.heroSanityAssetId;
+  const priorNotes = prior.notes.slice();
   resetTelegramSession(chatId);
   const session = getTelegramSession(chatId);
   if (preserveHero) {
     session.heroSanityAssetId = preserveHero;
   }
-  session.notes = [text];
+  session.notes =
+    priorNotes.length > 0 ? [...priorNotes, text] : [text];
   persistTelegramSessions();
 
   await bot.api.sendMessage(chatId, 'Publishing…');
