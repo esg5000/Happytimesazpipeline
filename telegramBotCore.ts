@@ -90,6 +90,36 @@ export async function executeTelegramDaemonCommand(
   }
 }
 
+/**
+ * API/dashboard: treat `sourceNotes` as the full story source (like pasted Telegram text),
+ * then run the same ingest → article → Sanity path as /publish in the bot.
+ * Replaces any draft in session for this chat with these notes only (no autonomous topic pipeline).
+ */
+export async function publishStoryFromSourceNotes(
+  bot: Bot,
+  chatId: number,
+  sourceNotes: string
+): Promise<void> {
+  const text = sourceNotes.trim();
+  if (!text) {
+    throw new Error('Story source notes are empty');
+  }
+  resetTelegramSession(chatId);
+  const session = getTelegramSession(chatId);
+  session.notes = [text];
+  persistTelegramSessions();
+
+  await bot.api.sendMessage(chatId, 'Publishing…');
+  try {
+    await publishFromSession(bot, chatId);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('Publish error:', msg);
+    await bot.api.sendMessage(chatId, `Publish failed: ${msg || 'Unknown error'}`);
+    throw err;
+  }
+}
+
 async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();

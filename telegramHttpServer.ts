@@ -5,7 +5,11 @@ import { config, getTelegramWebhookFullUrl } from './config';
 import { countPostDocuments } from './agents/sanityPublisher';
 import { getPipelineStatusSnapshot } from './pipelineStatus';
 import { runPipelineJob } from './pipelineRunner';
-import { executeTelegramDaemonCommand, registerTelegramHandlers } from './telegramBotCore';
+import {
+  executeTelegramDaemonCommand,
+  publishStoryFromSourceNotes,
+  registerTelegramHandlers,
+} from './telegramBotCore';
 
 const RENDER_HOST = '0.0.0.0';
 
@@ -142,7 +146,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start", "notes"?: string } — optional notes steer the batch pipeline when command is /publish',
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start", "notes"?: string } — with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
       });
       return;
     }
@@ -154,13 +158,33 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       );
       const notesTrim = extractPublishNotesFromBody(req.body);
       console.log(
-        '[api] /publish extracted notes (passed to runPipelineJob):',
-        notesTrim === undefined ? '(none)' : notesTrim
+        '[api] /publish extracted notes:',
+        notesTrim === undefined ? '(none — autonomous pipeline)' : notesTrim
       );
-      const pipelineOpts =
-        notesTrim !== undefined ? { notes: notesTrim } : undefined;
+      const chatId = config.telegram.allowedUserId;
+
+      if (notesTrim !== undefined) {
+        console.log(
+          '[api] /publish → Telegram ingest path (notes as story source material)'
+        );
+        try {
+          await publishStoryFromSourceNotes(bot, chatId, notesTrim);
+          res.json({
+            ok: true,
+            command: '/publish',
+            publishMode: 'telegram_ingest',
+          });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command /publish (ingest) failed:', msg);
+          res.status(500).json({ error: msg });
+        }
+        return;
+      }
+
+      console.log('[api] /publish → autonomous pipeline (runPipelineJob)');
       try {
-        const { skipped } = await runPipelineJob(pipelineOpts);
+        const { skipped } = await runPipelineJob();
         if (skipped) {
           res.status(409).json({
             error: 'Pipeline is already running',
@@ -170,11 +194,11 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         res.json({
           ok: true,
           command: '/publish',
-          ...(pipelineOpts ? { notesApplied: true } : {}),
+          publishMode: 'autonomous_pipeline',
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error('[api] /api/command /publish failed:', msg);
+        console.error('[api] /api/command /publish (pipeline) failed:', msg);
         res.status(500).json({ error: msg });
       }
       return;
