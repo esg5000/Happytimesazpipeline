@@ -1,8 +1,12 @@
 import express from 'express';
+import multer from 'multer';
 import { Bot, webhookCallback } from 'grammy';
 
 import { config, getTelegramWebhookFullUrl } from './config';
-import { countPostDocuments } from './agents/sanityPublisher';
+import {
+  countPostDocuments,
+  uploadImageBufferToSanity,
+} from './agents/sanityPublisher';
 import { getPipelineStatusSnapshot } from './pipelineStatus';
 import { runPipelineJob } from './pipelineRunner';
 import {
@@ -10,8 +14,14 @@ import {
   publishStoryFromSourceNotes,
   registerTelegramHandlers,
 } from './telegramBotCore';
+import { getTelegramSession, persistTelegramSessions } from './telegramSessionStore';
 
 const RENDER_HOST = '0.0.0.0';
+
+const multerUploadImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
 
 /** Coerce API body fields into one trimmed notes string for /publish. */
 function coerceToNotesString(value: unknown): string | undefined {
@@ -119,6 +129,51 @@ function requireApiKey(
 
 function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
   app.use(corsMiddleware);
+
+  app.post(
+    '/api/upload',
+    requireApiKey,
+    (req, res, next) => {
+      multerUploadImage.single('image')(req, res, (err: unknown) => {
+        if (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          res.status(400).json({ error: msg });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      try {
+        const file = req.file;
+        if (!file?.buffer) {
+          res.status(400).json({
+            error: 'Missing image file (multipart field name: image)',
+          });
+          return;
+        }
+        const name = file.originalname || 'upload.jpg';
+        const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.jpg';
+        const assetId = await uploadImageBufferToSanity(file.buffer, safeName);
+        const chatId = config.telegram.allowedUserId;
+        const session = getTelegramSession(chatId);
+        session.heroSanityAssetId = assetId;
+        persistTelegramSessions();
+        console.log(
+          `[api] POST /api/upload → heroSanityAssetId for chat ${chatId}: ${assetId}`
+        );
+        res.json({
+          ok: true,
+          assetId,
+          sanityImageAssetId: assetId,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/upload failed:', msg);
+        res.status(500).json({ error: msg });
+      }
+    }
+  );
 
   app.get('/api/status', requireApiKey, async (_req, res) => {
     try {

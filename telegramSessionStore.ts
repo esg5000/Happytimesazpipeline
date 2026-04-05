@@ -11,6 +11,8 @@ export type TelegramDraftSession = {
   visualStyle?: VisualStyle;
   notes: string[];
   photoFileId?: string;
+  /** Set by POST /api/upload — reused as hero on next publish (Sanity image asset _id). */
+  heroSanityAssetId?: string;
 };
 
 const sessionFile =
@@ -35,6 +37,8 @@ function parseSession(raw: unknown): TelegramDraftSession {
       : undefined,
     visualStyle: o.visualStyle as VisualStyle | undefined,
     photoFileId: typeof o.photoFileId === 'string' ? o.photoFileId : undefined,
+    heroSanityAssetId:
+      typeof o.heroSanityAssetId === 'string' ? o.heroSanityAssetId : undefined,
   };
 }
 

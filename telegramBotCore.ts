@@ -104,8 +104,12 @@ export async function publishStoryFromSourceNotes(
   if (!text) {
     throw new Error('Story source notes are empty');
   }
+  const preserveHero = getTelegramSession(chatId).heroSanityAssetId;
   resetTelegramSession(chatId);
   const session = getTelegramSession(chatId);
+  if (preserveHero) {
+    session.heroSanityAssetId = preserveHero;
+  }
   session.notes = [text];
   persistTelegramSessions();
 
@@ -123,7 +127,7 @@ export async function publishStoryFromSourceNotes(
 async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();
-  const hasPhoto = Boolean(session.photoFileId);
+  const hasPhoto = Boolean(session.photoFileId || session.heroSanityAssetId);
 
   if (!notes && !session.title) {
     if (hasPhoto) {
@@ -154,7 +158,9 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   article = { ...article, slug: ensureUniqueSlug(article.slug, existingSlugs) };
 
   let heroImageAssetId: string;
-  if (session.photoFileId) {
+  if (session.heroSanityAssetId) {
+    heroImageAssetId = session.heroSanityAssetId;
+  } else if (session.photoFileId) {
     const buf = await downloadTelegramFile(bot, session.photoFileId);
     heroImageAssetId = await uploadImageBufferToSanity(buf, `${article.slug}-hero.jpg`);
   } else {
