@@ -34,12 +34,12 @@ export default defineType({
     defineField({
       name: 'source',
       type: 'string',
-      description: 'e.g. eventbrite',
+      description: 'e.g. google_events, eventbrite (legacy)',
     }),
     defineField({
       name: 'eventbriteEventId',
       type: 'string',
-      description: 'Eventbrite event id — dedupe key for sync',
+      description: 'Legacy Eventbrite event id — dedupe key for old Eventbrite sync',
     }),
   ],
   preview: {

@@ -3,7 +3,7 @@ import multer from 'multer';
 import { Bot, webhookCallback } from 'grammy';
 
 import { config, getTelegramWebhookFullUrl } from './config';
-import { syncEventbriteEventsToSanity } from './agents/eventbriteSanitySync';
+import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { transcribeAudio } from './agents/transcribeAgent';
 import {
   countPostDocuments,
@@ -261,21 +261,21 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents", "notes"?: string } — syncEvents runs Eventbrite→Sanity; with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents", "notes"?: string } — syncEvents runs SerpApi Google Events→Sanity; with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
       });
       return;
     }
 
     if (command === 'syncEvents') {
-      if (!config.eventbrite.apiToken) {
+      if (!config.serpApi.apiKey) {
         res.status(503).json({
-          error: 'EVENTBRITE_API_TOKEN is not configured',
+          error: 'SERPAPI_API_KEY is not configured',
         });
         return;
       }
       try {
-        console.log('[api] /api/command syncEvents → syncEventbriteEventsToSanity');
-        const result = await syncEventbriteEventsToSanity();
+        console.log('[api] /api/command syncEvents → syncSerpApiEventsToSanity');
+        const result = await syncSerpApiEventsToSanity();
         res.json({
           ok: true,
           command: 'syncEvents',
