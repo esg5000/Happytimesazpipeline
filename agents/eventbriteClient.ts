@@ -51,8 +51,36 @@ function authHeaders() {
   };
 }
 
+/** Normalized names (lowercase) for major Phoenix metro cities and towns. */
+const PHOENIX_METRO_CITY_NAMES = new Set([
+  'phoenix',
+  'scottsdale',
+  'tempe',
+  'mesa',
+  'glendale',
+  'peoria',
+  'chandler',
+  'gilbert',
+  'surprise',
+  'goodyear',
+  'avondale',
+  'buckeye',
+  'queen creek',
+  'cave creek',
+  'fountain hills',
+  'paradise valley',
+  'ahwatukee',
+]);
+
+function blobMatchesPhoenixMetro(blobLower: string): boolean {
+  for (const name of PHOENIX_METRO_CITY_NAMES) {
+    if (blobLower.includes(name)) return true;
+  }
+  return false;
+}
+
 /**
- * Phoenix / Scottsdale AZ only — venue city or address text must match.
+ * Phoenix metro (greater Valley) — venue city or address text must match one of the configured cities.
  */
 export function isPhoenixScottsdaleVenue(venue: EventbriteVenue | undefined): boolean {
   if (!venue?.address) return false;
@@ -68,10 +96,15 @@ export function isPhoenixScottsdaleVenue(venue: EventbriteVenue | undefined): bo
     .join(' ')
     .toLowerCase();
 
-  if (region && region !== 'AZ') {
-    return blob.includes('phoenix') || blob.includes('scottsdale');
+  if (city && PHOENIX_METRO_CITY_NAMES.has(city)) {
+    return !region || region === 'AZ';
   }
-  return city === 'phoenix' || city === 'scottsdale' || /phoenix|scottsdale/i.test(blob);
+
+  if (region && region !== 'AZ') {
+    return blobMatchesPhoenixMetro(blob);
+  }
+
+  return blobMatchesPhoenixMetro(blob);
 }
 
 /**

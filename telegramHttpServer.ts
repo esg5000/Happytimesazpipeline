@@ -3,6 +3,7 @@ import multer from 'multer';
 import { Bot, webhookCallback } from 'grammy';
 
 import { config, getTelegramWebhookFullUrl } from './config';
+import { syncEventbriteEventsToSanity } from './agents/eventbriteSanitySync';
 import { transcribeAudio } from './agents/transcribeAgent';
 import {
   countPostDocuments,
@@ -252,13 +253,39 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       typeof raw === 'string' ? raw.trim() : '';
     const isDaemonCommand = (
       s: string
-    ): s is '/publish' | '/new' | '/start' =>
-      s === '/publish' || s === '/new' || s === '/start';
+    ): s is '/publish' | '/new' | '/start' | 'syncEvents' =>
+      s === '/publish' ||
+      s === '/new' ||
+      s === '/start' ||
+      s === 'syncEvents';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start", "notes"?: string } — with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents", "notes"?: string } — syncEvents runs Eventbrite→Sanity; with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
       });
+      return;
+    }
+
+    if (command === 'syncEvents') {
+      if (!config.eventbrite.apiToken) {
+        res.status(503).json({
+          error: 'EVENTBRITE_API_TOKEN is not configured',
+        });
+        return;
+      }
+      try {
+        console.log('[api] /api/command syncEvents → syncEventbriteEventsToSanity');
+        const result = await syncEventbriteEventsToSanity();
+        res.json({
+          ok: true,
+          command: 'syncEvents',
+          ...result,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command syncEvents failed:', msg);
+        res.status(500).json({ error: msg });
+      }
       return;
     }
 
