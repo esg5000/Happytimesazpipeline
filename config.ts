@@ -19,6 +19,14 @@ export const config = {
     /** node-cron expression for daemonServer only (default 14:00 daily, server timezone e.g. UTC on Render) */
     cronSchedule: process.env.PIPELINE_CRON || '0 14 * * *',
   },
+  eventbrite: {
+    /** Private token from https://www.eventbrite.com/account/apps/ */
+    apiToken: (process.env.EVENTBRITE_API_TOKEN || '').trim(),
+    /**
+     * Separate from article pipeline — default 14:15 so it runs after the default 14:00 pipeline tick.
+     */
+    cronSchedule: process.env.EVENTBRITE_CRON || '15 14 * * *',
+  },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     allowedUserId: parseInt(process.env.TELEGRAM_ALLOWED_USER_ID || '', 10),

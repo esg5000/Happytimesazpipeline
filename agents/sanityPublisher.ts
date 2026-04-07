@@ -8,7 +8,7 @@ let client: SanityClient | null = null;
 /**
  * Initializes Sanity client
  */
-function getSanityClient(): SanityClient {
+export function getSanityClient(): SanityClient {
   if (!client) {
     client = createClient({
       projectId: config.sanity.projectId,

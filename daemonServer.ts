@@ -2,10 +2,12 @@ import cron from 'node-cron';
 import { Bot } from 'grammy';
 
 import { config, validateConfig, validateTelegramConfig } from './config';
+import { syncEventbriteEventsToSanity } from './agents/eventbriteSanitySync';
 import { runPipelineJob } from './pipelineRunner';
 import { startTelegramWebhookExpress } from './telegramHttpServer';
 
 let scheduledPipelineRunning = false;
+let eventbriteSyncRunning = false;
 
 /**
  * Scheduled daily batch only. Runs in the background; does not block Telegram HTTP handlers.
@@ -31,6 +33,31 @@ async function runScheduledPipeline(): Promise<void> {
     console.error('[scheduler] Scheduled pipeline failed:', err);
   } finally {
     scheduledPipelineRunning = false;
+  }
+}
+
+/**
+ * Daily Eventbrite → Sanity sync (separate schedule from the article pipeline).
+ */
+async function runScheduledEventbriteSync(): Promise<void> {
+  if (!config.eventbrite.apiToken) {
+    return;
+  }
+  if (eventbriteSyncRunning) {
+    console.log('[eventbrite] Skipping tick: previous sync still running');
+    return;
+  }
+  eventbriteSyncRunning = true;
+  try {
+    console.log('[eventbrite] Starting Eventbrite → Sanity sync…');
+    const { created, skipped, errors } = await syncEventbriteEventsToSanity();
+    console.log(
+      `[eventbrite] Sync done — created: ${created}, skipped (existing): ${skipped}, errors: ${errors}`
+    );
+  } catch (err) {
+    console.error('[eventbrite] Sync failed:', err);
+  } finally {
+    eventbriteSyncRunning = false;
   }
 }
 
@@ -63,4 +90,4 @@ if (require.main === module) {
   });
 }
 
-export { main, runScheduledPipeline };
+export { main, runScheduledEventbriteSync, runScheduledPipeline };
