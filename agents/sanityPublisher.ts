@@ -411,6 +411,11 @@ export async function publishNewsApiArticleToSanity(
   heroImageAssetId: string | undefined,
   originalSourceUrl: string
 ): Promise<string> {
+  console.log(
+    `[newsapi][sanity] publishNewsApiArticleToSanity entered: title="${article.title.slice(0, 80)}${article.title.length > 80 ? '…' : ''}" slug=${article.slug} hero=${heroImageAssetId ? 'yes' : 'no'}`
+  );
+  console.log(`[newsapi][sanity] originalSourceUrl=${originalSourceUrl}`);
+
   const sanityClient = getSanityClient();
   const primarySection = 'news';
 
@@ -522,14 +527,20 @@ export async function publishNewsApiArticleToSanity(
   };
 
   try {
+    console.log(
+      `[newsapi][sanity] sanityClient.create() calling… _id=${baseDoc._id} section=${primarySection} contentSource=newsapi isActive=true status=published`
+    );
     const result = await sanityClient.create(baseDoc);
+    console.log(`[newsapi][sanity] sanityClient.create() ok documentId=${result._id}`);
     if (categoryRef) {
+      console.log(`[newsapi][sanity] Patching category ref onto ${result._id}…`);
       await new Promise((r) => setTimeout(r, 500));
       await sanityClient.patch(result._id).set({ category: categoryRef }).commit();
+      console.log(`[newsapi][sanity] Category patch committed`);
     }
     return result._id;
   } catch (error: unknown) {
-    console.error('❌ NewsAPI Sanity create error:', error);
+    console.error('[newsapi][sanity] sanityClient.create or patch failed:', error);
     throw error;
   }
 }

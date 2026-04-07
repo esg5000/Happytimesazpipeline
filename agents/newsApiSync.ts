@@ -96,8 +96,9 @@ async function openAiJson<T>(system: string, user: string): Promise<T> {
   return JSON.parse(cleaned) as T;
 }
 
-async function scoreAndGate(item: NewsApiArticle): Promise<ScoreResult> {
+async function scoreAndGate(item: NewsApiArticle, label: string): Promise<ScoreResult> {
   const text = [item.title, item.description || '', item.content || ''].join('\n\n').slice(0, 12000);
+  console.log(`[newsapi] ${label} → OpenAI: relevance scoring + exclude gate starting…`);
 
   const system = `You are an editor for a Phoenix AZ local lifestyle site HappyTimesAZ.
 
@@ -112,14 +113,20 @@ Return JSON only:
 
   const raw = await openAiJson<ScoreResult>(system, user);
   const relevanceScore = Math.min(10, Math.max(1, Math.round(Number(raw.relevanceScore)) || 1));
-  return {
+  const result = {
     relevanceScore,
     exclude: Boolean(raw.exclude),
     excludeReason: raw.excludeReason,
   };
+  console.log(
+    `[newsapi] ${label} → score result: relevanceScore=${result.relevanceScore}, exclude=${result.exclude}` +
+      (result.excludeReason ? `, excludeReason="${result.excludeReason}"` : '')
+  );
+  return result;
 }
 
-async function rewriteArticle(item: NewsApiArticle): Promise<Article> {
+async function rewriteArticle(item: NewsApiArticle, label: string): Promise<Article> {
+  console.log(`[newsapi] ${label} → AI rewrite starting (model=${config.openai.model})`);
   const system = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
   const basis = [
     `Title: ${item.title}`,
@@ -146,6 +153,9 @@ async function rewriteArticle(item: NewsApiArticle): Promise<Article> {
     throw new Error(`News rewrite validation failed: ${validation.errors?.join(', ')}`);
   }
 
+  console.log(
+    `[newsapi] ${label} → AI rewrite finished: title="${validation.data!.title.slice(0, 80)}${validation.data!.title.length > 80 ? '…' : ''}" slug=${validation.data!.slug}`
+  );
   return validation.data!;
 }
 
@@ -171,6 +181,12 @@ export async function syncNewsApiToSanity(): Promise<{
   const max = Math.min(10, config.newsApi.maxArticles);
   const from = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
+  console.log('[newsapi] ========== syncNewsApiToSanity start ==========');
+  console.log(
+    `[newsapi] Config: maxArticles=${max}, from=${from} (last 24h window end=now), sortBy=relevancy, language=en`
+  );
+  console.log(`[newsapi] Calling NewsAPI GET ${NEWS_API_EVERYTHING} (pageSize=${max})…`);
+
   const { data, status } = await axios.get<NewsApiResponse>(NEWS_API_EVERYTHING, {
     params: {
       q: PHOENIX_QUERY,
@@ -183,12 +199,24 @@ export async function syncNewsApiToSanity(): Promise<{
     validateStatus: () => true,
   });
 
+  console.log(
+    `[newsapi] NewsAPI response: httpStatus=${status}, apiStatus=${data.status ?? 'n/a'}, totalResults=${data.totalResults ?? 'n/a'}`
+  );
+
   if (status !== 200 || data.status !== 'ok' || !data.articles) {
-    throw new Error(data.message || data.code || `NewsAPI error (HTTP ${status})`);
+    const errMsg = data.message || data.code || `NewsAPI error (HTTP ${status})`;
+    console.error(`[newsapi] NewsAPI request failed or empty articles: ${errMsg}`);
+    throw new Error(errMsg);
   }
+
+  const returnedCount = data.articles.length;
+  console.log(`[newsapi] Stories returned in this page: ${returnedCount} (capped by pageSize=${max})`);
 
   const existingUrls = await getExistingNewsSourceUrls();
   const existingSlugs = await getExistingSlugs();
+  console.log(
+    `[newsapi] Dedup context: ${existingUrls.size} existing originalSourceUrl(s) in Sanity, ${existingSlugs.length} existing slug(s)`
+  );
 
   let published = 0;
   let skipped = 0;
@@ -197,65 +225,98 @@ export async function syncNewsApiToSanity(): Promise<{
   const articles = data.articles.slice(0, max);
   const fetched = articles.length;
 
-  for (const item of articles) {
+  for (let i = 0; i < articles.length; i++) {
+    const item = articles[i];
+    const label = `story ${i + 1}/${articles.length}`;
+
+    console.log(
+      `[newsapi] --- ${label} --- title="${(item.title || '').slice(0, 100)}${(item.title || '').length > 100 ? '…' : ''}"`
+    );
+    console.log(`[newsapi] ${label} url=${item.url || '(missing)'}`);
+
     if (!item.url || !item.title) {
+      console.log(`[newsapi] ${label} SKIP: missing url or title`);
       skipped++;
       continue;
     }
 
     if (existingUrls.has(item.url)) {
-      console.log(`[newsapi] Skip duplicate URL: ${item.url}`);
+      console.log(`[newsapi] ${label} SKIP: duplicate originalSourceUrl already in Sanity`);
       skipped++;
       continue;
     }
 
     if (!passesKeywordGate(item)) {
-      console.log(`[newsapi] Skip keyword gate: ${item.title}`);
+      console.log(`[newsapi] ${label} SKIP: keyword gate (crime/tragedy/politics headline filter)`);
       skipped++;
       continue;
     }
 
     try {
-      const gate = await scoreAndGate(item);
+      const gate = await scoreAndGate(item, label);
+      console.log(
+        `[newsapi] ${label} relevanceScore=${gate.relevanceScore} (need ≥7), exclude=${gate.exclude}`
+      );
+
       if (gate.exclude) {
-        console.log(`[newsapi] Excluded by AI: ${item.title} (${gate.excludeReason || 'no reason'})`);
+        console.log(
+          `[newsapi] ${label} SKIP: AI exclude gate (${gate.excludeReason || 'no reason given'})`
+        );
         skipped++;
         continue;
       }
       if (gate.relevanceScore < 7) {
-        console.log(`[newsapi] Score ${gate.relevanceScore} < 7: ${item.title}`);
+        console.log(`[newsapi] ${label} SKIP: relevanceScore ${gate.relevanceScore} < 7`);
         skipped++;
         continue;
       }
 
-      const article = await rewriteArticle(item);
+      console.log(
+        `[newsapi] ${label} SELECTED for publish pipeline (score ${gate.relevanceScore} ≥ 7, not excluded)`
+      );
+
+      const article = await rewriteArticle(item, label);
       article.slug = ensureUniqueSlug(article.slug || generateSlug(article.title), existingSlugs);
       existingSlugs.push(article.slug);
 
       let heroId: string | undefined;
       if (item.urlToImage) {
+        console.log(`[newsapi] ${label} Hero image upload starting: ${item.urlToImage.slice(0, 80)}…`);
         try {
           heroId = await uploadImageToSanity(
             item.urlToImage,
             `newsapi-${article.slug.slice(0, 24)}.jpg`
           );
+          console.log(`[newsapi] ${label} Hero image uploaded, asset _id=${heroId}`);
         } catch (e) {
           console.warn(
-            `[newsapi] Hero upload failed for "${item.title}":`,
+            `[newsapi] ${label} Hero upload failed (continuing without hero):`,
             e instanceof Error ? e.message : e
           );
         }
+      } else {
+        console.log(`[newsapi] ${label} No urlToImage from NewsAPI; publishing without hero`);
       }
 
+      console.log(
+        `[newsapi] ${label} Calling Sanity publish: slug=${article.slug} originalUrl=${item.url}`
+      );
       await publishNewsApiArticleToSanity(article, heroId, item.url);
       existingUrls.add(item.url);
       published++;
-      console.log(`[newsapi] Published: ${article.title}`);
+      console.log(`[newsapi] ${label} Sanity publish completed ✓ title="${article.title}"`);
     } catch (e) {
       errors++;
-      console.error(`[newsapi] Failed on "${item.title}":`, e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[newsapi] ${label} ERROR: ${msg}`);
+      if (e instanceof Error && e.stack) {
+        console.error(`[newsapi] ${label} stack: ${e.stack}`);
+      }
     }
   }
 
+  console.log(
+    `[newsapi] ========== syncNewsApiToSanity end: fetched=${fetched}, published=${published}, skipped=${skipped}, errors=${errors} ==========`
+  );
   return { fetched, published, skipped, errors };
 }
