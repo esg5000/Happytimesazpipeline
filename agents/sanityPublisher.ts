@@ -218,6 +218,11 @@ export async function publishArticleToSanity(
 ): Promise<string> {
   const sanityClient = getSanityClient();
 
+  let primarySection = section.trim().toLowerCase();
+  if (primarySection === 'mushrooms' || primarySection === 'wellness') {
+    primarySection = 'health-wellness';
+  }
+
   // Ensure bodyMarkdown exists and is a string
   if (!article.bodyMarkdown || typeof article.bodyMarkdown !== 'string') {
     throw new Error(`Invalid bodyMarkdown: expected string, got ${typeof article.bodyMarkdown}`);
@@ -239,35 +244,51 @@ export async function publishArticleToSanity(
   // Ensure categories array is not empty - use section as fallback
   let categoryStrings = article.categories || [];
   if (!Array.isArray(categoryStrings) || categoryStrings.length === 0) {
-    console.warn(`⚠️  Article "${article.title}" has no categories, using section "${section}" as category`);
-    categoryStrings = [section];
+    console.warn(`⚠️  Article "${article.title}" has no categories, using section "${primarySection}" as category`);
+    categoryStrings = [primarySection];
   } else {
     // Ensure section is included in categories if not already present
-    if (!categoryStrings.includes(section)) {
-      categoryStrings = [section, ...categoryStrings];
+    if (!categoryStrings.includes(primarySection)) {
+      categoryStrings = [primarySection, ...categoryStrings];
     }
   }
 
-  // Filter categories to only include valid values from the predefined list
-  const validCategoryValues = ['cannabis', 'mushrooms', 'nightlife', 'food', 'events', 'global', 'lifestyle', 'culture', 'entertainment'];
+  // Filter categories to only include valid values from the predefined list (site slugs + extras)
+  const validCategoryValues = [
+    'cannabis',
+    'health-wellness',
+    'nightlife',
+    'food',
+    'events',
+    'global',
+    'news',
+    'lifestyle',
+    'culture',
+    'entertainment',
+  ];
   categoryStrings = categoryStrings
-    .map(cat => typeof cat === 'string' ? cat.toLowerCase().trim() : String(cat).toLowerCase().trim())
-    .filter(cat => validCategoryValues.includes(cat));
+    .map((cat) => {
+      const c =
+        typeof cat === 'string' ? cat.toLowerCase().trim() : String(cat).toLowerCase().trim();
+      if (c === 'mushrooms' || c === 'wellness') return 'health-wellness';
+      return c;
+    })
+    .filter((cat) => validCategoryValues.includes(cat));
   
   // Ensure we still have at least the section after filtering
-  if (categoryStrings.length === 0 || !categoryStrings.includes(section)) {
-    categoryStrings = [section];
+  if (categoryStrings.length === 0 || !categoryStrings.includes(primarySection)) {
+    categoryStrings = [primarySection];
   }
 
   // Remove duplicates and ensure section is first
-  categoryStrings = [...new Set([section, ...categoryStrings])];
+  categoryStrings = [...new Set([primarySection, ...categoryStrings])];
 
   // Convert category strings to a single Sanity reference
   let categoryRef: { _type: 'reference'; _ref: string } | null = null;
   
   try {
     // Query Sanity for matching category documents - use section as primary category
-    const primaryCategorySlug = section; // Use section as the primary category
+    const primaryCategorySlug = primarySection; // Use section as the primary category
     const categoryDocs = await sanityClient.fetch<Array<{ _id: string; slug: { current: string } }>>(
       `*[_type == "category" && slug.current == $slug]{
         _id,
@@ -295,7 +316,7 @@ export async function publishArticleToSanity(
   // Debug logging
   console.log('📋 Category strings:', JSON.stringify(categoryStrings));
   console.log('📋 Category reference:', JSON.stringify(categoryRef));
-  console.log('📋 Section:', section);
+  console.log('📋 Section:', primarySection);
 
   const document = {
     _type: 'post',
@@ -321,7 +342,7 @@ export async function publishArticleToSanity(
       },
     },
     body: portableTextBody, // This MUST be an array
-    section: section,
+    section: primarySection,
     publishedAt: null, // Draft by default
     _id: `post-${article.slug}-${Date.now()}`,
   };

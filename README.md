@@ -175,7 +175,7 @@ Articles are published as draft posts with the following structure:
 - `tags`: Array of tag strings
 - `heroImage`: Reference to uploaded image asset
 - `body`: Article body in Markdown
-- `section`: Section name (cannabis, mushrooms, nightlife, food, events, global)
+- `section`: Section name (cannabis, health-wellness, nightlife, food, events, global, news)
 - `publishedAt`: `null` (draft by default)
 
 ## Ad System
@@ -187,7 +187,7 @@ Ads are managed separately in Sanity CMS with the following schema:
 - `image`: Ad image
 - `clickUrl`: Ad destination URL
 - `placement`: Enum (section_header, section_banner, article_header, article_inline, article_mid, article_footer)
-- `section`: Enum (cannabis, mushrooms, nightlife, food, events, global)
+- `section`: Enum (cannabis, health-wellness, nightlife, food, events, global, news)
 - `startDate`: Ad start date
 - `endDate`: Ad end date
 - `priority`: Priority number

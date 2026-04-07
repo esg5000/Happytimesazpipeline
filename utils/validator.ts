@@ -14,6 +14,19 @@ export const VisualStyleSchema = z.enum([
 
 export type VisualStyle = z.infer<typeof VisualStyleSchema>;
 
+/** Primary site section slugs (Sanity `category` slug, post.section, pipeline topics). */
+export const SECTION_SLUGS = [
+  'cannabis',
+  'health-wellness',
+  'nightlife',
+  'food',
+  'events',
+  'global',
+  'news',
+] as const;
+
+export type SectionSlug = (typeof SECTION_SLUGS)[number];
+
 /**
  * Schema for article output validation
  */
@@ -62,7 +75,7 @@ export function validateArticle(data: unknown): {
  */
 export const TopicSchema = z.object({
   title: z.string().min(10).max(100),
-  section: z.enum(['cannabis', 'mushrooms', 'nightlife', 'food', 'events', 'global']),
+  section: z.enum(SECTION_SLUGS),
   description: z.string().min(50).max(300),
   keywords: z.array(z.string()).min(3).max(10),
 });

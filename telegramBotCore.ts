@@ -13,7 +13,8 @@ import {
   uploadImageToSanity,
 } from './agents/sanityPublisher';
 import { ensureUniqueSlug } from './utils/slug';
-import { VisualStyle } from './utils/validator';
+import type { SectionSlug } from './utils/validator';
+import { SECTION_SLUGS, VisualStyle } from './utils/validator';
 import {
   getTelegramSession,
   hydrateTelegramSessionsFromDisk,
@@ -222,7 +223,7 @@ export function registerTelegramHandlers(bot: Bot): void {
       [
         'Commands:',
         '- /new — start a new draft session',
-        '- /section <cannabis|mushrooms|nightlife|food|events|global>',
+        '- /section <cannabis|health-wellness|nightlife|food|events|global|news>',
         '- /title <title>',
         '- /keywords k1, k2, k3',
         '- /style <visualStyle>',
@@ -237,19 +238,18 @@ export function registerTelegramHandlers(bot: Bot): void {
   bot.command('section', async (ctx) => {
     const chatId = ctx.chat!.id;
     const session = getTelegramSession(chatId);
-    const section = ctx.match?.toString().trim().toLowerCase();
-    if (
-      section &&
-      ['cannabis', 'mushrooms', 'nightlife', 'food', 'events', 'global'].includes(section)
-    ) {
-      session.section = section as TelegramDraftSession['section'];
+    const raw = ctx.match?.toString().trim().toLowerCase() || '';
+    const migrated =
+      raw === 'mushrooms' || raw === 'wellness' ? 'health-wellness' : raw;
+    if ((SECTION_SLUGS as readonly string[]).includes(migrated)) {
+      session.section = migrated as SectionSlug;
       persistTelegramSessions();
       await ctx.reply(`Section set to: ${session.section}`);
-    } else {
-      await ctx.reply(
-        'Invalid section. Use: cannabis, mushrooms, nightlife, food, events, global.'
-      );
+      return;
     }
+    await ctx.reply(
+      'Invalid section. Use: cannabis, health-wellness, nightlife, food, events, global, news (mushrooms → health-wellness).'
+    );
   });
 
   bot.command('title', async (ctx) => {

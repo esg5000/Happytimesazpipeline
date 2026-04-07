@@ -19,7 +19,7 @@ SEO Requirements:
 - seoDescription (CRITICAL): Must be **155 characters or fewer** (count every character including spaces). Sanity rejects longer values (hard limit 160). Never exceed 155. If unsure, shorten until the string length is ≤ 155.
 
 Content Rules:
-- Focus on: food, nightlife, cannabis, mushrooms, or events
+- Focus on: food, nightlife, cannabis, health-wellness, news, or events
 - Local Phoenix perspective
 - No ad decisions or ad placement mentions
 - Editorial content only

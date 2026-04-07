@@ -143,11 +143,12 @@ export default defineType({
       options: {
         list: [
           'cannabis',
-          'mushrooms',
+          'health-wellness',
           'nightlife',
           'food',
           'events',
-          'global'
+          'global',
+          'news',
         ]
       },
       description: 'The primary section for this article. Used by the pipeline to route content.'

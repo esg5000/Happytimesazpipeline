@@ -110,6 +110,7 @@ function matchesHappyTimesCategories(
     'music',
     'cannabis',
     'arts',
+    'health',
     'wellness',
     'fitness',
     'comedy',

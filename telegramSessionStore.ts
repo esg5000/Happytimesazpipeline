@@ -2,10 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-import type { VisualStyle } from './utils/validator';
+import type { SectionSlug, VisualStyle } from './utils/validator';
+import { SECTION_SLUGS } from './utils/validator';
 
 export type TelegramDraftSession = {
-  section?: 'cannabis' | 'mushrooms' | 'nightlife' | 'food' | 'events' | 'global';
+  section?: SectionSlug;
   title?: string;
   keywords?: string[];
   visualStyle?: VisualStyle;
@@ -26,11 +27,19 @@ function parseSession(raw: unknown): TelegramDraftSession {
     return { notes: [] };
   }
   const o = raw as Record<string, unknown>;
+  let section: SectionSlug | undefined;
+  if (typeof o.section === 'string') {
+    const s = o.section.trim().toLowerCase();
+    const migrated = s === 'mushrooms' || s === 'wellness' ? 'health-wellness' : s;
+    section = SECTION_SLUGS.includes(migrated as SectionSlug)
+      ? (migrated as SectionSlug)
+      : undefined;
+  }
   return {
     notes: Array.isArray(o.notes)
       ? (o.notes as unknown[]).map((x) => String(x))
       : [],
-    section: o.section as TelegramDraftSession['section'],
+    section,
     title: typeof o.title === 'string' ? o.title : undefined,
     keywords: Array.isArray(o.keywords)
       ? (o.keywords as unknown[]).map((x) => String(x))
