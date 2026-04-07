@@ -404,6 +404,153 @@ export async function publishArticleToSanity(
 }
 
 /**
+ * Publishes a NewsAPI-sourced article: section `news`, source labels, published + active.
+ */
+export async function publishNewsApiArticleToSanity(
+  article: Article,
+  heroImageAssetId: string | undefined,
+  originalSourceUrl: string
+): Promise<string> {
+  const sanityClient = getSanityClient();
+  const primarySection = 'news';
+
+  if (!article.bodyMarkdown || typeof article.bodyMarkdown !== 'string') {
+    throw new Error(`Invalid bodyMarkdown: expected string, got ${typeof article.bodyMarkdown}`);
+  }
+
+  const portableTextBody = markdownToPortableText(article.bodyMarkdown);
+
+  if (!Array.isArray(portableTextBody) || portableTextBody.length === 0) {
+    throw new Error('markdownToPortableText returned invalid body for NewsAPI article');
+  }
+
+  let categoryStrings = article.categories || [];
+  if (!Array.isArray(categoryStrings) || categoryStrings.length === 0) {
+    categoryStrings = ['news'];
+  } else if (!categoryStrings.includes('news')) {
+    categoryStrings = ['news', ...categoryStrings];
+  }
+
+  const validCategoryValues = [
+    'cannabis',
+    'health-wellness',
+    'nightlife',
+    'food',
+    'events',
+    'global',
+    'news',
+    'lifestyle',
+    'culture',
+    'entertainment',
+  ];
+  categoryStrings = categoryStrings
+    .map((cat) => {
+      const c =
+        typeof cat === 'string' ? cat.toLowerCase().trim() : String(cat).toLowerCase().trim();
+      if (c === 'mushrooms' || c === 'wellness') return 'health-wellness';
+      return c;
+    })
+    .filter((cat) => validCategoryValues.includes(cat));
+
+  if (categoryStrings.length === 0 || !categoryStrings.includes('news')) {
+    categoryStrings = ['news'];
+  }
+  categoryStrings = [...new Set(['news', ...categoryStrings])];
+
+  let categoryRef: { _type: 'reference'; _ref: string } | null = null;
+
+  try {
+    const categoryDocs = await sanityClient.fetch<Array<{ _id: string; slug: { current: string } }>>(
+      `*[_type == "category" && slug.current == $slug]{ _id, slug }`,
+      { slug: primarySection }
+    );
+
+    if (categoryDocs && categoryDocs.length > 0) {
+      categoryRef = {
+        _type: 'reference' as const,
+        _ref: categoryDocs[0]._id,
+      };
+      console.log(`✅ NewsAPI: category reference for: ${primarySection}`);
+    } else {
+      console.warn(`⚠️  No Sanity category document for slug "${primarySection}"`);
+    }
+  } catch (error: unknown) {
+    console.error('❌ NewsAPI category fetch error:', error);
+  }
+
+  const publishedAt = new Date().toISOString();
+
+  const baseDoc = {
+    _type: 'post' as const,
+    title: article.title,
+    slug: {
+      _type: 'slug',
+      current: article.slug,
+    },
+    excerpt: article.excerpt,
+    seoTitle: article.seoTitle,
+    seoDescription: article.seoDescription,
+    visualStyle: article.visualStyle,
+    category: categoryRef
+      ? {
+          _type: 'reference',
+          _ref: categoryRef._ref,
+        }
+      : undefined,
+    categories: categoryStrings,
+    tags: article.tags,
+    body: portableTextBody,
+    section: primarySection,
+    contentSource: 'newsapi',
+    source: 'newsapi',
+    originalSourceUrl,
+    isActive: true,
+    status: 'published',
+    publishedAt,
+    _id: `post-${article.slug}-${Date.now()}`,
+    ...(heroImageAssetId
+      ? {
+          heroImage: {
+            _type: 'image' as const,
+            asset: {
+              _type: 'reference' as const,
+              _ref: heroImageAssetId,
+            },
+          },
+        }
+      : {}),
+  };
+
+  try {
+    const result = await sanityClient.create(baseDoc);
+    if (categoryRef) {
+      await new Promise((r) => setTimeout(r, 500));
+      await sanityClient.patch(result._id).set({ category: categoryRef }).commit();
+    }
+    return result._id;
+  } catch (error: unknown) {
+    console.error('❌ NewsAPI Sanity create error:', error);
+    throw error;
+  }
+}
+
+/**
+ * URLs already ingested from NewsAPI (dedupe).
+ */
+export async function getExistingNewsSourceUrls(): Promise<Set<string>> {
+  const sanityClient = getSanityClient();
+  try {
+    const urls = await sanityClient.fetch<string[]>(
+      `*[_type == "post" && defined(originalSourceUrl)].originalSourceUrl`
+    );
+    return new Set((urls || []).filter(Boolean));
+  } catch (error) {
+    console.error('Error fetching originalSourceUrl list:', error);
+    return new Set();
+  }
+}
+
+/**
  * Gets existing post slugs to check for uniqueness
  */
 export async function getExistingSlugs(): Promise<string[]> {

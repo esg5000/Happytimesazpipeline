@@ -3,6 +3,7 @@ import multer from 'multer';
 import { Bot, webhookCallback } from 'grammy';
 
 import { config, getTelegramWebhookFullUrl } from './config';
+import { syncNewsApiToSanity } from './agents/newsApiSync';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { transcribeAudio } from './agents/transcribeAgent';
 import {
@@ -253,16 +254,40 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       typeof raw === 'string' ? raw.trim() : '';
     const isDaemonCommand = (
       s: string
-    ): s is '/publish' | '/new' | '/start' | 'syncEvents' =>
+    ): s is '/publish' | '/new' | '/start' | 'syncEvents' | 'syncNews' =>
       s === '/publish' ||
       s === '/new' ||
       s === '/start' ||
-      s === 'syncEvents';
+      s === 'syncEvents' ||
+      s === 'syncNews';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents", "notes"?: string } — syncEvents runs SerpApi Google Events→Sanity; with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents" | "syncNews", "notes"?: string } — syncEvents=SerpApi events, syncNews=NewsAPI Phoenix news; with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
       });
+      return;
+    }
+
+    if (command === 'syncNews') {
+      if (!config.newsApi.apiKey) {
+        res.status(503).json({
+          error: 'NEWS_API_KEY is not configured',
+        });
+        return;
+      }
+      try {
+        console.log('[api] /api/command syncNews → syncNewsApiToSanity');
+        const result = await syncNewsApiToSanity();
+        res.json({
+          ok: true,
+          command: 'syncNews',
+          ...result,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command syncNews failed:', msg);
+        res.status(500).json({ error: msg });
+      }
       return;
     }
 

@@ -31,6 +31,16 @@ export const config = {
   eventsCleanup: {
     cronSchedule: process.env.EVENTS_CLEANUP_CRON || '0 1 * * *',
   },
+  /** NewsAPI.org — Phoenix local news rewrite pipeline */
+  newsApi: {
+    apiKey: (process.env.NEWS_API_KEY || '').trim(),
+    /** Default 10:00 daily (server timezone) */
+    cronSchedule: process.env.NEWS_API_CRON || '0 10 * * *',
+    maxArticles: Math.min(
+      10,
+      Math.max(1, parseInt(process.env.NEWS_API_MAX_ARTICLES || '10', 10) || 10)
+    ),
+  },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
     allowedUserId: parseInt(process.env.TELEGRAM_ALLOWED_USER_ID || '', 10),

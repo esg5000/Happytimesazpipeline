@@ -106,10 +106,32 @@ export default defineType({
       type: 'string',
       title: 'Content Source',
       options: {
-        list: [{ title: 'Manual', value: 'manual' }],
+        list: [
+          { title: 'Manual', value: 'manual' },
+          { title: 'NewsAPI', value: 'newsapi' },
+        ],
         layout: 'radio'
       },
       initialValue: 'manual'
+    }),
+    defineField({
+      name: 'source',
+      type: 'string',
+      title: 'Ingest source label',
+      description: 'e.g. newsapi — set by automated news sync',
+    }),
+    defineField({
+      name: 'originalSourceUrl',
+      type: 'url',
+      title: 'Original article URL',
+      description: 'Canonical URL from the wire (dedupe key for NewsAPI sync)',
+    }),
+    defineField({
+      name: 'isActive',
+      type: 'boolean',
+      title: 'Active',
+      description: 'When false, hide from listings (e.g. superseded)',
+      initialValue: true,
     }),
     defineField({
       name: 'status',
