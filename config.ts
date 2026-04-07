@@ -36,9 +36,10 @@ export const config = {
     apiKey: (process.env.NEWS_API_KEY || '').trim(),
     /** Default 10:00 daily (server timezone) */
     cronSchedule: process.env.NEWS_API_CRON || '0 10 * * *',
+    /** Default 1 for testing; raise via NEWS_API_MAX_ARTICLES (capped at 10). */
     maxArticles: Math.min(
       10,
-      Math.max(1, parseInt(process.env.NEWS_API_MAX_ARTICLES || '10', 10) || 10)
+      Math.max(1, parseInt(process.env.NEWS_API_MAX_ARTICLES || '1', 10) || 1)
     ),
   },
   telegram: {
