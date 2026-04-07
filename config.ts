@@ -23,9 +23,13 @@ export const config = {
     /** SerpApi key — https://serpapi.com/manage-api-key */
     apiKey: (process.env.SERPAPI_API_KEY || '').trim(),
     /**
-     * Separate from article pipeline — default 14:15 so it runs after the default 14:00 pipeline tick.
+     * Weekly Monday 08:00 (server timezone). Override with SERPAPI_EVENTS_CRON.
      */
-    cronSchedule: process.env.SERPAPI_EVENTS_CRON || '15 14 * * *',
+    cronSchedule: process.env.SERPAPI_EVENTS_CRON || '0 8 * * 1',
+  },
+  /** Deactivate past events in Sanity (isActive → false). Default daily 01:00. */
+  eventsCleanup: {
+    cronSchedule: process.env.EVENTS_CLEANUP_CRON || '0 1 * * *',
   },
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',

@@ -7,6 +7,9 @@ import { getSanityClient, uploadImageToSanity } from './sanityPublisher';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
+/** Max events written to Sanity per run (manual API and scheduled cron). */
+export const MAX_EVENTS_PER_SYNC = 50;
+
 /** Cities to search (Google Events query + location). */
 const TARGET_CITIES = [
   'Phoenix',
@@ -55,6 +58,71 @@ function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+/** One stable document id per normalized title (recurring performances share one Sanity doc). */
+function titleKeyHex(title: string): string {
+  return crypto.createHash('sha256').update(normalizeTitle(title)).digest('hex');
+}
+
+function documentIdFromTitle(title: string): string {
+  return `event-ge-${titleKeyHex(title).slice(0, 32)}`;
+}
+
+function slugFromTitle(title: string): string {
+  return `ge-${titleKeyHex(title).slice(0, 24)}`;
+}
+
+/** Exclude kids / school / family-only style events (checked before include list). */
+function isExcludedAudience(textLower: string): boolean {
+  const excludePhrases = [
+    'family-only',
+    'family only',
+    'kid-friendly',
+    'kid friendly',
+    'kids-only',
+    'kids only',
+    'for kids',
+    'toddler',
+    'toddlers',
+    "children's",
+    'children',
+  ];
+  for (const p of excludePhrases) {
+    if (textLower.includes(p)) return true;
+  }
+  if (/\bkids\b/.test(textLower)) return true;
+  if (/\bchild\b/.test(textLower)) return true;
+  if (/\bschool\b/.test(textLower)) return true;
+  return false;
+}
+
+/** HappyTimesAZ focus: at least one category keyword in title, description, or venue. */
+function matchesHappyTimesCategories(
+  title: string,
+  description: string,
+  venue: string
+): boolean {
+  const textLower = `${title}\n${description}\n${venue}`.toLowerCase();
+  if (isExcludedAudience(textLower)) return false;
+
+  const includeTerms = [
+    'food',
+    'nightlife',
+    'music',
+    'cannabis',
+    'arts',
+    'wellness',
+    'fitness',
+    'comedy',
+    'festival',
+    'festivals',
+  ];
+  for (const term of includeTerms) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`\\b${escaped}\\b`, 'i').test(textLower)) return true;
+  }
+  return false;
+}
+
 /** Stable ISO start time for dedupe; prefers `when`, falls back to start_date + year. */
 function parseStartIso(dateBlock: SerpDateBlock | undefined): string | null {
   if (!dateBlock) return null;
@@ -78,21 +146,6 @@ function parseStartIso(dateBlock: SerpDateBlock | undefined): string | null {
     d = new Date(`${sd}, ${y + 1}`);
   }
   return d.toISOString();
-}
-
-function dedupeKey(title: string, startIso: string): string {
-  return crypto
-    .createHash('sha256')
-    .update(`${normalizeTitle(title)}|${startIso}`)
-    .digest('hex');
-}
-
-function documentIdFromDedupe(key: string): string {
-  return `event-ge-${key.slice(0, 32)}`;
-}
-
-function slugFromDedupe(key: string): string {
-  return `ge-${key.slice(0, 24)}`;
 }
 
 function parseAddressLines(address: string[] | undefined): {
@@ -177,7 +230,7 @@ async function fetchEventsForCity(city: string): Promise<SerpGoogleEvent[]> {
 
 /**
  * Fetches Google Events via SerpApi for Phoenix-area cities and upserts `event` documents in Sanity.
- * Deduplicates by normalized title + start datetime (stable hash → deterministic `_id`).
+ * One document per normalized title (recurring dates deduped). HappyTimesAZ category + audience filters apply.
  */
 export async function syncSerpApiEventsToSanity(): Promise<{
   synced: number;
@@ -189,112 +242,130 @@ export async function syncSerpApiEventsToSanity(): Promise<{
   }
 
   const client = getSanityClient();
-  const seenKeys = new Set<string>();
+  const existingTitles = await client.fetch<string[]>(
+    `*[_type == "event" && defined(title)].title`
+  );
+  const claimedTitles = new Set(
+    (existingTitles || []).map((t) => normalizeTitle(t))
+  );
+
   let skipped = 0;
   let errors = 0;
   let synced = 0;
 
-  const allRaw: SerpGoogleEvent[] = [];
-  for (const city of TARGET_CITIES) {
+  cityLoop: for (const city of TARGET_CITIES) {
+    if (synced >= MAX_EVENTS_PER_SYNC) break;
+
+    let batch: SerpGoogleEvent[];
     try {
-      const batch = await fetchEventsForCity(city);
-      allRaw.push(...batch);
+      batch = await fetchEventsForCity(city);
     } catch (e) {
       console.error(`[serpapi] City "${city}" fetch failed:`, e);
       errors++;
-    }
-  }
-
-  for (const ev of allRaw) {
-    const title = ev.title?.trim() || '';
-    if (!title) {
-      skipped++;
       continue;
     }
 
-    const startIso = parseStartIso(ev.date);
-    if (!startIso) {
-      skipped++;
-      continue;
-    }
+    for (const raw of batch) {
+      if (synced >= MAX_EVENTS_PER_SYNC) break cityLoop;
 
-    const key = dedupeKey(title, startIso);
-    if (seenKeys.has(key)) {
-      skipped++;
-      continue;
-    }
-    seenKeys.add(key);
+      const ev: SerpGoogleEvent = { ...raw, _searchCity: city };
 
-    const { venue: venueFromAddr, addressLine, city: cityParsed } = parseAddressLines(
-      ev.address
-    );
-    const cityOut = cityParsed || ev._searchCity || '';
-    const venueName = ev.venue?.name?.trim() || venueFromAddr;
+      const title = ev.title?.trim() || '';
+      if (!title) {
+        skipped++;
+        continue;
+      }
 
-    const imageUrl = ev.image || ev.thumbnail;
-    let imageAssetId: string | undefined;
-    if (imageUrl) {
+      const normTitle = normalizeTitle(title);
+      if (claimedTitles.has(normTitle)) {
+        skipped++;
+        continue;
+      }
+
+      const { venue: venueFromAddr, addressLine, city: cityParsed } = parseAddressLines(
+        ev.address
+      );
+      const venueName = ev.venue?.name?.trim() || venueFromAddr;
+      const description = stripHtml(ev.description || '').slice(0, 30000);
+
+      if (!matchesHappyTimesCategories(title, description, venueName)) {
+        skipped++;
+        continue;
+      }
+
+      const startIso = parseStartIso(ev.date);
+      if (!startIso) {
+        skipped++;
+        continue;
+      }
+
+      const imageUrl = ev.image || ev.thumbnail;
+      const tKey = titleKeyHex(title).slice(0, 16);
+      let imageAssetId: string | undefined;
+      if (imageUrl) {
+        try {
+          imageAssetId = await uploadImageToSanity(
+            imageUrl,
+            `google-events-${tKey}.jpg`
+          );
+        } catch (e) {
+          console.warn(
+            `[serpapi] Image upload failed for "${title}":`,
+            e instanceof Error ? e.message : e
+          );
+        }
+      }
+
+      const ticketUrl = pickTicketUrl(ev);
+      const price = pickPrice(ev);
+      const cityOut = cityParsed || ev._searchCity || '';
+
+      const doc: Record<string, unknown> = {
+        _type: 'event',
+        _id: documentIdFromTitle(title),
+        title,
+        slug: {
+          _type: 'slug',
+          current: slugFromTitle(title),
+        },
+        date: startIso,
+        venue: venueName,
+        address: addressLine,
+        city: cityOut,
+        description,
+        price,
+        categories: ['google_events', 'Events'],
+        isActive: true,
+        source: 'google_events',
+      };
+
+      if (ticketUrl) {
+        doc.ticketUrl = ticketUrl;
+      }
+
+      if (imageAssetId) {
+        doc.image = {
+          _type: 'image',
+          asset: {
+            _type: 'reference',
+            _ref: imageAssetId,
+          },
+        };
+      }
+
       try {
-        imageAssetId = await uploadImageToSanity(
-          imageUrl,
-          `google-events-${key.slice(0, 16)}.jpg`
+        await client.createOrReplace(
+          doc as Parameters<typeof client.createOrReplace>[0]
         );
+        synced++;
+        claimedTitles.add(normTitle);
       } catch (e) {
-        console.warn(
-          `[serpapi] Image upload failed for "${title}":`,
+        errors++;
+        console.error(
+          `[serpapi] Failed to upsert event "${title}":`,
           e instanceof Error ? e.message : e
         );
       }
-    }
-
-    const ticketUrl = pickTicketUrl(ev);
-    const price = pickPrice(ev);
-    const description = stripHtml(ev.description || '').slice(0, 30000);
-
-    const doc: Record<string, unknown> = {
-      _type: 'event',
-      _id: documentIdFromDedupe(key),
-      title,
-      slug: {
-        _type: 'slug',
-        current: slugFromDedupe(key),
-      },
-      date: startIso,
-      venue: venueName,
-      address: addressLine,
-      city: cityOut,
-      description,
-      price,
-      categories: ['google_events', 'Events'],
-      isActive: true,
-      source: 'google_events',
-    };
-
-    if (ticketUrl) {
-      doc.ticketUrl = ticketUrl;
-    }
-
-    if (imageAssetId) {
-      doc.image = {
-        _type: 'image',
-        asset: {
-          _type: 'reference',
-          _ref: imageAssetId,
-        },
-      };
-    }
-
-    try {
-      await client.createOrReplace(
-        doc as Parameters<typeof client.createOrReplace>[0]
-      );
-      synced++;
-    } catch (e) {
-      errors++;
-      console.error(
-        `[serpapi] Failed to upsert event "${title}":`,
-        e instanceof Error ? e.message : e
-      );
     }
   }
 
