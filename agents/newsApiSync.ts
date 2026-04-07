@@ -16,32 +16,52 @@ const NEWS_API_EVERYTHING = 'https://newsapi.org/v2/everything';
 
 const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'newsApiRewrite.prompt.txt');
 
-/** Broad Phoenix-local query; last 24h + English + relevancy sort. */
-const PHOENIX_QUERY = [
-  '("Phoenix" OR "Maricopa County" OR Scottsdale OR Tempe OR Mesa OR Glendale OR Chandler)',
-  'AND',
-  '("Arizona" OR AZ)',
+/**
+ * Primary: broad location (AZ / Valley cities) + wide topic OR-list.
+ * AI scoring still filters for Phoenix-area relevance.
+ */
+const NEWSAPI_PRIMARY_Q = [
+  '(',
+  ['Arizona', 'Phoenix', 'Scottsdale'].join(' OR '),
+  ')',
   'AND',
   '(',
   [
     'business',
     'economy',
-    'development',
-    '"real estate"',
-    'city council',
+    'sports',
     'community',
     'tourism',
     'entertainment',
+    'development',
+    'culture',
+    'events',
+    'housing',
+    'technology',
+    'health',
+    'education',
+    'government',
+    'travel',
+    'jobs',
+    'climate',
+    'restaurant',
+    'local',
+    'downtown',
+    'environment',
+    'infrastructure',
+    'university',
+    '"real estate"',
     'Suns',
     'Cardinals',
     'Diamondbacks',
-    'opening',
-    'closing',
-    'downtown',
-    'stadium',
+    'city',
+    'metro',
   ].join(' OR '),
   ')',
 ].join(' ');
+
+/** Used when primary search returns totalResults === 0. */
+const NEWSAPI_FALLBACK_Q = 'Arizona';
 
 /** Fast reject before AI — crime / tragedy / national politics noise. */
 const NEGATIVE_HEADLINE_RE =
@@ -185,23 +205,39 @@ export async function syncNewsApiToSanity(): Promise<{
   console.log(
     `[newsapi] Config: maxArticles=${max}, from=${from} (last 24h window end=now), sortBy=relevancy, language=en`
   );
-  console.log(`[newsapi] Calling NewsAPI GET ${NEWS_API_EVERYTHING} (pageSize=${max})…`);
 
-  const { data, status } = await axios.get<NewsApiResponse>(NEWS_API_EVERYTHING, {
-    params: {
-      q: PHOENIX_QUERY,
-      language: 'en',
-      sortBy: 'relevancy',
-      pageSize: max,
-      from,
-      apiKey: config.newsApi.apiKey,
-    },
-    validateStatus: () => true,
-  });
+  const callEverything = async (q: string, label: string) => {
+    console.log(`[newsapi] ${label}: calling GET ${NEWS_API_EVERYTHING} (pageSize=${max})`);
+    console.log(`[newsapi] ${label}: NewsAPI param q (exact string sent)= ${q}`);
 
-  console.log(
-    `[newsapi] NewsAPI response: httpStatus=${status}, apiStatus=${data.status ?? 'n/a'}, totalResults=${data.totalResults ?? 'n/a'}`
-  );
+    const { data, status } = await axios.get<NewsApiResponse>(NEWS_API_EVERYTHING, {
+      params: {
+        q,
+        language: 'en',
+        sortBy: 'relevancy',
+        pageSize: max,
+        from,
+        apiKey: config.newsApi.apiKey,
+      },
+      validateStatus: () => true,
+    });
+
+    console.log(
+      `[newsapi] ${label}: response httpStatus=${status}, apiStatus=${data.status ?? 'n/a'}, totalResults=${data.totalResults ?? 'n/a'}, articlesInPage=${data.articles?.length ?? 'n/a'}`
+    );
+    return { data, status };
+  };
+
+  let { data, status } = await callEverything(NEWSAPI_PRIMARY_Q, 'primary search');
+
+  if (status === 200 && data.status === 'ok' && (data.totalResults ?? 0) === 0) {
+    console.log(
+      '[newsapi] totalResults is 0 for primary query — retrying with fallback q (Arizona only)…'
+    );
+    const second = await callEverything(NEWSAPI_FALLBACK_Q, 'fallback search');
+    data = second.data;
+    status = second.status;
+  }
 
   if (status !== 200 || data.status !== 'ok' || !data.articles) {
     const errMsg = data.message || data.code || `NewsAPI error (HTTP ${status})`;
