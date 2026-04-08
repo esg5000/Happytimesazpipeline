@@ -5,6 +5,7 @@ import { Bot, webhookCallback } from 'grammy';
 import { config, getTelegramWebhookFullUrl } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
+import { syncDispensariesToSanity } from './agents/syncDispensaries';
 import { transcribeAudio } from './agents/transcribeAgent';
 import {
   countPostDocuments,
@@ -254,16 +255,17 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       typeof raw === 'string' ? raw.trim() : '';
     const isDaemonCommand = (
       s: string
-    ): s is '/publish' | '/new' | '/start' | 'syncEvents' | 'syncNews' =>
+    ): s is '/publish' | '/new' | '/start' | 'syncEvents' | 'syncNews' | 'syncDispensaries' =>
       s === '/publish' ||
       s === '/new' ||
       s === '/start' ||
       s === 'syncEvents' ||
-      s === 'syncNews';
+      s === 'syncNews' ||
+      s === 'syncDispensaries';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents" | "syncNews", "notes"?: string } — syncEvents=SerpApi events, syncNews=SerpApi Google News (SERPAPI_API_KEY); with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents" | "syncNews" | "syncDispensaries", "notes"?: string } — syncEvents=SerpApi events, syncNews=SerpApi Google News, syncDispensaries=SerpApi Google Maps dispensaries (SERPAPI_API_KEY); with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
       });
       return;
     }
@@ -309,6 +311,29 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncEvents failed:', msg);
+        res.status(500).json({ error: msg });
+      }
+      return;
+    }
+
+    if (command === 'syncDispensaries') {
+      if (!config.serpApi.apiKey) {
+        res.status(503).json({
+          error: 'SERPAPI_API_KEY is not configured',
+        });
+        return;
+      }
+      try {
+        console.log('[api] /api/command syncDispensaries → syncDispensariesToSanity (SerpApi Google Maps)');
+        const result = await syncDispensariesToSanity();
+        res.json({
+          ok: true,
+          command: 'syncDispensaries',
+          ...result,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command syncDispensaries failed:', msg);
         res.status(500).json({ error: msg });
       }
       return;
