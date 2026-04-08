@@ -404,17 +404,17 @@ export async function publishArticleToSanity(
 }
 
 /**
- * Publishes a NewsAPI-sourced article: section `news`, source labels, published + active.
+ * Publishes a SerpApi Google News wire article: section `news`, source `google_news`, published + active.
  */
-export async function publishNewsApiArticleToSanity(
+export async function publishGoogleNewsArticleToSanity(
   article: Article,
   heroImageAssetId: string | undefined,
   originalSourceUrl: string
 ): Promise<string> {
   console.log(
-    `[newsapi][sanity] publishNewsApiArticleToSanity entered: title="${article.title.slice(0, 80)}${article.title.length > 80 ? '…' : ''}" slug=${article.slug} hero=${heroImageAssetId ? 'yes' : 'no'}`
+    `[google-news][sanity] publishGoogleNewsArticleToSanity entered: title="${article.title.slice(0, 80)}${article.title.length > 80 ? '…' : ''}" slug=${article.slug} hero=${heroImageAssetId ? 'yes' : 'no'}`
   );
-  console.log(`[newsapi][sanity] originalSourceUrl=${originalSourceUrl}`);
+  console.log(`[google-news][sanity] originalSourceUrl=${originalSourceUrl}`);
 
   const sanityClient = getSanityClient();
   const primarySection = 'news';
@@ -426,7 +426,7 @@ export async function publishNewsApiArticleToSanity(
   const portableTextBody = markdownToPortableText(article.bodyMarkdown);
 
   if (!Array.isArray(portableTextBody) || portableTextBody.length === 0) {
-    throw new Error('markdownToPortableText returned invalid body for NewsAPI article');
+    throw new Error('markdownToPortableText returned invalid body for Google News article');
   }
 
   let categoryStrings = article.categories || [];
@@ -475,12 +475,12 @@ export async function publishNewsApiArticleToSanity(
         _type: 'reference' as const,
         _ref: categoryDocs[0]._id,
       };
-      console.log(`✅ NewsAPI: category reference for: ${primarySection}`);
+      console.log(`✅ Google News: category reference for: ${primarySection}`);
     } else {
       console.warn(`⚠️  No Sanity category document for slug "${primarySection}"`);
     }
   } catch (error: unknown) {
-    console.error('❌ NewsAPI category fetch error:', error);
+    console.error('❌ Google News category fetch error:', error);
   }
 
   const publishedAt = new Date().toISOString();
@@ -506,8 +506,8 @@ export async function publishNewsApiArticleToSanity(
     tags: article.tags,
     body: portableTextBody,
     section: primarySection,
-    contentSource: 'newsapi',
-    source: 'newsapi',
+    contentSource: 'google_news',
+    source: 'google_news',
     originalSourceUrl,
     isActive: true,
     status: 'published',
@@ -528,25 +528,25 @@ export async function publishNewsApiArticleToSanity(
 
   try {
     console.log(
-      `[newsapi][sanity] sanityClient.create() calling… _id=${baseDoc._id} section=${primarySection} contentSource=newsapi isActive=true status=published`
+      `[google-news][sanity] sanityClient.create() calling… _id=${baseDoc._id} section=${primarySection} contentSource=google_news isActive=true status=published`
     );
     const result = await sanityClient.create(baseDoc);
-    console.log(`[newsapi][sanity] sanityClient.create() ok documentId=${result._id}`);
+    console.log(`[google-news][sanity] sanityClient.create() ok documentId=${result._id}`);
     if (categoryRef) {
-      console.log(`[newsapi][sanity] Patching category ref onto ${result._id}…`);
+      console.log(`[google-news][sanity] Patching category ref onto ${result._id}…`);
       await new Promise((r) => setTimeout(r, 500));
       await sanityClient.patch(result._id).set({ category: categoryRef }).commit();
-      console.log(`[newsapi][sanity] Category patch committed`);
+      console.log(`[google-news][sanity] Category patch committed`);
     }
     return result._id;
   } catch (error: unknown) {
-    console.error('[newsapi][sanity] sanityClient.create or patch failed:', error);
+    console.error('[google-news][sanity] sanityClient.create or patch failed:', error);
     throw error;
   }
 }
 
 /**
- * URLs already ingested from NewsAPI (dedupe).
+ * URLs already ingested from wire sync (NewsAPI / Google News dedupe).
  */
 export async function getExistingNewsSourceUrls(): Promise<Set<string>> {
   const sanityClient = getSanityClient();

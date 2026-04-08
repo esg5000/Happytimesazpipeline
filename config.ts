@@ -31,15 +31,25 @@ export const config = {
   eventsCleanup: {
     cronSchedule: process.env.EVENTS_CLEANUP_CRON || '0 1 * * *',
   },
-  /** NewsAPI.org — Phoenix local news rewrite pipeline */
-  newsApi: {
-    apiKey: (process.env.NEWS_API_KEY || '').trim(),
-    /** Default 10:00 daily (server timezone) */
-    cronSchedule: process.env.NEWS_API_CRON || '0 10 * * *',
-    /** Default 1 for testing; raise via NEWS_API_MAX_ARTICLES (capped at 10). */
-    maxArticles: Math.min(
+  /**
+   * SerpApi Google News → Phoenix local rewrite. Uses SERPAPI_API_KEY (same as events).
+   * GOOGLE_NEWS_CRON / NEWS_API_CRON: default 10:00 daily.
+   */
+  googleNews: {
+    cronSchedule:
+      process.env.GOOGLE_NEWS_CRON || process.env.NEWS_API_CRON || '0 10 * * *',
+    /** Stories to pull from SerpApi per run (max 10). */
+    maxFetch: Math.min(
       10,
-      Math.max(1, parseInt(process.env.NEWS_API_MAX_ARTICLES || '1', 10) || 1)
+      Math.max(1, parseInt(process.env.GOOGLE_NEWS_MAX_FETCH || '10', 10) || 10)
+    ),
+    /** After AI scoring (≥7), publish at most this many per run (1–3). */
+    maxPublishPerRun: Math.min(
+      3,
+      Math.max(
+        1,
+        parseInt(process.env.GOOGLE_NEWS_MAX_PUBLISH || '3', 10) || 3
+      )
     ),
   },
   telegram: {

@@ -11,7 +11,7 @@ import { startTelegramWebhookExpress } from './telegramHttpServer';
 let scheduledPipelineRunning = false;
 let serpApiEventsSyncRunning = false;
 let eventsCleanupRunning = false;
-let newsApiSyncRunning = false;
+let googleNewsSyncRunning = false;
 
 /**
  * Scheduled daily batch only. Runs in the background; does not block Telegram HTTP handlers.
@@ -66,27 +66,27 @@ async function runScheduledSerpApiEventsSync(): Promise<void> {
 }
 
 /**
- * Daily NewsAPI → rewrite → Sanity (Phoenix local, max 10 / 24h).
+ * Daily SerpApi Google News → rewrite → Sanity (Phoenix local; uses SERPAPI_API_KEY).
  */
-async function runScheduledNewsApiSync(): Promise<void> {
-  if (!config.newsApi.apiKey) {
+async function runScheduledGoogleNewsSync(): Promise<void> {
+  if (!config.serpApi.apiKey) {
     return;
   }
-  if (newsApiSyncRunning) {
-    console.log('[newsapi] Skipping tick: previous NewsAPI sync still running');
+  if (googleNewsSyncRunning) {
+    console.log('[google-news] Skipping tick: previous Google News sync still running');
     return;
   }
-  newsApiSyncRunning = true;
+  googleNewsSyncRunning = true;
   try {
-    console.log('[newsapi] Starting NewsAPI → Sanity sync…');
+    console.log('[google-news] Starting SerpApi Google News → Sanity sync…');
     const { fetched, published, skipped, errors } = await syncNewsApiToSanity();
     console.log(
-      `[newsapi] Done — fetched: ${fetched}, published: ${published}, skipped: ${skipped}, errors: ${errors}`
+      `[google-news] Done — fetched: ${fetched}, published: ${published}, skipped: ${skipped}, errors: ${errors}`
     );
   } catch (err) {
-    console.error('[newsapi] Sync failed:', err);
+    console.error('[google-news] Sync failed:', err);
   } finally {
-    newsApiSyncRunning = false;
+    googleNewsSyncRunning = false;
   }
 }
 
@@ -146,12 +146,12 @@ async function main(): Promise<void> {
     `[scheduler] Past-events cleanup cron registered (${cleanupCron}, server local timezone)`
   );
 
-  const newsCron = config.newsApi.cronSchedule;
-  cron.schedule(newsCron, () => {
-    void runScheduledNewsApiSync();
+  const googleNewsCron = config.googleNews.cronSchedule;
+  cron.schedule(googleNewsCron, () => {
+    void runScheduledGoogleNewsSync();
   });
   console.log(
-    `[scheduler] NewsAPI sync cron registered (${newsCron}, default 10:00 daily; server local timezone)`
+    `[scheduler] SerpApi Google News sync cron registered (${googleNewsCron}, default 10:00 daily; server local timezone)`
   );
 
   const bot = new Bot(config.telegram.botToken);
@@ -167,8 +167,10 @@ if (require.main === module) {
 
 export {
   main,
-  runScheduledNewsApiSync,
+  runScheduledGoogleNewsSync,
   runScheduledPastEventsCleanup,
   runScheduledSerpApiEventsSync,
   runScheduledPipeline,
 };
+/** Alias for older imports — same as runScheduledGoogleNewsSync */
+export { runScheduledGoogleNewsSync as runScheduledNewsApiSync };

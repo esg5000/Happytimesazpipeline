@@ -6,82 +6,34 @@ import { config } from '../config';
 import {
   getExistingNewsSourceUrls,
   getExistingSlugs,
-  publishNewsApiArticleToSanity,
+  publishGoogleNewsArticleToSanity,
   uploadImageToSanity,
 } from './sanityPublisher';
 import { Article, validateArticle } from '../utils/validator';
 import { ensureUniqueSlug, generateSlug } from '../utils/slug';
 
-const NEWS_API_EVERYTHING = 'https://newsapi.org/v2/everything';
+const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
-const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'newsApiRewrite.prompt.txt');
+const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.prompt.txt');
 
-/**
- * Primary: broad location (AZ / Valley cities) + wide topic OR-list.
- * AI scoring still filters for Phoenix-area relevance.
- */
-const NEWSAPI_PRIMARY_Q = [
-  '(',
-  ['Arizona', 'Phoenix', 'Scottsdale'].join(' OR '),
-  ')',
-  'AND',
-  '(',
-  [
-    'business',
-    'economy',
-    'sports',
-    'community',
-    'tourism',
-    'entertainment',
-    'development',
-    'culture',
-    'events',
-    'housing',
-    'technology',
-    'health',
-    'education',
-    'government',
-    'travel',
-    'jobs',
-    'climate',
-    'restaurant',
-    'local',
-    'downtown',
-    'environment',
-    'infrastructure',
-    'university',
-    '"real estate"',
-    'Suns',
-    'Cardinals',
-    'Diamondbacks',
-    'city',
-    'metro',
-  ].join(' OR '),
-  ')',
-].join(' ');
+const PRIMARY_Q = 'Phoenix Arizona local news';
+const FALLBACK_Q = 'Arizona news';
 
-/** Used when primary search returns totalResults === 0. */
-const NEWSAPI_FALLBACK_Q = 'Arizona';
-
-/** Fast reject before AI — crime / tragedy / national politics noise. */
+/** Fast reject before AI — crime / tragedy / politics / accidents. */
 const NEGATIVE_HEADLINE_RE =
-  /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|terror(ist|ism)?|suicide|sexual assault|kidnapp|rape\b|school\s*shooting|capitol\s*riot|impeachment|white\s*house\s*briefing|congressional\s*hearing|supreme\s*court\s*(rules?|decides)/i;
+  /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|terror(ist|ism)?|suicide|sexual assault|kidnap|rape\b|school\s*shooting|capitol\s*riot|impeachment|white\s*house|congressional\s*hearing|supreme\s*court\s*(rules?|decides)|\bGOP\b|\bDNC\b|presidential\s*campaign|midterm\s*election/i;
 
-type NewsApiArticle = {
+export type SerpGoogleNewsItem = {
   title: string;
-  description: string | null;
-  url: string;
-  urlToImage: string | null;
-  publishedAt: string;
-  content?: string | null;
+  link: string;
+  thumbnail: string | null;
+  snippet?: string;
 };
 
-type NewsApiResponse = {
-  status: string;
-  totalResults?: number;
-  articles?: NewsApiArticle[];
-  message?: string;
-  code?: string;
+type SerpGoogleNewsResponse = {
+  search_metadata?: { status?: string };
+  error?: string;
+  news_results?: unknown[];
 };
 
 type ScoreResult = {
@@ -89,6 +41,48 @@ type ScoreResult = {
   exclude: boolean;
   excludeReason?: string;
 };
+
+function flattenGoogleNewsResults(raw: unknown[] | undefined): SerpGoogleNewsItem[] {
+  const out: SerpGoogleNewsItem[] = [];
+  const seen = new Set<string>();
+
+  const push = (title: unknown, link: unknown, thumbnail?: unknown, snippet?: unknown) => {
+    if (typeof title !== 'string' || typeof link !== 'string' || !link.startsWith('http')) return;
+    if (seen.has(link)) return;
+    seen.add(link);
+    out.push({
+      title,
+      link,
+      thumbnail: typeof thumbnail === 'string' ? thumbnail : null,
+      snippet: typeof snippet === 'string' ? snippet : undefined,
+    });
+  };
+
+  for (const entry of raw || []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+
+    if (e.highlight && typeof e.highlight === 'object') {
+      const h = e.highlight as Record<string, unknown>;
+      push(h.title, h.link, h.thumbnail, h.snippet);
+    }
+
+    if (Array.isArray(e.stories)) {
+      for (const st of e.stories) {
+        if (st && typeof st === 'object') {
+          const s = st as Record<string, unknown>;
+          push(s.title, s.link, s.thumbnail, s.snippet);
+        }
+      }
+    }
+
+    if (!Array.isArray(e.stories) && e.title && e.link) {
+      push(e.title, e.link, e.thumbnail, e.snippet);
+    }
+  }
+
+  return out;
+}
 
 async function openAiJson<T>(system: string, user: string): Promise<T> {
   const response = await axios.post(
@@ -116,20 +110,20 @@ async function openAiJson<T>(system: string, user: string): Promise<T> {
   return JSON.parse(cleaned) as T;
 }
 
-async function scoreAndGate(item: NewsApiArticle, label: string): Promise<ScoreResult> {
-  const text = [item.title, item.description || '', item.content || ''].join('\n\n').slice(0, 12000);
-  console.log(`[newsapi] ${label} → OpenAI: relevance scoring + exclude gate starting…`);
+async function scoreAndGate(item: SerpGoogleNewsItem, label: string): Promise<ScoreResult> {
+  const text = [item.title, item.snippet || ''].join('\n\n').slice(0, 12000);
+  console.log(`[google-news] ${label} → OpenAI: relevance scoring + topic/exclude gate…`);
 
-  const system = `You are an editor for a Phoenix AZ local lifestyle site HappyTimesAZ.
+  const system = `You are an editor for HappyTimesAZ, a Phoenix AZ local lifestyle site.
 
-Score how relevant this story is to **Phoenix-area locals** (1-10): daily life, neighborhoods, local business, real estate, city projects, Valley economy, AZ pro sports (Suns, Cardinals, Diamondbacks), local entertainment, tourism, major community stories.
+Score how relevant and valuable this story is for **Phoenix-area locals** (1–10). Strongly prefer topics: **local business**, **economy**, **sports** (incl. Suns, Cardinals, Diamondbacks), **real estate / development**, **entertainment**, **tourism**, **community** news.
 
-Set exclude=true if the story is primarily: crime/violence/tragedy, serious accidents, national politics (Congress/presidential campaigns/federal policy as main topic), war/international crisis, or gossip with no local Phoenix tie.
+Set exclude=true if the story is primarily about: **crime**, **violence**, **tragedy**, **serious accidents**, **national or partisan politics** (Congress, campaigns, federal drama) as the main angle, **war**, or **celebrity gossip** with no Arizona/Phoenix tie.
 
 Return JSON only:
 {"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <short string or omit>}`;
 
-  const user = `Article:\n${text}\n\nSource URL: ${item.url}`;
+  const user = `Headline & snippet:\n${text}\n\nSource URL: ${item.link}`;
 
   const raw = await openAiJson<ScoreResult>(system, user);
   const relevanceScore = Math.min(10, Math.max(1, Math.round(Number(raw.relevanceScore)) || 1));
@@ -139,20 +133,19 @@ Return JSON only:
     excludeReason: raw.excludeReason,
   };
   console.log(
-    `[newsapi] ${label} → score result: relevanceScore=${result.relevanceScore}, exclude=${result.exclude}` +
+    `[google-news] ${label} → score: relevanceScore=${result.relevanceScore}, exclude=${result.exclude}` +
       (result.excludeReason ? `, excludeReason="${result.excludeReason}"` : '')
   );
   return result;
 }
 
-async function rewriteArticle(item: NewsApiArticle, label: string): Promise<Article> {
-  console.log(`[newsapi] ${label} → AI rewrite starting (model=${config.openai.model})`);
+async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<Article> {
+  console.log(`[google-news] ${label} → AI rewrite starting (model=${config.openai.model})`);
   const system = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
   const basis = [
     `Title: ${item.title}`,
-    item.description ? `Summary: ${item.description}` : '',
-    item.content ? `Detail: ${item.content.slice(0, 8000)}` : '',
-    `Link: ${item.url}`,
+    item.snippet ? `Snippet: ${item.snippet}` : '',
+    `Link: ${item.link}`,
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -170,23 +163,55 @@ async function rewriteArticle(item: NewsApiArticle, label: string): Promise<Arti
 
   const validation = validateArticle(parsed);
   if (!validation.success) {
-    throw new Error(`News rewrite validation failed: ${validation.errors?.join(', ')}`);
+    throw new Error(`Rewrite validation failed: ${validation.errors?.join(', ')}`);
   }
 
   console.log(
-    `[newsapi] ${label} → AI rewrite finished: title="${validation.data!.title.slice(0, 80)}${validation.data!.title.length > 80 ? '…' : ''}" slug=${validation.data!.slug}`
+    `[google-news] ${label} → AI rewrite done: slug=${validation.data!.slug}`
   );
   return validation.data!;
 }
 
-function passesKeywordGate(item: NewsApiArticle): boolean {
-  const blob = `${item.title}\n${item.description || ''}`;
+function passesKeywordGate(item: SerpGoogleNewsItem): boolean {
+  const blob = `${item.title}\n${item.snippet || ''}`;
   if (NEGATIVE_HEADLINE_RE.test(blob)) return false;
   return true;
 }
 
+async function fetchSerpGoogleNews(
+  q: string,
+  label: string
+): Promise<{ data: SerpGoogleNewsResponse; httpStatus: number }> {
+  console.log(`[google-news] ${label}: calling GET ${SERPAPI_SEARCH}`);
+  console.log(`[google-news] ${label}: params engine=google_news, gl=us, hl=en`);
+  console.log(`[google-news] ${label}: q (exact)= ${q}`);
+
+  const { data, status } = await axios.get<SerpGoogleNewsResponse>(SERPAPI_SEARCH, {
+    params: {
+      engine: 'google_news',
+      api_key: config.serpApi.apiKey,
+      q,
+      gl: 'us',
+      hl: 'en',
+    },
+    validateStatus: () => true,
+  });
+
+  const metaStatus = data.search_metadata?.status ?? 'n/a';
+  const n = data.news_results?.length ?? 0;
+  console.log(
+    `[google-news] ${label}: httpStatus=${status}, search_metadata.status=${metaStatus}, news_results.length=${n}`
+  );
+  if (data.error) {
+    console.warn(`[google-news] ${label}: SerpApi error field: ${data.error}`);
+  }
+
+  return { data, httpStatus: status };
+}
+
 /**
- * Fetches Phoenix-area headlines from NewsAPI (24h), scores with AI (≥7 + not excluded), rewrites, publishes to Sanity.
+ * SerpApi Google News → score up to 10 headlines → keep top 1–3 with score ≥ 7 → rewrite → Sanity (`news`, `google_news`).
+ * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
   fetched: number;
@@ -194,165 +219,156 @@ export async function syncNewsApiToSanity(): Promise<{
   skipped: number;
   errors: number;
 }> {
-  if (!config.newsApi.apiKey) {
-    throw new Error('NEWS_API_KEY is not set');
+  if (!config.serpApi.apiKey) {
+    throw new Error('SERPAPI_API_KEY is not set');
   }
 
-  const max = Math.min(10, config.newsApi.maxArticles);
-  const from = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const maxFetch = config.googleNews.maxFetch;
+  const maxPublish = config.googleNews.maxPublishPerRun;
 
-  console.log('[newsapi] ========== syncNewsApiToSanity start ==========');
+  console.log('[google-news] ========== syncNewsApiToSanity (SerpApi Google News) start ==========');
   console.log(
-    `[newsapi] Config: maxArticles=${max}, from=${from} (last 24h window end=now), sortBy=relevancy, language=en`
+    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (top stories scoring ≥7)`
   );
 
-  const callEverything = async (q: string, label: string) => {
-    console.log(`[newsapi] ${label}: calling GET ${NEWS_API_EVERYTHING} (pageSize=${max})`);
-    console.log(`[newsapi] ${label}: NewsAPI param q (exact string sent)= ${q}`);
+  let { data, httpStatus } = await fetchSerpGoogleNews(PRIMARY_Q, 'primary');
 
-    const { data, status } = await axios.get<NewsApiResponse>(NEWS_API_EVERYTHING, {
-      params: {
-        q,
-        language: 'en',
-        sortBy: 'relevancy',
-        pageSize: max,
-        from,
-        apiKey: config.newsApi.apiKey,
-      },
-      validateStatus: () => true,
-    });
-
-    console.log(
-      `[newsapi] ${label}: response httpStatus=${status}, apiStatus=${data.status ?? 'n/a'}, totalResults=${data.totalResults ?? 'n/a'}, articlesInPage=${data.articles?.length ?? 'n/a'}`
+  if (httpStatus !== 200 || data.error) {
+    throw new Error(
+      data.error || `SerpApi Google News HTTP ${httpStatus}`
     );
-    return { data, status };
-  };
+  }
 
-  let { data, status } = await callEverything(NEWSAPI_PRIMARY_Q, 'primary search');
+  let flat = flattenGoogleNewsResults(data.news_results).slice(0, maxFetch);
 
-  if (status === 200 && data.status === 'ok' && (data.totalResults ?? 0) === 0) {
-    console.log(
-      '[newsapi] totalResults is 0 for primary query — retrying with fallback q (Arizona only)…'
-    );
-    const second = await callEverything(NEWSAPI_FALLBACK_Q, 'fallback search');
+  if (flat.length === 0) {
+    console.log('[google-news] No results for primary q — trying fallback q…');
+    const second = await fetchSerpGoogleNews(FALLBACK_Q, 'fallback');
+    if (second.httpStatus !== 200 || second.data.error) {
+      throw new Error(second.data.error || `SerpApi fallback HTTP ${second.httpStatus}`);
+    }
     data = second.data;
-    status = second.status;
+    flat = flattenGoogleNewsResults(data.news_results).slice(0, maxFetch);
   }
 
-  if (status !== 200 || data.status !== 'ok' || !data.articles) {
-    const errMsg = data.message || data.code || `NewsAPI error (HTTP ${status})`;
-    console.error(`[newsapi] NewsAPI request failed or empty articles: ${errMsg}`);
-    throw new Error(errMsg);
-  }
-
-  const returnedCount = data.articles.length;
-  console.log(`[newsapi] Stories returned in this page: ${returnedCount} (capped by pageSize=${max})`);
+  const fetched = flat.length;
+  console.log(`[google-news] Flattened stories to process: ${fetched} (cap maxFetch=${maxFetch})`);
 
   const existingUrls = await getExistingNewsSourceUrls();
   const existingSlugs = await getExistingSlugs();
   console.log(
-    `[newsapi] Dedup context: ${existingUrls.size} existing originalSourceUrl(s) in Sanity, ${existingSlugs.length} existing slug(s)`
+    `[google-news] Dedup: ${existingUrls.size} existing URL(s) in Sanity, ${existingSlugs.length} slug(s)`
   );
 
-  let published = 0;
+  type Scored = { item: SerpGoogleNewsItem; gate: ScoreResult; label: string };
+  const scored: Scored[] = [];
   let skipped = 0;
   let errors = 0;
 
-  const articles = data.articles.slice(0, max);
-  const fetched = articles.length;
-
-  for (let i = 0; i < articles.length; i++) {
-    const item = articles[i];
-    const label = `story ${i + 1}/${articles.length}`;
+  for (let i = 0; i < flat.length; i++) {
+    const item = flat[i];
+    const label = `candidate ${i + 1}/${flat.length}`;
 
     console.log(
-      `[newsapi] --- ${label} --- title="${(item.title || '').slice(0, 100)}${(item.title || '').length > 100 ? '…' : ''}"`
+      `[google-news] --- ${label} --- "${item.title.slice(0, 100)}${item.title.length > 100 ? '…' : ''}"`
     );
-    console.log(`[newsapi] ${label} url=${item.url || '(missing)'}`);
+    console.log(`[google-news] ${label} link=${item.link}`);
 
-    if (!item.url || !item.title) {
-      console.log(`[newsapi] ${label} SKIP: missing url or title`);
-      skipped++;
-      continue;
-    }
-
-    if (existingUrls.has(item.url)) {
-      console.log(`[newsapi] ${label} SKIP: duplicate originalSourceUrl already in Sanity`);
+    if (existingUrls.has(item.link)) {
+      console.log(`[google-news] ${label} SKIP: URL already in Sanity`);
       skipped++;
       continue;
     }
 
     if (!passesKeywordGate(item)) {
-      console.log(`[newsapi] ${label} SKIP: keyword gate (crime/tragedy/politics headline filter)`);
+      console.log(`[google-news] ${label} SKIP: keyword gate`);
       skipped++;
       continue;
     }
 
     try {
       const gate = await scoreAndGate(item, label);
-      console.log(
-        `[newsapi] ${label} relevanceScore=${gate.relevanceScore} (need ≥7), exclude=${gate.exclude}`
-      );
-
-      if (gate.exclude) {
+      if (gate.exclude || gate.relevanceScore < 7) {
         console.log(
-          `[newsapi] ${label} SKIP: AI exclude gate (${gate.excludeReason || 'no reason given'})`
+          `[google-news] ${label} SKIP: exclude=${gate.exclude}, score=${gate.relevanceScore} (need ≥7)`
         );
         skipped++;
         continue;
       }
-      if (gate.relevanceScore < 7) {
-        console.log(`[newsapi] ${label} SKIP: relevanceScore ${gate.relevanceScore} < 7`);
-        skipped++;
-        continue;
-      }
-
-      console.log(
-        `[newsapi] ${label} SELECTED for publish pipeline (score ${gate.relevanceScore} ≥ 7, not excluded)`
+      scored.push({ item, gate, label });
+    } catch (e) {
+      errors++;
+      console.error(
+        `[google-news] ${label} scoring ERROR:`,
+        e instanceof Error ? e.message : e
       );
+    }
+  }
 
-      const article = await rewriteArticle(item, label);
+  scored.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  const toPublish = scored.slice(0, maxPublish);
+
+  console.log(
+    `[google-news] After scoring: ${scored.length} eligible (≥7, not excluded). Publishing top ${toPublish.length} (max ${maxPublish}):`
+  );
+  toPublish.forEach((s, idx) => {
+    console.log(
+      `[google-news]   #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 90)}`
+    );
+  });
+
+  if (scored.length > toPublish.length) {
+    skipped += scored.length - toPublish.length;
+    console.log(
+      `[google-news] ${scored.length - toPublish.length} eligible story/stories not published (beyond maxPublishPerRun)`
+    );
+  }
+
+  let published = 0;
+
+  for (let p = 0; p < toPublish.length; p++) {
+    const { item, label } = toPublish[p];
+    const pubLabel = `publish ${p + 1}/${toPublish.length}`;
+
+    try {
+      const article = await rewriteArticle(item, `${label} / ${pubLabel}`);
       article.slug = ensureUniqueSlug(article.slug || generateSlug(article.title), existingSlugs);
       existingSlugs.push(article.slug);
 
       let heroId: string | undefined;
-      if (item.urlToImage) {
-        console.log(`[newsapi] ${label} Hero image upload starting: ${item.urlToImage.slice(0, 80)}…`);
+      if (item.thumbnail) {
+        console.log(`[google-news] ${pubLabel} hero upload…`);
         try {
           heroId = await uploadImageToSanity(
-            item.urlToImage,
-            `newsapi-${article.slug.slice(0, 24)}.jpg`
+            item.thumbnail,
+            `google-news-${article.slug.slice(0, 24)}.jpg`
           );
-          console.log(`[newsapi] ${label} Hero image uploaded, asset _id=${heroId}`);
+          console.log(`[google-news] ${pubLabel} hero asset=${heroId}`);
         } catch (e) {
           console.warn(
-            `[newsapi] ${label} Hero upload failed (continuing without hero):`,
+            `[google-news] ${pubLabel} hero upload failed:`,
             e instanceof Error ? e.message : e
           );
         }
       } else {
-        console.log(`[newsapi] ${label} No urlToImage from NewsAPI; publishing without hero`);
+        console.log(`[google-news] ${pubLabel} no thumbnail; publishing without hero`);
       }
 
-      console.log(
-        `[newsapi] ${label} Calling Sanity publish: slug=${article.slug} originalUrl=${item.url}`
-      );
-      await publishNewsApiArticleToSanity(article, heroId, item.url);
-      existingUrls.add(item.url);
+      console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
+      await publishGoogleNewsArticleToSanity(article, heroId, item.link);
+      existingUrls.add(item.link);
       published++;
-      console.log(`[newsapi] ${label} Sanity publish completed ✓ title="${article.title}"`);
+      console.log(`[google-news] ${pubLabel} ✓ published: ${article.title}`);
     } catch (e) {
       errors++;
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[newsapi] ${label} ERROR: ${msg}`);
-      if (e instanceof Error && e.stack) {
-        console.error(`[newsapi] ${label} stack: ${e.stack}`);
-      }
+      console.error(`[google-news] ${pubLabel} ERROR: ${msg}`);
+      if (e instanceof Error && e.stack) console.error(e.stack);
     }
   }
 
   console.log(
-    `[newsapi] ========== syncNewsApiToSanity end: fetched=${fetched}, published=${published}, skipped=${skipped}, errors=${errors} ==========`
+    `[google-news] ========== end: fetched=${fetched}, published=${published}, skipped=${skipped}, errors=${errors} ==========`
   );
   return { fetched, published, skipped, errors };
 }

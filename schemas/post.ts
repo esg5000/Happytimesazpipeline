@@ -108,7 +108,8 @@ export default defineType({
       options: {
         list: [
           { title: 'Manual', value: 'manual' },
-          { title: 'NewsAPI', value: 'newsapi' },
+          { title: 'NewsAPI (legacy)', value: 'newsapi' },
+          { title: 'Google News (SerpApi)', value: 'google_news' },
         ],
         layout: 'radio'
       },
@@ -118,13 +119,13 @@ export default defineType({
       name: 'source',
       type: 'string',
       title: 'Ingest source label',
-      description: 'e.g. newsapi — set by automated news sync',
+      description: 'e.g. google_news, newsapi (legacy) — automated wire sync',
     }),
     defineField({
       name: 'originalSourceUrl',
       type: 'url',
       title: 'Original article URL',
-      description: 'Canonical URL from the wire (dedupe key for NewsAPI sync)',
+      description: 'Canonical URL from the wire (dedupe key for Google News / wire sync)',
     }),
     defineField({
       name: 'isActive',

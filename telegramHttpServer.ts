@@ -263,20 +263,20 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents" | "syncNews", "notes"?: string } — syncEvents=SerpApi events, syncNews=NewsAPI Phoenix news; with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
+          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents" | "syncNews", "notes"?: string } — syncEvents=SerpApi events, syncNews=SerpApi Google News (SERPAPI_API_KEY); with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
       });
       return;
     }
 
     if (command === 'syncNews') {
-      if (!config.newsApi.apiKey) {
+      if (!config.serpApi.apiKey) {
         res.status(503).json({
-          error: 'NEWS_API_KEY is not configured',
+          error: 'SERPAPI_API_KEY is not configured',
         });
         return;
       }
       try {
-        console.log('[api] /api/command syncNews → syncNewsApiToSanity');
+        console.log('[api] /api/command syncNews → syncNewsApiToSanity (SerpApi Google News)');
         const result = await syncNewsApiToSanity();
         res.json({
           ok: true,
