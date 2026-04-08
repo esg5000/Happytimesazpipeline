@@ -9,6 +9,7 @@
     "dev": "ts-node orchestrator.ts",
     "type-check": "tsc --noEmit",
     "repair": "ts-node scripts/repairPortableText.ts",
+    "cleanup-events": "ts-node scripts/cleanupEvents.ts",
     "pipeline": "npm run build && node dist/orchestrator.js",
     "telegram": "npm run build && node dist/telegramServer.js",
     "telegram:dev": "ts-node telegramServer.ts",
