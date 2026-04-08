@@ -16,12 +16,38 @@ const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
 const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.prompt.txt');
 
-const PRIMARY_Q = 'Phoenix Arizona local news';
-const FALLBACK_Q = 'Arizona news';
+/**
+ * Targeted SerpApi `q` strings: greater Phoenix metro + topic. Fetched in order until
+ * we have enough unique URLs (maxFetch). Last entry is a broad Valley fallback.
+ */
+export const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
+  // Metro clusters + community / lifestyle
+  'Phoenix Scottsdale Tempe feel good community stories Arizona',
+  'Mesa Chandler Gilbert local heroes charity volunteering Arizona',
+  'Glendale Peoria Surprise Goodyear positive community news Arizona',
+  'Sun City Fountain Hills Cave Creek Paradise Valley Arizona local community',
+  'Scottsdale Phoenix restaurant opening food dining Arizona',
+  'Phoenix Tempe Mesa arts culture museums Arizona',
+  'Chandler Gilbert Scottsdale local business entrepreneurs Arizona',
+  // Pro sports (local angle)
+  'Phoenix Suns Arizona',
+  'Arizona Cardinals Glendale',
+  'Arizona Diamondbacks Phoenix',
+  'Scottsdale Phoenix health wellness Arizona',
+  'Phoenix metro real estate development Arizona',
+  'Phoenix Scottsdale tourism attractions Arizona',
+  'Phoenix metro parks hiking outdoor recreation Arizona',
+  'Phoenix Arizona local people profiles inspiring stories',
+  // Local / state policy affecting daily life (not national partisan news)
+  'Arizona local government city council schools infrastructure housing policy',
+  'Phoenix Mesa education funding city policy Arizona',
+  // Broad Valley fallback if earlier queries return thin results
+  'Phoenix metro Arizona local lifestyle community',
+];
 
-/** Fast reject before AI — crime / tragedy / politics / accidents. */
+/** Fast reject before AI — crime, tragedy, serious accidents, national partisan frame (headline-level). */
 const NEGATIVE_HEADLINE_RE =
-  /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|terror(ist|ism)?|suicide|sexual assault|kidnap|rape\b|school\s*shooting|capitol\s*riot|impeachment|white\s*house|congressional\s*hearing|supreme\s*court\s*(rules?|decides)|\bGOP\b|\bDNC\b|presidential\s*campaign|midterm\s*election/i;
+  /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|deadly (crash|collision|wreck)|terror(ist|ism)?|suicide|sexual assault|kidnap|rape\b|school\s*shooting|armed robbery|stabbed|shot dead|police\s+shooting|charged with|sentenced to|arrested for|domestic violence|child abuse|overdose death|capitol\s*riot|january\s*6|impeachment|white\s*house|mar[- ]a[- ]lago|\bGOP\b|\bDNC\b|presidential\s*campaign|midterm\s*election|election\s*fraud|stop\s*the\s*steal|congressional\s*hearing|supreme\s*court\s*(rules?|decides)/i;
 
 export type SerpGoogleNewsItem = {
   title: string;
@@ -114,11 +140,11 @@ async function scoreAndGate(item: SerpGoogleNewsItem, label: string): Promise<Sc
   const text = [item.title, item.snippet || ''].join('\n\n').slice(0, 12000);
   console.log(`[google-news] ${label} → OpenAI: relevance scoring + topic/exclude gate…`);
 
-  const system = `You are an editor for HappyTimesAZ, a Phoenix AZ local lifestyle site.
+  const system = `You are an editor for HappyTimesAZ, a Phoenix AZ local lifestyle site covering the **greater Phoenix metro** (e.g. Phoenix, Scottsdale, Tempe, Mesa, Glendale, Peoria, Chandler, Gilbert, Surprise, Goodyear, Sun City, Fountain Hills, Cave Creek, Paradise Valley).
 
-Score how relevant and valuable this story is for **Phoenix-area locals** (1–10). Strongly prefer topics: **local business**, **economy**, **sports** (incl. Suns, Cardinals, Diamondbacks), **real estate / development**, **entertainment**, **tourism**, **community** news.
+Score how relevant and valuable this story is for **local readers** (1–10). **Strongly prefer** when the angle fits: feel-good **community** stories; **local heroes** and **charity**; **food & dining** openings; **arts & culture**; **local business** and **entrepreneurs**; **Phoenix Suns**, **Arizona Cardinals**, **Arizona Diamondbacks**; **health & wellness**; **real estate / development**; **tourism & attractions**; **parks & outdoor** activities; **local people** profiles; **Arizona / local policy** that affects daily life (**schools**, **city** decisions, **infrastructure**, **housing**, **local government** initiatives)—not national partisan noise.
 
-Set exclude=true if the story is primarily about: **crime**, **violence**, **tragedy**, **serious accidents**, **national or partisan politics** (Congress, campaigns, federal drama) as the main angle, **war**, or **celebrity gossip** with no Arizona/Phoenix tie.
+Set **exclude=true** if the story is mainly: **crime**, **violence**, **tragedy**, **serious accidents**; **national partisan politics**, **election controversies**, **divisive opinion** pieces; **war**; **celebrity gossip** with no Arizona tie; or **pure national** stories with no local hook.
 
 Return JSON only:
 {"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <short string or omit>}`;
@@ -210,6 +236,52 @@ async function fetchSerpGoogleNews(
 }
 
 /**
+ * Run targeted queries in order; merge unique stories by URL until `maxItems` or queries exhausted.
+ */
+async function collectGoogleNewsCandidates(
+  maxItems: number
+): Promise<{ items: SerpGoogleNewsItem[]; queriesUsed: number; lastError?: string }> {
+  const seen = new Set<string>();
+  const items: SerpGoogleNewsItem[] = [];
+  let queriesUsed = 0;
+  let lastError: string | undefined;
+
+  for (let qi = 0; qi < GOOGLE_NEWS_SEARCH_QUERIES.length && items.length < maxItems; qi++) {
+    const q = GOOGLE_NEWS_SEARCH_QUERIES[qi]!;
+    const label = `query ${qi + 1}/${GOOGLE_NEWS_SEARCH_QUERIES.length}`;
+    queriesUsed++;
+
+    try {
+      const { data, httpStatus } = await fetchSerpGoogleNews(q, label);
+      if (httpStatus !== 200 || data.error) {
+        const msg = data.error || `HTTP ${httpStatus}`;
+        lastError = msg;
+        console.warn(`[google-news] ${label} SKIP: ${msg}`);
+        continue;
+      }
+
+      const flat = flattenGoogleNewsResults(data.news_results);
+      for (const it of flat) {
+        if (seen.has(it.link)) continue;
+        seen.add(it.link);
+        items.push(it);
+        if (items.length >= maxItems) break;
+      }
+
+      console.log(
+        `[google-news] ${label}: merged unique so far=${items.length} (target ≤${maxItems})`
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      lastError = msg;
+      console.warn(`[google-news] ${label} ERROR: ${msg}`);
+    }
+  }
+
+  return { items, queriesUsed, lastError };
+}
+
+/**
  * SerpApi Google News → score up to 10 headlines → keep top 1–3 with score ≥ 7 → rewrite → Sanity (`news`, `google_news`).
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
@@ -230,25 +302,18 @@ export async function syncNewsApiToSanity(): Promise<{
   console.log(
     `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (top stories scoring ≥7)`
   );
+  console.log(
+    `[google-news] Search strategy: ${GOOGLE_NEWS_SEARCH_QUERIES.length} targeted metro/topic queries (merge unique URLs, cap ${maxFetch})`
+  );
 
-  let { data, httpStatus } = await fetchSerpGoogleNews(PRIMARY_Q, 'primary');
-
-  if (httpStatus !== 200 || data.error) {
-    throw new Error(
-      data.error || `SerpApi Google News HTTP ${httpStatus}`
-    );
-  }
-
-  let flat = flattenGoogleNewsResults(data.news_results).slice(0, maxFetch);
+  const { items: flat, queriesUsed, lastError } = await collectGoogleNewsCandidates(maxFetch);
 
   if (flat.length === 0) {
-    console.log('[google-news] No results for primary q — trying fallback q…');
-    const second = await fetchSerpGoogleNews(FALLBACK_Q, 'fallback');
-    if (second.httpStatus !== 200 || second.data.error) {
-      throw new Error(second.data.error || `SerpApi fallback HTTP ${second.httpStatus}`);
-    }
-    data = second.data;
-    flat = flattenGoogleNewsResults(data.news_results).slice(0, maxFetch);
+    throw new Error(
+      lastError
+        ? `SerpApi Google News: no stories after ${queriesUsed} query/queries. Last error: ${lastError}`
+        : `SerpApi Google News: no stories after ${queriesUsed} query/queries`
+    );
   }
 
   const fetched = flat.length;
