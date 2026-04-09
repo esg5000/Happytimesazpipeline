@@ -50,6 +50,9 @@ async function downloadTelegramFileWithMeta(
 const PHOTO_ONLY_INGEST_SEED =
   'The editor submitted only a hero photo via Telegram (no text notes). Infer a specific Phoenix-area HappyTimesAZ-style article angle; keep factual claims conservative if the image is ambiguous.';
 
+/** Where a publish was started: dashboard/API skips all Telegram chat notifications. */
+export type PublishSource = 'telegram' | 'dashboard';
+
 /**
  * Run bot actions from the HTTP API (daemon). Uses the allowed user's private chat id.
  */
@@ -78,13 +81,11 @@ export async function executeTelegramDaemonCommand(
       );
       return;
     case '/publish':
-      await bot.api.sendMessage(chatId, 'Publishing…');
       try {
-        await publishFromSession(bot, chatId);
+        await publishFromSession(bot, chatId, { source: 'dashboard' });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('Publish error:', msg);
-        await bot.api.sendMessage(chatId, `Publish failed: ${msg || 'Unknown error'}`);
         throw err;
       }
       return;
@@ -161,18 +162,22 @@ export async function publishStoryFromSourceNotes(
     applyMergePublishNotes(chatId, text);
   }
 
-  await bot.api.sendMessage(chatId, 'Publishing…');
   try {
-    await publishFromSession(bot, chatId);
+    await publishFromSession(bot, chatId, { source: 'dashboard' });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('Publish error:', msg);
-    await bot.api.sendMessage(chatId, `Publish failed: ${msg || 'Unknown error'}`);
     throw err;
   }
 }
 
-async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
+async function publishFromSession(
+  bot: Bot,
+  chatId: number,
+  options?: { source?: PublishSource }
+): Promise<void> {
+  const source: PublishSource = options?.source ?? 'telegram';
+  const notifyTelegram = source === 'telegram';
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();
   const hasPhoto = Boolean(
@@ -185,11 +190,13 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
     if (hasPhoto) {
       notes = PHOTO_ONLY_INGEST_SEED;
     } else {
-      await bot.api.sendMessage(
-        chatId,
-        'Send some notes, a voice note, and/or a photo first, then /publish.'
-      );
-      return;
+      const hint =
+        'Send some notes, a voice note, and/or a photo first, then /publish.';
+      if (notifyTelegram) {
+        await bot.api.sendMessage(chatId, hint);
+        return;
+      }
+      throw new Error(hint);
     }
   }
 
@@ -266,10 +273,12 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
     additionalImageAssetIds
   );
 
-  await bot.api.sendMessage(
-    chatId,
-    `Published draft:\n- Title: ${article.title}\n- Slug: ${article.slug}\n- Sanity ID: ${sanityId}`
-  );
+  if (notifyTelegram) {
+    await bot.api.sendMessage(
+      chatId,
+      `Published draft:\n- Title: ${article.title}\n- Slug: ${article.slug}\n- Sanity ID: ${sanityId}`
+    );
+  }
 
   resetTelegramSession(chatId);
 }
@@ -389,7 +398,7 @@ export function registerTelegramHandlers(bot: Bot): void {
     const chatId = ctx.chat!.id;
     try {
       await ctx.reply('Publishing…');
-      await publishFromSession(bot, chatId);
+      await publishFromSession(bot, chatId, { source: 'telegram' });
     } catch (err: any) {
       console.error('Publish error:', err?.message || err);
       await ctx.reply(`Publish failed: ${err?.message || 'Unknown error'}`);
