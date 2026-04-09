@@ -413,13 +413,30 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         req.body && typeof req.body === 'object' ? Object.keys(req.body as object) : []
       );
       const notesTrim = extractPublishNotesFromBody(req.body);
+      const chatId = resolveSessionChatId(req);
+      const sessionPreview = getTelegramSession(chatId);
+      const hasSessionDraft =
+        (sessionPreview.recentUploadAssetIds?.length ?? 0) > 0 ||
+        (sessionPreview.notes?.some(
+          (n) => typeof n === 'string' && n.trim().length > 0
+        ) ??
+          false) ||
+        !!sessionPreview.heroSanityAssetId;
+
+      const useTelegramIngest =
+        notesTrim !== undefined || (!isMultipart && hasSessionDraft);
+
       console.log(
         '[api] /publish extracted notes:',
-        notesTrim === undefined ? '(none — autonomous pipeline)' : `${notesTrim.slice(0, 200)}${notesTrim.length > 200 ? '…' : ''}`
+        notesTrim === undefined
+          ? hasSessionDraft
+            ? '(none — ingest via session draft)'
+            : '(none — autonomous pipeline)'
+          : `${notesTrim.slice(0, 200)}${notesTrim.length > 200 ? '…' : ''}`
       );
-      const chatId = resolveSessionChatId(req);
 
-      if (notesTrim !== undefined) {
+      if (useTelegramIngest) {
+        const effectiveNotes = notesTrim ?? '';
         console.log(
           '[api] /publish → Telegram ingest path (notes as story source material)'
         );
@@ -444,14 +461,14 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               console.log(
                 `[api] /publish multipart: ${imageAssetIds.length} file(s) (first = hero) — no DALL·E`
               );
-              await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
+              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds,
               });
             } else {
               console.log(
                 '[api] /publish multipart: no files — using session recentUploadAssetIds if any (else DALL·E)'
               );
-              await publishStoryFromSourceNotes(bot, chatId, notesTrim);
+              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes);
             }
           } else {
             const imgOpts = extractImagePublishOptionsFromBody(req.body);
@@ -459,11 +476,11 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               console.log(
                 `[api] /publish JSON: imageAssetIds count=${imgOpts.imageAssetIds.length} (first = hero)`
               );
-              await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
+              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds: imgOpts.imageAssetIds,
               });
             } else {
-              await publishStoryFromSourceNotes(bot, chatId, notesTrim);
+              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes);
             }
           }
           res.json({

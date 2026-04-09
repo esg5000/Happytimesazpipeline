@@ -127,7 +127,21 @@ export async function publishStoryFromSourceNotes(
 ): Promise<void> {
   const text = sourceNotes.trim();
   if (!text) {
-    throw new Error('Story source notes are empty');
+    const prior = getTelegramSession(chatId);
+    const ids = options?.imageAssetIds?.filter(
+      (id) => typeof id === 'string' && id.trim().length > 0
+    );
+    const hasBodyImages = ids !== undefined && ids.length > 0;
+    const hasSessionMaterial =
+      hasBodyImages ||
+      (prior.notes?.some((n) => typeof n === 'string' && n.trim().length > 0) ??
+        false) ||
+      (prior.recentUploadAssetIds && prior.recentUploadAssetIds.length > 0) ||
+      !!prior.heroSanityAssetId ||
+      (prior.pendingImageAssetIds && prior.pendingImageAssetIds.length > 0);
+    if (!hasSessionMaterial) {
+      throw new Error('Story source notes are empty');
+    }
   }
 
   if (options && options.imageAssetIds !== undefined) {
