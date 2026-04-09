@@ -80,13 +80,19 @@ function extractPublishNotesFromBody(body: unknown): string | undefined {
 }
 
 /**
- * JSON body: optional `imageAssetIds` (max 5 Sanity asset _ids). First id = hero, rest = additionalImages.
+ * JSON body: optional `uploadedImages` or `imageAssetIds` (max 5 Sanity asset _ids). First id = hero.
  */
 function extractImagePublishOptionsFromBody(body: unknown): { imageAssetIds: string[] } | undefined {
   if (!body || typeof body !== 'object') return undefined;
   const o = body as Record<string, unknown>;
-  if (!('imageAssetIds' in o)) return undefined;
-  const raw = o.imageAssetIds;
+  let raw: unknown;
+  if ('uploadedImages' in o) {
+    raw = o.uploadedImages;
+  } else if ('imageAssetIds' in o) {
+    raw = o.imageAssetIds;
+  } else {
+    return undefined;
+  }
   if (!Array.isArray(raw)) {
     return { imageAssetIds: [] };
   }
@@ -124,7 +130,7 @@ function corsMiddleware(
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type, X-API-Key, Authorization'
+    'Content-Type, X-API-Key, Authorization, X-Session-Chat-Id, X-Requester-Id'
   );
   res.setHeader('Access-Control-Max-Age', '86400');
 
@@ -161,6 +167,20 @@ function requireApiKey(
   next();
 }
 
+/**
+ * Session bucket for draft + recent uploads. Default: TELEGRAM_ALLOWED_USER_ID.
+ * Optional: `X-Session-Chat-Id` or `X-Requester-Id` (numeric string, e.g. Telegram user id).
+ */
+function resolveSessionChatId(req: express.Request): number {
+  const raw =
+    req.header('x-session-chat-id')?.trim() ?? req.header('x-requester-id')?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    const n = parseInt(raw, 10);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return config.telegram.allowedUserId;
+}
+
 function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
   app.use(corsMiddleware);
 
@@ -189,17 +209,20 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         const name = file.originalname || 'upload.jpg';
         const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.jpg';
         const assetId = await uploadImageBufferToSanity(file.buffer, safeName);
-        const chatId = config.telegram.allowedUserId;
+        const chatId = resolveSessionChatId(req);
         const session = getTelegramSession(chatId);
-        session.heroSanityAssetId = assetId;
+        const prev = session.recentUploadAssetIds ?? [];
+        session.recentUploadAssetIds = [...prev, assetId].slice(-5);
         persistTelegramSessions();
         console.log(
-          `[api] POST /api/upload → heroSanityAssetId for chat ${chatId}: ${assetId}`
+          `[api] POST /api/upload → session ${chatId} recentUploadAssetIds (${session.recentUploadAssetIds?.length ?? 0}): appended ${assetId}`
         );
         res.json({
           ok: true,
           assetId,
           sanityImageAssetId: assetId,
+          sessionChatId: chatId,
+          recentUploadCount: session.recentUploadAssetIds?.length ?? 0,
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -238,12 +261,12 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           res.status(400).json({ error: 'Transcription was empty' });
           return;
         }
-        const chatId = config.telegram.allowedUserId;
+        const chatId = resolveSessionChatId(req);
         const session = getTelegramSession(chatId);
         session.notes.push(text);
         persistTelegramSessions();
         console.log(
-          `[api] POST /api/upload-voice → appended transcript (${text.length} chars) for chat ${chatId}`
+          `[api] POST /api/upload-voice → appended transcript (${text.length} chars) for session ${chatId}`
         );
         res.json({
           ok: true,
@@ -307,7 +330,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON: { "command": "...", "notes"?: string, "imageAssetIds"?: string[] } (first asset id = hero) or multipart/form-data: command, notes, and up to 5 files in field "images" (first file = hero). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
+          'Use JSON: { "command": "...", "notes"?: string, "uploadedImages"?: string[] } or "imageAssetIds" (first id = hero) or multipart/form-data: command, notes, and up to 5 files in field "images" (first file = hero). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
       });
       return;
     }
@@ -394,7 +417,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         '[api] /publish extracted notes:',
         notesTrim === undefined ? '(none — autonomous pipeline)' : `${notesTrim.slice(0, 200)}${notesTrim.length > 200 ? '…' : ''}`
       );
-      const chatId = config.telegram.allowedUserId;
+      const chatId = resolveSessionChatId(req);
 
       if (notesTrim !== undefined) {
         console.log(
@@ -408,24 +431,31 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               res.status(400).json({ error: 'At most 5 images allowed per article' });
               return;
             }
-            const imageAssetIds: string[] = [];
-            for (let i = 0; i < list.length; i++) {
-              const file = list[i]!;
-              const name =
-                file.originalname?.replace(/[^a-zA-Z0-9._-]/g, '_') ||
-                `dashboard-${i}.jpg`;
-              const assetId = await uploadImageBufferToSanity(file.buffer, name);
-              imageAssetIds.push(assetId);
+            if (list.length > 0) {
+              const imageAssetIds: string[] = [];
+              for (let i = 0; i < list.length; i++) {
+                const file = list[i]!;
+                const name =
+                  file.originalname?.replace(/[^a-zA-Z0-9._-]/g, '_') ||
+                  `dashboard-${i}.jpg`;
+                const assetId = await uploadImageBufferToSanity(file.buffer, name);
+                imageAssetIds.push(assetId);
+              }
+              console.log(
+                `[api] /publish multipart: ${imageAssetIds.length} file(s) (first = hero) — no DALL·E`
+              );
+              await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
+                imageAssetIds,
+              });
+            } else {
+              console.log(
+                '[api] /publish multipart: no files — using session recentUploadAssetIds if any (else DALL·E)'
+              );
+              await publishStoryFromSourceNotes(bot, chatId, notesTrim);
             }
-            console.log(
-              `[api] /publish multipart: ${imageAssetIds.length} image(s) (first = hero) — no AI image generation`
-            );
-            await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
-              imageAssetIds,
-            });
           } else {
             const imgOpts = extractImagePublishOptionsFromBody(req.body);
-            if (imgOpts) {
+            if (imgOpts && imgOpts.imageAssetIds.length > 0) {
               console.log(
                 `[api] /publish JSON: imageAssetIds count=${imgOpts.imageAssetIds.length} (first = hero)`
               );
@@ -471,7 +501,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       return;
     }
 
-    const chatId = config.telegram.allowedUserId;
+    const chatId = resolveSessionChatId(req);
     try {
       await executeTelegramDaemonCommand(bot, chatId, command);
       res.json({ ok: true, command });

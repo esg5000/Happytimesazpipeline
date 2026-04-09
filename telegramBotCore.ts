@@ -91,12 +91,33 @@ export async function executeTelegramDaemonCommand(
   }
 }
 
+/** Merge new notes into session; keep legacy hero + recent /api/upload asset queue. */
+function applyMergePublishNotes(chatId: number, text: string): void {
+  const prior = getTelegramSession(chatId);
+  const preserveHero = prior.heroSanityAssetId;
+  const preserveRecent =
+    prior.recentUploadAssetIds && prior.recentUploadAssetIds.length > 0
+      ? [...prior.recentUploadAssetIds].slice(0, 5)
+      : undefined;
+  const priorNotes = prior.notes.slice();
+  resetTelegramSession(chatId);
+  const session = getTelegramSession(chatId);
+  if (preserveHero) {
+    session.heroSanityAssetId = preserveHero;
+  }
+  if (preserveRecent && preserveRecent.length > 0) {
+    session.recentUploadAssetIds = preserveRecent;
+  }
+  session.notes =
+    priorNotes.length > 0 ? [...priorNotes, text] : [text];
+  persistTelegramSessions();
+}
+
 /**
  * API/dashboard: treat `sourceNotes` as the full story source (like pasted Telegram text),
  * then run the same ingest → article → Sanity path as /publish in the bot.
- * When `imageAssetIds` is set (including `[]`), replaces the draft and uses only these notes
- * (no merge with prior session). Otherwise merges with prior notes and may preserve a
- * single hero from POST /api/upload (`heroSanityAssetId`).
+ * Non-empty `imageAssetIds` replaces the draft and sets body images only (first = hero).
+ * Otherwise merges notes and preserves `recentUploadAssetIds` from POST /api/upload.
  */
 export async function publishStoryFromSourceNotes(
   bot: Bot,
@@ -110,29 +131,20 @@ export async function publishStoryFromSourceNotes(
   }
 
   if (options && options.imageAssetIds !== undefined) {
-    resetTelegramSession(chatId);
-    const session = getTelegramSession(chatId);
-    session.notes = [text];
     const ids = options.imageAssetIds
       .filter((id) => typeof id === 'string' && id.trim().length > 0)
       .slice(0, 5);
     if (ids.length > 0) {
-      /** Order: first = hero, rest = additionalImages (dashboard contract). */
+      resetTelegramSession(chatId);
+      const session = getTelegramSession(chatId);
+      session.notes = [text];
       session.pendingImageAssetIds = ids;
+      persistTelegramSessions();
+    } else {
+      applyMergePublishNotes(chatId, text);
     }
-    persistTelegramSessions();
   } else {
-    const prior = getTelegramSession(chatId);
-    const preserveHero = prior.heroSanityAssetId;
-    const priorNotes = prior.notes.slice();
-    resetTelegramSession(chatId);
-    const session = getTelegramSession(chatId);
-    if (preserveHero) {
-      session.heroSanityAssetId = preserveHero;
-    }
-    session.notes =
-      priorNotes.length > 0 ? [...priorNotes, text] : [text];
-    persistTelegramSessions();
+    applyMergePublishNotes(chatId, text);
   }
 
   await bot.api.sendMessage(chatId, 'Publishing…');
@@ -149,7 +161,11 @@ export async function publishStoryFromSourceNotes(
 async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();
-  const hasPhoto = Boolean(session.photoFileId || session.heroSanityAssetId);
+  const hasPhoto = Boolean(
+    session.photoFileId ||
+      session.heroSanityAssetId ||
+      (session.recentUploadAssetIds && session.recentUploadAssetIds.length > 0)
+  );
 
   if (!notes && !session.title) {
     if (hasPhoto) {
@@ -196,12 +212,20 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   let additionalImageAssetIds: string[] | undefined;
 
   const pending = session.pendingImageAssetIds;
+  const recent = session.recentUploadAssetIds;
   if (pending && pending.length > 0) {
     console.log(
-      '[publish] Dashboard uploaded images: first = hero, rest = additionalImages — skipping DALL·E entirely'
+      '[publish] Publish body images: first = hero, rest = additionalImages — skipping DALL·E entirely'
     );
     heroImageAssetId = pending[0]!;
     const rest = pending.slice(1);
+    additionalImageAssetIds = rest.length > 0 ? rest : undefined;
+  } else if (recent && recent.length > 0) {
+    console.log(
+      `[publish] Using ${recent.length} session image(s) from POST /api/upload (same session key) — skipping DALL·E`
+    );
+    heroImageAssetId = recent[0]!;
+    const rest = recent.slice(1);
     additionalImageAssetIds = rest.length > 0 ? rest : undefined;
   } else if (session.heroSanityAssetId) {
     console.log(

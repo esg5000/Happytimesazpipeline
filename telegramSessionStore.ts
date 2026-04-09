@@ -12,9 +12,11 @@ export type TelegramDraftSession = {
   visualStyle?: VisualStyle;
   notes: string[];
   photoFileId?: string;
-  /** Set by POST /api/upload — reused as hero on next publish (Sanity image asset _id). */
+  /** Legacy: single pre-upload hero (still honored if no pending/recent). */
   heroSanityAssetId?: string;
-  /** Dashboard/API: up to 5 uploaded Sanity image asset _ids — first = hero, rest = additionalImages. */
+  /** POST /api/upload: rolling queue (max 5), order = upload order — first = hero on publish if no body images. */
+  recentUploadAssetIds?: string[];
+  /** Dashboard/API: up to 5 Sanity asset ids from publish body — first = hero, rest = additionalImages. */
   pendingImageAssetIds?: string[];
   /** @deprecated Ignored; first pending asset is always hero. Kept for old session JSON. */
   heroImageIndex?: number;
@@ -52,6 +54,12 @@ function parseSession(raw: unknown): TelegramDraftSession {
     photoFileId: typeof o.photoFileId === 'string' ? o.photoFileId : undefined,
     heroSanityAssetId:
       typeof o.heroSanityAssetId === 'string' ? o.heroSanityAssetId : undefined,
+    recentUploadAssetIds: Array.isArray(o.recentUploadAssetIds)
+      ? (o.recentUploadAssetIds as unknown[])
+          .map((x) => String(x))
+          .filter(Boolean)
+          .slice(0, 5)
+      : undefined,
     pendingImageAssetIds: Array.isArray(o.pendingImageAssetIds)
       ? (o.pendingImageAssetIds as unknown[])
           .map((x) => String(x))
