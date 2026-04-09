@@ -9,13 +9,41 @@ import { generateSlug } from '../utils/slug';
 // Resolve prompt path - works in both dev and compiled dist
 const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
 
+/** Stored on article when the editor uploaded real photos; hero is never AI-generated. */
+export const EDITOR_SUPPLIED_HERO_IMAGE_PROMPT =
+  'Editor-supplied photography only; no AI-generated hero image for this article.';
+
+export type WriteArticleOptions = {
+  /**
+   * Raw notes from the editor (e.g. Telegram or dashboard). When set, the article body must
+   * follow this material — do not substitute an unrelated topic or autonomous angle.
+   */
+  sourceNotes?: string;
+  /**
+   * When true, the pipeline will not call DALL·E; heroImagePrompt is set to a fixed placeholder.
+   */
+  userSuppliedImages?: boolean;
+};
+
 /**
- * Writes an article based on a topic
+ * Writes an article based on a topic.
  */
-export async function writeArticle(topic: Topic): Promise<Article> {
+export async function writeArticle(
+  topic: Topic,
+  options?: WriteArticleOptions
+): Promise<Article> {
   const systemPrompt = readFileSync(WRITER_PROMPT_PATH, 'utf-8');
 
-  const userPrompt = `Write an article about: ${topic.title}
+  const notesBlock =
+    options?.sourceNotes && options.sourceNotes.trim().length > 0
+      ? `PRIMARY SOURCE MATERIAL (editor — the article must follow this substance, facts, and angle; do not pivot to an unrelated topic):\n---\n${options.sourceNotes.trim()}\n---\n\n`
+      : '';
+
+  const imageNote = options?.userSuppliedImages
+    ? 'Real photography from the editor is already attached (hero + any additional images). No AI-generated hero image will be produced — focus the article on the source material below.\n\n'
+    : '';
+
+  const userPrompt = `${notesBlock}${imageNote}Write an article about: ${topic.title}
 
 Section: ${topic.section}
 Description: ${topic.description}
@@ -75,6 +103,14 @@ Remember: seoDescription must be at most 155 characters (count spaces).`;
     );
   }
 
-  return validation.data!;
+  let article = validation.data!;
+  if (options?.userSuppliedImages) {
+    article = {
+      ...article,
+      heroImagePrompt: EDITOR_SUPPLIED_HERO_IMAGE_PROMPT,
+    };
+  }
+
+  return article;
 }
 

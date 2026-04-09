@@ -5,6 +5,7 @@ Your job is to convert the notes into a clean, publishable topic JSON object.
 Sections: cannabis, health-wellness, nightlife, food, events, global, news
 
 Hard rules:
+- The NOTES are the editor’s direct story brief. Your topic JSON must be derived from them; downstream, the full NOTES are also passed to the article writer as primary source material (this is not the autonomous batch topic pipeline).
 - Use Phoenix / metro Phoenix local framing when appropriate.
 - If the notes mention a specific neighborhood/area/venue, reflect that in the title/description.
 - Do NOT invent specific factual claims (dates, addresses, prices) that are not in the notes.

@@ -19,6 +19,7 @@ SEO Requirements:
 - seoDescription (CRITICAL): Must be **155 characters or fewer** (count every character including spaces). Sanity rejects longer values (hard limit 160). Never exceed 155. If unsure, shorten until the string length is ≤ 155.
 
 Content Rules:
+- If the user message includes a "PRIMARY SOURCE MATERIAL" block (editor notes from Telegram or the dashboard), that block is the article’s mandate — expand and polish it, but do not replace it with a different story angle or unrelated topic.
 - Focus on: food, nightlife, cannabis, health-wellness, news, or events
 - Local Phoenix perspective
 - No ad decisions or ad placement mentions

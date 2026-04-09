@@ -4,7 +4,7 @@ import { Bot } from 'grammy';
 import { config } from './config';
 import { ingestToTopic } from './agents/ingestAgent';
 import { transcribeAudio } from './agents/transcribeAgent';
-import { writeArticle } from './agents/writerAgent';
+import { writeArticle, type WriteArticleOptions } from './agents/writerAgent';
 import { generateImagePrompt, generateImage } from './agents/imageAgent';
 import {
   getExistingSlugs,
@@ -168,14 +168,27 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
     }
   }
 
+  const notesForIngest = notes || session.title || '';
+
   const topic = await ingestToTopic({
     section: session.section,
     title: session.title,
     keywords: session.keywords,
-    notes: notes || session.title || '',
+    notes: notesForIngest,
   });
 
-  let article = await writeArticle(topic);
+  /** Any path where the hero is not DALL·E (dashboard uploads, /api/upload hero, Telegram photo). */
+  const userSuppliedImages =
+    Boolean(session.pendingImageAssetIds && session.pendingImageAssetIds.length > 0) ||
+    Boolean(session.heroSanityAssetId) ||
+    Boolean(session.photoFileId);
+
+  const writeOpts: WriteArticleOptions = {
+    sourceNotes: notesForIngest.trim() ? notesForIngest : undefined,
+    userSuppliedImages,
+  };
+
+  let article = await writeArticle(topic, writeOpts);
 
   if (session.visualStyle) {
     article = { ...article, visualStyle: session.visualStyle };
@@ -189,16 +202,23 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
 
   const pending = session.pendingImageAssetIds;
   if (pending && pending.length > 0) {
+    console.log(
+      '[publish] Dashboard/editor uploaded images: using Sanity assets only — skipping DALL·E / AI hero generation'
+    );
     const hi = clampHeroIndex(session.heroImageIndex ?? 0, pending.length);
     heroImageAssetId = pending[hi]!;
     const rest = pending.filter((_, i) => i !== hi);
     additionalImageAssetIds = rest.length > 0 ? rest : undefined;
   } else if (session.heroSanityAssetId) {
+    console.log(
+      '[publish] Using single pre-uploaded hero (e.g. POST /api/upload) — skipping DALL·E'
+    );
     heroImageAssetId = session.heroSanityAssetId;
   } else if (session.photoFileId) {
     const buf = await downloadTelegramFile(bot, session.photoFileId);
     heroImageAssetId = await uploadImageBufferToSanity(buf, `${article.slug}-hero.jpg`);
   } else {
+    console.log('[publish] No user images — generating hero via DALL·E from article prompt');
     const enhancedPrompt = await generateImagePrompt(
       article.heroImagePrompt,
       article.visualStyle
