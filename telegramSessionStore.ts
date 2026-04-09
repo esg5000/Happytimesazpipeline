@@ -14,6 +14,10 @@ export type TelegramDraftSession = {
   photoFileId?: string;
   /** Set by POST /api/upload — reused as hero on next publish (Sanity image asset _id). */
   heroSanityAssetId?: string;
+  /** Dashboard/API: up to 5 uploaded Sanity image asset _ids (order = upload order). */
+  pendingImageAssetIds?: string[];
+  /** Index into pendingImageAssetIds for hero (0-based). */
+  heroImageIndex?: number;
 };
 
 const sessionFile =
@@ -48,6 +52,16 @@ function parseSession(raw: unknown): TelegramDraftSession {
     photoFileId: typeof o.photoFileId === 'string' ? o.photoFileId : undefined,
     heroSanityAssetId:
       typeof o.heroSanityAssetId === 'string' ? o.heroSanityAssetId : undefined,
+    pendingImageAssetIds: Array.isArray(o.pendingImageAssetIds)
+      ? (o.pendingImageAssetIds as unknown[])
+          .map((x) => String(x))
+          .filter(Boolean)
+          .slice(0, 5)
+      : undefined,
+    heroImageIndex:
+      typeof o.heroImageIndex === 'number' && Number.isFinite(o.heroImageIndex)
+        ? Math.trunc(o.heroImageIndex)
+        : undefined,
   };
 }
 

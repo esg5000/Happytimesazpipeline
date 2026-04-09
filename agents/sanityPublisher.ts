@@ -214,7 +214,8 @@ export function markdownToPortableText(markdown: string) {
 export async function publishArticleToSanity(
   article: Article,
   heroImageAssetId: string,
-  section: string
+  section: string,
+  additionalImageAssetIds?: string[]
 ): Promise<string> {
   const sanityClient = getSanityClient();
 
@@ -318,6 +319,18 @@ export async function publishArticleToSanity(
   console.log('📋 Category reference:', JSON.stringify(categoryRef));
   console.log('📋 Section:', primarySection);
 
+  const additionalImages =
+    additionalImageAssetIds && additionalImageAssetIds.length > 0
+      ? additionalImageAssetIds.map((ref) => ({
+          _type: 'image' as const,
+          _key: generateKey(),
+          asset: {
+            _type: 'reference' as const,
+            _ref: ref,
+          },
+        }))
+      : undefined;
+
   const document = {
     _type: 'post',
     title: article.title,
@@ -341,6 +354,7 @@ export async function publishArticleToSanity(
         _ref: heroImageAssetId,
       },
     },
+    ...(additionalImages ? { additionalImages } : {}),
     body: portableTextBody, // This MUST be an array
     section: primarySection,
     publishedAt: null, // Draft by default

@@ -27,6 +27,12 @@ const multerUploadImage = multer({
   limits: { fileSize: 20 * 1024 * 1024 },
 });
 
+/** Up to 5 images for POST /api/command multipart /publish (field name: images). */
+const multerCommandImages = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+});
+
 /** Whisper API accepts up to 25 MB per file. */
 const multerUploadAudio = multer({
   storage: multer.memoryStorage(),
@@ -71,6 +77,34 @@ function extractPublishNotesFromBody(body: unknown): string | undefined {
     if (s) return s;
   }
   return undefined;
+}
+
+/**
+ * JSON body: optional `imageAssetIds` (max 5 Sanity image asset _ids) + `heroImageIndex` (0-based).
+ * When present, publish replaces the draft and uses the designated hero + additionalImages on the post.
+ */
+function extractImagePublishOptionsFromBody(body: unknown):
+  | { imageAssetIds: string[]; heroImageIndex: number }
+  | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const o = body as Record<string, unknown>;
+  if (!('imageAssetIds' in o)) return undefined;
+  const raw = o.imageAssetIds;
+  if (!Array.isArray(raw)) {
+    return { imageAssetIds: [], heroImageIndex: 0 };
+  }
+  const imageAssetIds = raw
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    .map((x) => x.trim())
+    .slice(0, 5);
+  let heroImageIndex = 0;
+  if (typeof o.heroImageIndex === 'number' && Number.isFinite(o.heroImageIndex)) {
+    heroImageIndex = Math.trunc(o.heroImageIndex);
+  } else if (typeof o.heroImageIndex === 'string') {
+    const p = parseInt(o.heroImageIndex, 10);
+    if (Number.isFinite(p)) heroImageIndex = p;
+  }
+  return { imageAssetIds, heroImageIndex };
 }
 
 /** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
@@ -249,7 +283,25 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
   });
 
-  app.post('/api/command', requireApiKey, async (req, res) => {
+  app.post(
+    '/api/command',
+    requireApiKey,
+    (req, res, next) => {
+      const ct = req.headers['content-type'] || '';
+      if (ct.includes('multipart/form-data')) {
+        multerCommandImages.array('images', 5)(req, res, (err: unknown) => {
+          if (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            res.status(400).json({ error: msg });
+            return;
+          }
+          next();
+        });
+      } else {
+        next();
+      }
+    },
+    async (req, res) => {
     const raw = req.body?.command;
     const command =
       typeof raw === 'string' ? raw.trim() : '';
@@ -265,7 +317,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Body must be JSON: { "command": "/publish" | "/new" | "/start" | "syncEvents" | "syncNews" | "syncDispensaries", "notes"?: string } — syncEvents=SerpApi events, syncNews=SerpApi Google News, syncDispensaries=SerpApi Google Maps dispensaries (SERPAPI_API_KEY); with /publish, notes are story source (Telegram ingest); omit notes for autonomous batch pipeline',
+          'Use JSON: { "command": "...", "notes"?: string, "imageAssetIds"?: string[], "heroImageIndex"?: number } or multipart/form-data with fields command, notes, heroIndex (optional), and up to 5 files in field "images". Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
       });
       return;
     }
@@ -340,14 +392,17 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
 
     if (command === '/publish') {
+      const isMultipart = (req.headers['content-type'] || '').includes(
+        'multipart/form-data'
+      );
       console.log(
-        '[api] /publish req.body:',
-        JSON.stringify(req.body ?? null, null, 2)
+        `[api] /publish mode=${isMultipart ? 'multipart' : 'json'} body keys:`,
+        req.body && typeof req.body === 'object' ? Object.keys(req.body as object) : []
       );
       const notesTrim = extractPublishNotesFromBody(req.body);
       console.log(
         '[api] /publish extracted notes:',
-        notesTrim === undefined ? '(none — autonomous pipeline)' : notesTrim
+        notesTrim === undefined ? '(none — autonomous pipeline)' : `${notesTrim.slice(0, 200)}${notesTrim.length > 200 ? '…' : ''}`
       );
       const chatId = config.telegram.allowedUserId;
 
@@ -356,7 +411,49 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           '[api] /publish → Telegram ingest path (notes as story source material)'
         );
         try {
-          await publishStoryFromSourceNotes(bot, chatId, notesTrim);
+          if (isMultipart) {
+            const files = (req as { files?: Express.Multer.File[] }).files;
+            const list = Array.isArray(files) ? files : [];
+            if (list.length > 5) {
+              res.status(400).json({ error: 'At most 5 images allowed per article' });
+              return;
+            }
+            const imageAssetIds: string[] = [];
+            for (let i = 0; i < list.length; i++) {
+              const file = list[i]!;
+              const name =
+                file.originalname?.replace(/[^a-zA-Z0-9._-]/g, '_') ||
+                `dashboard-${i}.jpg`;
+              const assetId = await uploadImageBufferToSanity(file.buffer, name);
+              imageAssetIds.push(assetId);
+            }
+            const hiRaw = (req.body as Record<string, unknown>)?.heroIndex;
+            let heroImageIndex = 0;
+            if (typeof hiRaw === 'string' || typeof hiRaw === 'number') {
+              const p = parseInt(String(hiRaw), 10);
+              if (Number.isFinite(p)) heroImageIndex = p;
+            }
+            console.log(
+              `[api] /publish multipart: ${imageAssetIds.length} image(s), heroImageIndex=${heroImageIndex}`
+            );
+            await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
+              imageAssetIds,
+              heroImageIndex,
+            });
+          } else {
+            const imgOpts = extractImagePublishOptionsFromBody(req.body);
+            if (imgOpts) {
+              console.log(
+                `[api] /publish JSON: imageAssetIds count=${imgOpts.imageAssetIds.length}, heroImageIndex=${imgOpts.heroImageIndex}`
+              );
+              await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
+                imageAssetIds: imgOpts.imageAssetIds,
+                heroImageIndex: imgOpts.heroImageIndex,
+              });
+            } else {
+              await publishStoryFromSourceNotes(bot, chatId, notesTrim);
+            }
+          }
           res.json({
             ok: true,
             command: '/publish',
@@ -401,7 +498,8 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       console.error('[api] /api/command failed:', msg);
       res.status(500).json({ error: msg });
     }
-  });
+  }
+  );
 }
 
 /**

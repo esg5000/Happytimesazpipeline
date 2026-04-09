@@ -33,6 +33,18 @@ export default defineType({
     }),
     defineField({ name: 'heroImage', type: 'image', options: { hotspot: true } }),
     defineField({
+      name: 'additionalImages',
+      title: 'Additional images',
+      type: 'array',
+      description: 'Extra images (e.g. dashboard ingest). Hero is stored in heroImage.',
+      of: [
+        defineArrayMember({
+          type: 'image',
+          options: { hotspot: true },
+        }),
+      ],
+    }),
+    defineField({
       name: 'mainImage',
       type: 'image',
       title: 'Main image (legacy)',

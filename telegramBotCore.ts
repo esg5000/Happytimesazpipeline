@@ -28,6 +28,11 @@ function isAllowedUser(fromId?: number): boolean {
   return fromId === config.telegram.allowedUserId;
 }
 
+function clampHeroIndex(index: number, len: number): number {
+  if (len <= 0) return 0;
+  return Math.min(Math.max(0, Math.floor(index)), len - 1);
+}
+
 async function downloadTelegramFile(bot: Bot, fileId: string): Promise<Buffer> {
   const { buffer } = await downloadTelegramFileWithMeta(bot, fileId);
   return buffer;
@@ -94,28 +99,46 @@ export async function executeTelegramDaemonCommand(
 /**
  * API/dashboard: treat `sourceNotes` as the full story source (like pasted Telegram text),
  * then run the same ingest → article → Sanity path as /publish in the bot.
- * Replaces any draft in session for this chat with these notes only (no autonomous topic pipeline).
+ * When `imageAssetIds` is set (including `[]`), replaces the draft and uses only these notes
+ * (no merge with prior session). Otherwise merges with prior notes and may preserve a
+ * single hero from POST /api/upload (`heroSanityAssetId`).
  */
 export async function publishStoryFromSourceNotes(
   bot: Bot,
   chatId: number,
-  sourceNotes: string
+  sourceNotes: string,
+  options?: { imageAssetIds?: string[]; heroImageIndex?: number }
 ): Promise<void> {
   const text = sourceNotes.trim();
   if (!text) {
     throw new Error('Story source notes are empty');
   }
-  const prior = getTelegramSession(chatId);
-  const preserveHero = prior.heroSanityAssetId;
-  const priorNotes = prior.notes.slice();
-  resetTelegramSession(chatId);
-  const session = getTelegramSession(chatId);
-  if (preserveHero) {
-    session.heroSanityAssetId = preserveHero;
+
+  if (options && options.imageAssetIds !== undefined) {
+    resetTelegramSession(chatId);
+    const session = getTelegramSession(chatId);
+    session.notes = [text];
+    const ids = options.imageAssetIds
+      .filter((id) => typeof id === 'string' && id.trim().length > 0)
+      .slice(0, 5);
+    if (ids.length > 0) {
+      session.pendingImageAssetIds = ids;
+      session.heroImageIndex = clampHeroIndex(options.heroImageIndex ?? 0, ids.length);
+    }
+    persistTelegramSessions();
+  } else {
+    const prior = getTelegramSession(chatId);
+    const preserveHero = prior.heroSanityAssetId;
+    const priorNotes = prior.notes.slice();
+    resetTelegramSession(chatId);
+    const session = getTelegramSession(chatId);
+    if (preserveHero) {
+      session.heroSanityAssetId = preserveHero;
+    }
+    session.notes =
+      priorNotes.length > 0 ? [...priorNotes, text] : [text];
+    persistTelegramSessions();
   }
-  session.notes =
-    priorNotes.length > 0 ? [...priorNotes, text] : [text];
-  persistTelegramSessions();
 
   await bot.api.sendMessage(chatId, 'Publishing…');
   try {
@@ -162,7 +185,15 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   article = { ...article, slug: ensureUniqueSlug(article.slug, existingSlugs) };
 
   let heroImageAssetId: string;
-  if (session.heroSanityAssetId) {
+  let additionalImageAssetIds: string[] | undefined;
+
+  const pending = session.pendingImageAssetIds;
+  if (pending && pending.length > 0) {
+    const hi = clampHeroIndex(session.heroImageIndex ?? 0, pending.length);
+    heroImageAssetId = pending[hi]!;
+    const rest = pending.filter((_, i) => i !== hi);
+    additionalImageAssetIds = rest.length > 0 ? rest : undefined;
+  } else if (session.heroSanityAssetId) {
     heroImageAssetId = session.heroSanityAssetId;
   } else if (session.photoFileId) {
     const buf = await downloadTelegramFile(bot, session.photoFileId);
@@ -176,7 +207,12 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
     heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
   }
 
-  const sanityId = await publishArticleToSanity(article, heroImageAssetId, topic.section);
+  const sanityId = await publishArticleToSanity(
+    article,
+    heroImageAssetId,
+    topic.section,
+    additionalImageAssetIds
+  );
 
   await bot.api.sendMessage(
     chatId,
