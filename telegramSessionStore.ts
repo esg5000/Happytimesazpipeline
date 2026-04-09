@@ -14,9 +14,9 @@ export type TelegramDraftSession = {
   photoFileId?: string;
   /** Set by POST /api/upload — reused as hero on next publish (Sanity image asset _id). */
   heroSanityAssetId?: string;
-  /** Dashboard/API: up to 5 uploaded Sanity image asset _ids (order = upload order). */
+  /** Dashboard/API: up to 5 uploaded Sanity image asset _ids — first = hero, rest = additionalImages. */
   pendingImageAssetIds?: string[];
-  /** Index into pendingImageAssetIds for hero (0-based). */
+  /** @deprecated Ignored; first pending asset is always hero. Kept for old session JSON. */
   heroImageIndex?: number;
 };
 

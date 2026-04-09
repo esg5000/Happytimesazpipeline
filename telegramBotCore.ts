@@ -28,11 +28,6 @@ function isAllowedUser(fromId?: number): boolean {
   return fromId === config.telegram.allowedUserId;
 }
 
-function clampHeroIndex(index: number, len: number): number {
-  if (len <= 0) return 0;
-  return Math.min(Math.max(0, Math.floor(index)), len - 1);
-}
-
 async function downloadTelegramFile(bot: Bot, fileId: string): Promise<Buffer> {
   const { buffer } = await downloadTelegramFileWithMeta(bot, fileId);
   return buffer;
@@ -107,7 +102,7 @@ export async function publishStoryFromSourceNotes(
   bot: Bot,
   chatId: number,
   sourceNotes: string,
-  options?: { imageAssetIds?: string[]; heroImageIndex?: number }
+  options?: { imageAssetIds?: string[] }
 ): Promise<void> {
   const text = sourceNotes.trim();
   if (!text) {
@@ -122,8 +117,8 @@ export async function publishStoryFromSourceNotes(
       .filter((id) => typeof id === 'string' && id.trim().length > 0)
       .slice(0, 5);
     if (ids.length > 0) {
+      /** Order: first = hero, rest = additionalImages (dashboard contract). */
       session.pendingImageAssetIds = ids;
-      session.heroImageIndex = clampHeroIndex(options.heroImageIndex ?? 0, ids.length);
     }
     persistTelegramSessions();
   } else {
@@ -203,11 +198,10 @@ async function publishFromSession(bot: Bot, chatId: number): Promise<void> {
   const pending = session.pendingImageAssetIds;
   if (pending && pending.length > 0) {
     console.log(
-      '[publish] Dashboard/editor uploaded images: using Sanity assets only — skipping DALL·E / AI hero generation'
+      '[publish] Dashboard uploaded images: first = hero, rest = additionalImages — skipping DALL·E entirely'
     );
-    const hi = clampHeroIndex(session.heroImageIndex ?? 0, pending.length);
-    heroImageAssetId = pending[hi]!;
-    const rest = pending.filter((_, i) => i !== hi);
+    heroImageAssetId = pending[0]!;
+    const rest = pending.slice(1);
     additionalImageAssetIds = rest.length > 0 ? rest : undefined;
   } else if (session.heroSanityAssetId) {
     console.log(

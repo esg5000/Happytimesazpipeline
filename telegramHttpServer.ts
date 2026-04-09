@@ -80,31 +80,21 @@ function extractPublishNotesFromBody(body: unknown): string | undefined {
 }
 
 /**
- * JSON body: optional `imageAssetIds` (max 5 Sanity image asset _ids) + `heroImageIndex` (0-based).
- * When present, publish replaces the draft and uses the designated hero + additionalImages on the post.
+ * JSON body: optional `imageAssetIds` (max 5 Sanity asset _ids). First id = hero, rest = additionalImages.
  */
-function extractImagePublishOptionsFromBody(body: unknown):
-  | { imageAssetIds: string[]; heroImageIndex: number }
-  | undefined {
+function extractImagePublishOptionsFromBody(body: unknown): { imageAssetIds: string[] } | undefined {
   if (!body || typeof body !== 'object') return undefined;
   const o = body as Record<string, unknown>;
   if (!('imageAssetIds' in o)) return undefined;
   const raw = o.imageAssetIds;
   if (!Array.isArray(raw)) {
-    return { imageAssetIds: [], heroImageIndex: 0 };
+    return { imageAssetIds: [] };
   }
   const imageAssetIds = raw
     .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
     .map((x) => x.trim())
     .slice(0, 5);
-  let heroImageIndex = 0;
-  if (typeof o.heroImageIndex === 'number' && Number.isFinite(o.heroImageIndex)) {
-    heroImageIndex = Math.trunc(o.heroImageIndex);
-  } else if (typeof o.heroImageIndex === 'string') {
-    const p = parseInt(o.heroImageIndex, 10);
-    if (Number.isFinite(p)) heroImageIndex = p;
-  }
-  return { imageAssetIds, heroImageIndex };
+  return { imageAssetIds };
 }
 
 /** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
@@ -317,7 +307,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON: { "command": "...", "notes"?: string, "imageAssetIds"?: string[], "heroImageIndex"?: number } or multipart/form-data with fields command, notes, heroIndex (optional), and up to 5 files in field "images". Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
+          'Use JSON: { "command": "...", "notes"?: string, "imageAssetIds"?: string[] } (first asset id = hero) or multipart/form-data: command, notes, and up to 5 files in field "images" (first file = hero). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
       });
       return;
     }
@@ -427,28 +417,20 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               const assetId = await uploadImageBufferToSanity(file.buffer, name);
               imageAssetIds.push(assetId);
             }
-            const hiRaw = (req.body as Record<string, unknown>)?.heroIndex;
-            let heroImageIndex = 0;
-            if (typeof hiRaw === 'string' || typeof hiRaw === 'number') {
-              const p = parseInt(String(hiRaw), 10);
-              if (Number.isFinite(p)) heroImageIndex = p;
-            }
             console.log(
-              `[api] /publish multipart: ${imageAssetIds.length} image(s), heroImageIndex=${heroImageIndex}`
+              `[api] /publish multipart: ${imageAssetIds.length} image(s) (first = hero) — no AI image generation`
             );
             await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
               imageAssetIds,
-              heroImageIndex,
             });
           } else {
             const imgOpts = extractImagePublishOptionsFromBody(req.body);
             if (imgOpts) {
               console.log(
-                `[api] /publish JSON: imageAssetIds count=${imgOpts.imageAssetIds.length}, heroImageIndex=${imgOpts.heroImageIndex}`
+                `[api] /publish JSON: imageAssetIds count=${imgOpts.imageAssetIds.length} (first = hero)`
               );
               await publishStoryFromSourceNotes(bot, chatId, notesTrim, {
                 imageAssetIds: imgOpts.imageAssetIds,
-                heroImageIndex: imgOpts.heroImageIndex,
               });
             } else {
               await publishStoryFromSourceNotes(bot, chatId, notesTrim);
