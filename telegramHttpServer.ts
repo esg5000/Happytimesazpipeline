@@ -130,7 +130,7 @@ function corsMiddleware(
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type, X-API-Key, Authorization, X-Session-Chat-Id, X-Requester-Id'
+    'Content-Type, X-API-Key, Authorization, X-Session-Chat-Id, X-Requester-Id, X-Client-Source'
   );
   res.setHeader('Access-Control-Max-Age', '86400');
 
@@ -181,6 +181,12 @@ function resolveSessionChatId(req: express.Request): number {
   return config.telegram.allowedUserId;
 }
 
+/** Set by dashboard (`X-Client-Source: dashboard`); echoed in JSON and used for publishMode labels. */
+function resolveApiClientSource(req: express.Request): 'dashboard' | 'unknown' {
+  const raw = req.header('x-client-source')?.trim().toLowerCase();
+  return raw === 'dashboard' ? 'dashboard' : 'unknown';
+}
+
 function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
   app.use(corsMiddleware);
 
@@ -219,6 +225,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         );
         res.json({
           ok: true,
+          source: resolveApiClientSource(req),
           assetId,
           sanityImageAssetId: assetId,
           sessionChatId: chatId,
@@ -270,6 +277,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         );
         res.json({
           ok: true,
+          source: resolveApiClientSource(req),
           text,
           transcription: text,
         });
@@ -281,13 +289,14 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
   );
 
-  app.get('/api/status', requireApiKey, async (_req, res) => {
+  app.get('/api/status', requireApiKey, async (req, res) => {
     try {
       const snapshot = getPipelineStatusSnapshot();
       const articleCount = await countPostDocuments();
       res.json({
         ...snapshot,
         articleCount,
+        source: resolveApiClientSource(req),
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -347,6 +356,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         const result = await syncNewsApiToSanity();
         res.json({
           ok: true,
+          source: resolveApiClientSource(req),
           command: 'syncNews',
           ...result,
         });
@@ -370,6 +380,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         const result = await syncSerpApiEventsToSanity();
         res.json({
           ok: true,
+          source: resolveApiClientSource(req),
           command: 'syncEvents',
           ...result,
         });
@@ -393,6 +404,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         const result = await syncDispensariesToSanity();
         res.json({
           ok: true,
+          source: resolveApiClientSource(req),
           command: 'syncDispensaries',
           ...result,
         });
@@ -437,8 +449,9 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
 
       if (useTelegramIngest) {
         const effectiveNotes = notesTrim ?? '';
+        const clientSource = resolveApiClientSource(req);
         console.log(
-          '[api] /publish → Telegram ingest path (notes as story source material)'
+          `[api] /publish → ingest path (client=${clientSource}, notes as story source material)`
         );
         try {
           if (isMultipart) {
@@ -485,8 +498,10 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           }
           res.json({
             ok: true,
+            source: clientSource,
             command: '/publish',
-            publishMode: 'telegram_ingest',
+            publishMode:
+              clientSource === 'dashboard' ? 'dashboard_ingest' : 'telegram_ingest',
           });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -507,6 +522,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         }
         res.json({
           ok: true,
+          source: resolveApiClientSource(req),
           command: '/publish',
           publishMode: 'autonomous_pipeline',
         });
@@ -521,7 +537,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     const chatId = resolveSessionChatId(req);
     try {
       await executeTelegramDaemonCommand(bot, chatId, command);
-      res.json({ ok: true, command });
+      res.json({ ok: true, source: resolveApiClientSource(req), command });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[api] /api/command failed:', msg);
