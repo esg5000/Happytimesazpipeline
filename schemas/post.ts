@@ -45,6 +45,15 @@ export default defineType({
       ],
     }),
     defineField({
+      name: 'featuredVideo',
+      title: 'Featured video',
+      type: 'file',
+      description: 'Optional video from the dashboard pipeline upload.',
+      options: {
+        accept: 'video/*',
+      },
+    }),
+    defineField({
       name: 'mainImage',
       type: 'image',
       title: 'Main image (legacy)',

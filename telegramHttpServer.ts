@@ -10,6 +10,7 @@ import { transcribeAudio } from './agents/transcribeAgent';
 import {
   countPostDocuments,
   uploadImageBufferToSanity,
+  uploadVideoBufferToSanity,
 } from './agents/sanityPublisher';
 import { getPipelineStatusSnapshot } from './pipelineStatus';
 import { runPipelineJob } from './pipelineRunner';
@@ -37,6 +38,12 @@ const multerCommandImages = multer({
 const multerUploadAudio = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
+});
+
+/** Dashboard video — Sanity file assets; cap to avoid OOM on small dynos. */
+const multerUploadVideo = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 200 * 1024 * 1024 },
 });
 
 /** Coerce API body fields into one trimmed notes string for /publish. */
@@ -289,6 +296,68 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
   );
 
+  app.post(
+    '/api/upload-video',
+    requireApiKey,
+    (req, res, next) => {
+      multerUploadVideo.single('video')(req, res, (err: unknown) => {
+        if (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          res.status(400).json({ error: msg });
+          return;
+        }
+        next();
+      });
+    },
+    async (req, res) => {
+      try {
+        const file = req.file;
+        if (!file?.buffer) {
+          res.status(400).json({
+            error: 'Missing video file (multipart field name: video)',
+          });
+          return;
+        }
+        const name = file.originalname || 'upload.mp4';
+        const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.mp4';
+        const mime = file.mimetype || 'application/octet-stream';
+        const assetId = await uploadVideoBufferToSanity(file.buffer, safeName, mime);
+        const chatId = resolveSessionChatId(req);
+        const session = getTelegramSession(chatId);
+        session.draftVideoAssetId = assetId;
+        persistTelegramSessions();
+        console.log(
+          `[api] POST /api/upload-video → session ${chatId} draftVideoAssetId=${assetId}`
+        );
+        res.json({
+          ok: true,
+          source: resolveApiClientSource(req),
+          assetId,
+          fileAssetId: assetId,
+          sessionChatId: chatId,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/upload-video failed:', msg);
+        res.status(500).json({ error: msg });
+      }
+    }
+  );
+
+  app.post('/api/clear-draft-video', requireApiKey, (req, res) => {
+    try {
+      const chatId = resolveSessionChatId(req);
+      const session = getTelegramSession(chatId);
+      delete session.draftVideoAssetId;
+      persistTelegramSessions();
+      res.json({ ok: true, source: resolveApiClientSource(req) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[api] /api/clear-draft-video failed:', msg);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   app.get('/api/status', requireApiKey, async (req, res) => {
     try {
       const snapshot = getPipelineStatusSnapshot();
@@ -433,7 +502,8 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           (n) => typeof n === 'string' && n.trim().length > 0
         ) ??
           false) ||
-        !!sessionPreview.heroSanityAssetId;
+        !!sessionPreview.heroSanityAssetId ||
+        !!sessionPreview.draftVideoAssetId;
 
       const useTelegramIngest =
         notesTrim !== undefined || (!isMultipart && hasSessionDraft);

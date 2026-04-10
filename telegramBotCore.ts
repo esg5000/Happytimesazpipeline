@@ -100,6 +100,7 @@ function applyMergePublishNotes(chatId: number, text: string): void {
     prior.recentUploadAssetIds && prior.recentUploadAssetIds.length > 0
       ? [...prior.recentUploadAssetIds].slice(0, 5)
       : undefined;
+  const preserveVideo = prior.draftVideoAssetId;
   const priorNotes = prior.notes.slice();
   resetTelegramSession(chatId);
   const session = getTelegramSession(chatId);
@@ -108,6 +109,9 @@ function applyMergePublishNotes(chatId: number, text: string): void {
   }
   if (preserveRecent && preserveRecent.length > 0) {
     session.recentUploadAssetIds = preserveRecent;
+  }
+  if (preserveVideo) {
+    session.draftVideoAssetId = preserveVideo;
   }
   session.notes =
     priorNotes.length > 0 ? [...priorNotes, text] : [text];
@@ -139,7 +143,8 @@ export async function publishStoryFromSourceNotes(
         false) ||
       (prior.recentUploadAssetIds && prior.recentUploadAssetIds.length > 0) ||
       !!prior.heroSanityAssetId ||
-      (prior.pendingImageAssetIds && prior.pendingImageAssetIds.length > 0);
+      (prior.pendingImageAssetIds && prior.pendingImageAssetIds.length > 0) ||
+      !!prior.draftVideoAssetId;
     if (!hasSessionMaterial) {
       throw new Error('Story source notes are empty');
     }
@@ -150,10 +155,15 @@ export async function publishStoryFromSourceNotes(
       .filter((id) => typeof id === 'string' && id.trim().length > 0)
       .slice(0, 5);
     if (ids.length > 0) {
+      const priorSnap = getTelegramSession(chatId);
+      const preserveVideo = priorSnap.draftVideoAssetId;
       resetTelegramSession(chatId);
       const session = getTelegramSession(chatId);
       session.notes = [text];
       session.pendingImageAssetIds = ids;
+      if (preserveVideo) {
+        session.draftVideoAssetId = preserveVideo;
+      }
       persistTelegramSessions();
     } else {
       applyMergePublishNotes(chatId, text);
@@ -183,7 +193,8 @@ async function publishFromSession(
   const hasPhoto = Boolean(
     session.photoFileId ||
       session.heroSanityAssetId ||
-      (session.recentUploadAssetIds && session.recentUploadAssetIds.length > 0)
+      (session.recentUploadAssetIds && session.recentUploadAssetIds.length > 0) ||
+      !!session.draftVideoAssetId
   );
 
   if (!notes && !session.title) {
@@ -270,7 +281,10 @@ async function publishFromSession(
     article,
     heroImageAssetId,
     topic.section,
-    additionalImageAssetIds
+    additionalImageAssetIds,
+    session.draftVideoAssetId
+      ? { videoAssetId: session.draftVideoAssetId }
+      : undefined
   );
 
   if (notifyTelegram) {

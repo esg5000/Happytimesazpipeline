@@ -16,6 +16,8 @@ export type TelegramDraftSession = {
   heroSanityAssetId?: string;
   /** POST /api/upload: rolling queue (max 5), order = upload order — first = hero on publish if no body images. */
   recentUploadAssetIds?: string[];
+  /** POST /api/upload-video: single Sanity file asset for optional featured video on the post. */
+  draftVideoAssetId?: string;
   /** Dashboard/API: up to 5 Sanity asset ids from publish body — first = hero, rest = additionalImages. */
   pendingImageAssetIds?: string[];
   /** @deprecated Ignored; first pending asset is always hero. Kept for old session JSON. */
@@ -66,6 +68,10 @@ function parseSession(raw: unknown): TelegramDraftSession {
           .filter(Boolean)
           .slice(0, 5)
       : undefined,
+    draftVideoAssetId:
+      typeof o.draftVideoAssetId === 'string' && o.draftVideoAssetId.trim()
+        ? o.draftVideoAssetId.trim()
+        : undefined,
     heroImageIndex:
       typeof o.heroImageIndex === 'number' && Number.isFinite(o.heroImageIndex)
         ? Math.trunc(o.heroImageIndex)

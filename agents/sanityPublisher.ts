@@ -66,6 +66,25 @@ export async function uploadImageBufferToSanity(
   }
 }
 
+/** Upload a video (or any file) buffer to Sanity assets — returns file asset `_id`. */
+export async function uploadVideoBufferToSanity(
+  buffer: Buffer,
+  filename: string,
+  contentType?: string
+): Promise<string> {
+  const sanityClient = getSanityClient();
+  try {
+    const asset = await sanityClient.assets.upload('file', buffer, {
+      filename,
+      contentType: contentType || 'application/octet-stream',
+    });
+    return asset._id;
+  } catch (error) {
+    console.error('Error uploading video file to Sanity:', error);
+    throw error;
+  }
+}
+
 /**
  * Publishes an article to Sanity as a draft
  */
@@ -215,7 +234,8 @@ export async function publishArticleToSanity(
   article: Article,
   heroImageAssetId: string,
   section: string,
-  additionalImageAssetIds?: string[]
+  additionalImageAssetIds?: string[],
+  opts?: { videoAssetId?: string }
 ): Promise<string> {
   const sanityClient = getSanityClient();
 
@@ -355,6 +375,17 @@ export async function publishArticleToSanity(
       },
     },
     ...(additionalImages ? { additionalImages } : {}),
+    ...(opts?.videoAssetId
+      ? {
+          featuredVideo: {
+            _type: 'file' as const,
+            asset: {
+              _type: 'reference' as const,
+              _ref: opts.videoAssetId,
+            },
+          },
+        }
+      : {}),
     body: portableTextBody, // This MUST be an array
     section: primarySection,
     publishedAt: null, // Draft by default
