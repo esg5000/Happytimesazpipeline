@@ -291,6 +291,19 @@ export function registerTelegramHandlers(bot: Bot): void {
     telegramSessionsHydrated = true;
   }
 
+  /** Long polling only (webhook uses HTTP wrapper). Log and swallow so polling does not crash. */
+  bot.catch((err) => {
+    const updateId = err.ctx?.update?.update_id;
+    const cause = err.error;
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const stack = cause instanceof Error ? cause.stack : undefined;
+    console.error(
+      `[telegram] middleware error (update_id=${updateId ?? 'unknown'}):`,
+      message,
+      stack ?? ''
+    );
+  });
+
   bot.use(async (ctx, next) => {
     const fromId = ctx.from?.id;
     if (!isAllowedUser(fromId)) return;

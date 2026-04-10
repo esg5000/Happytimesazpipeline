@@ -548,6 +548,25 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
 }
 
 /**
+ * Grammy's `webhookCallback` returns a Promise that rejects on middleware errors, timeouts,
+ * or init failures. Express does not catch async route rejections, so Telegram sees 500 and
+ * retries the update. We always respond 200 after logging so Telegram stops retrying.
+ */
+function createSafeTelegramWebhookHandler(bot: Bot): express.RequestHandler {
+  const inner = webhookCallback(bot, 'express');
+  return (req, res) => {
+    void Promise.resolve(inner(req, res)).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      console.error('[telegram] webhook error (ack 200 to Telegram):', message, stack ?? '');
+      if (!res.headersSent) {
+        res.status(200).end();
+      }
+    });
+  };
+}
+
+/**
  * Express app + Telegram webhook route, bound for cloud hosts (Render requires 0.0.0.0 + PORT).
  * Registers handlers, calls setWebhook with public URL, logs getWebhookInfo for debugging.
  */
@@ -555,12 +574,13 @@ export async function startTelegramWebhookExpress(bot: Bot): Promise<void> {
   const app = express();
   app.use(express.json({ limit: '20mb' }));
 
+  registerTelegramHandlers(bot);
+
   const webhookPath = `/telegram/webhook/${config.telegram.webhookPathSecret}`;
-  app.post(webhookPath, webhookCallback(bot, 'express'));
+  app.post(webhookPath, createSafeTelegramWebhookHandler(bot));
   app.get('/health', (_req, res) => res.status(200).send('ok'));
 
   registerDaemonApiRoutes(app, bot);
-  registerTelegramHandlers(bot);
 
   const webhookUrl = getTelegramWebhookFullUrl();
 
