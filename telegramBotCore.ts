@@ -50,6 +50,9 @@ async function downloadTelegramFileWithMeta(
 const PHOTO_ONLY_INGEST_SEED =
   'The editor submitted only a hero photo via Telegram (no text notes). Infer a specific Phoenix-area HappyTimesAZ-style article angle; keep factual claims conservative if the image is ambiguous.';
 
+const VIDEO_ONLY_INGEST_SEED =
+  'The editor submitted only a featured video via the dashboard (no text notes). Infer a specific Phoenix-area HappyTimesAZ-style article angle; keep factual claims conservative; the post will attach the uploaded video in Sanity.';
+
 /** Where a publish was started: dashboard/API skips all Telegram chat notifications. */
 export type PublishSource = 'telegram' | 'dashboard';
 
@@ -190,16 +193,19 @@ async function publishFromSession(
   const notifyTelegram = source === 'telegram';
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();
-  const hasPhoto = Boolean(
+  const hasHeroImageSource = Boolean(
     session.photoFileId ||
       session.heroSanityAssetId ||
-      (session.recentUploadAssetIds && session.recentUploadAssetIds.length > 0) ||
-      !!session.draftVideoAssetId
+      (session.recentUploadAssetIds && session.recentUploadAssetIds.length > 0)
   );
+  const hasDraftVideoOnly =
+    Boolean(session.draftVideoAssetId) && !hasHeroImageSource;
 
   if (!notes && !session.title) {
-    if (hasPhoto) {
+    if (hasHeroImageSource) {
       notes = PHOTO_ONLY_INGEST_SEED;
+    } else if (hasDraftVideoOnly) {
+      notes = VIDEO_ONLY_INGEST_SEED;
     } else {
       const hint =
         'Send some notes, a voice note, and/or a photo first, then /publish.';
