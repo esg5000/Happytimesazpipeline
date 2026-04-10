@@ -248,6 +248,11 @@ async function publishFromSession(
 
   let heroImageAssetId: string;
   let additionalImageAssetIds: string[] | undefined;
+  /** Session file asset from POST /api/upload-video — same publish path as hero/additional images. */
+  const featuredVideoAssetId =
+    typeof session.draftVideoAssetId === 'string'
+      ? session.draftVideoAssetId.trim() || undefined
+      : undefined;
 
   const pending = session.pendingImageAssetIds;
   const recent = session.recentUploadAssetIds;
@@ -283,14 +288,18 @@ async function publishFromSession(
     heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
   }
 
+  if (featuredVideoAssetId) {
+    console.log(
+      `[publish] Including session featured video (Sanity file asset): ${featuredVideoAssetId}`
+    );
+  }
+
   const sanityId = await publishArticleToSanity(
     article,
     heroImageAssetId,
     topic.section,
     additionalImageAssetIds,
-    session.draftVideoAssetId
-      ? { videoAssetId: session.draftVideoAssetId }
-      : undefined
+    featuredVideoAssetId ? { videoAssetId: featuredVideoAssetId } : undefined
   );
 
   if (notifyTelegram) {

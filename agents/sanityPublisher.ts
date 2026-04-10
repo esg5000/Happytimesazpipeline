@@ -239,6 +239,11 @@ export async function publishArticleToSanity(
 ): Promise<string> {
   const sanityClient = getSanityClient();
 
+  const videoAssetRef =
+    typeof opts?.videoAssetId === 'string' && opts.videoAssetId.trim().length > 0
+      ? opts.videoAssetId.trim()
+      : undefined;
+
   let primarySection = section.trim().toLowerCase();
   if (primarySection === 'mushrooms' || primarySection === 'wellness') {
     primarySection = 'health-wellness';
@@ -375,13 +380,13 @@ export async function publishArticleToSanity(
       },
     },
     ...(additionalImages ? { additionalImages } : {}),
-    ...(opts?.videoAssetId
+    ...(videoAssetRef
       ? {
           featuredVideo: {
             _type: 'file' as const,
             asset: {
               _type: 'reference' as const,
-              _ref: opts.videoAssetId,
+              _ref: videoAssetRef,
             },
           },
         }
@@ -394,6 +399,9 @@ export async function publishArticleToSanity(
 
   try {
     console.log('📤 Creating document with category:', document.category);
+    if (videoAssetRef) {
+      console.log('📹 Creating document with featuredVideo file ref:', videoAssetRef);
+    }
     const result = await sanityClient.create(document);
     console.log('✅ Document created:', result._id);
     
@@ -440,7 +448,25 @@ export async function publishArticleToSanity(
     } else {
       console.warn('⚠️  No category reference to patch');
     }
-    
+
+    if (videoAssetRef) {
+      try {
+        const featuredVideo = {
+          _type: 'file' as const,
+          asset: {
+            _type: 'reference' as const,
+            _ref: videoAssetRef,
+          },
+        };
+        console.log('🔄 Patching featuredVideo onto', result._id);
+        await sanityClient.patch(result._id).set({ featuredVideo }).commit();
+        console.log('✅ featuredVideo patch committed');
+      } catch (videoPatchErr: unknown) {
+        const m = videoPatchErr instanceof Error ? videoPatchErr.message : String(videoPatchErr);
+        console.error('❌ featuredVideo patch failed:', m);
+      }
+    }
+
     return result._id;
   } catch (error: any) {
     console.error('❌ Sanity create error:', error?.response?.body || error);
