@@ -67,8 +67,8 @@ function coerceToNotesString(value: unknown): string | undefined {
 }
 
 /**
- * Read editorial notes from POST /api/command JSON body.
- * Accepts `notes`, `editorialNotes`, `editorNotes`, or `topicNotes` (first non-empty wins).
+ * Read editorial / story source from POST /api/command body (JSON or multipart text fields).
+ * First non-empty wins (dashboards vary field names).
  */
 function extractPublishNotesFromBody(body: unknown): string | undefined {
   if (!body || typeof body !== 'object') return undefined;
@@ -78,6 +78,13 @@ function extractPublishNotesFromBody(body: unknown): string | undefined {
     'editorialNotes',
     'editorNotes',
     'topicNotes',
+    'story',
+    'body',
+    'content',
+    'text',
+    'sourceNotes',
+    'article',
+    'draft',
   ] as const;
   for (const k of keys) {
     const s = coerceToNotesString(o[k]);
@@ -250,7 +257,11 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     '/api/upload-voice',
     requireApiKey,
     (req, res, next) => {
-      multerUploadAudio.single('audio')(req, res, (err: unknown) => {
+      multerUploadAudio.fields([
+        { name: 'audio', maxCount: 1 },
+        { name: 'file', maxCount: 1 },
+        { name: 'voice', maxCount: 1 },
+      ])(req, res, (err: unknown) => {
         if (err) {
           const msg = err instanceof Error ? err.message : String(err);
           res.status(400).json({ error: msg });
@@ -261,10 +272,13 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     },
     async (req, res) => {
       try {
-        const file = req.file;
+        const files = req.files as Record<string, Express.Multer.File[]> | undefined;
+        const file =
+          files?.['audio']?.[0] ?? files?.['file']?.[0] ?? files?.['voice']?.[0];
         if (!file?.buffer) {
           res.status(400).json({
-            error: 'Missing audio file (multipart field name: audio)',
+            error:
+              'Missing audio file (multipart field: audio, file, or voice — one required)',
           });
           return;
         }
@@ -409,7 +423,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON: { "command": "...", "notes"?: string, "uploadedImages"?: string[] } or "imageAssetIds" (first id = hero) or multipart/form-data: command, notes, and up to 5 files in field "images" (first file = hero). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
+          'Use JSON: { "command": "...", "notes"?: string (or story, body, content, text, sourceNotes, …), "uploadedImages"?: string[] } or "imageAssetIds" (first id = hero) or multipart/form-data: command, notes (same aliases), up to 5 files in field "images" (first = hero). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
       });
       return;
     }
@@ -499,6 +513,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       const sessionPreview = getTelegramSession(chatId);
       const hasSessionDraft =
         (sessionPreview.recentUploadAssetIds?.length ?? 0) > 0 ||
+        (sessionPreview.pendingImageAssetIds?.length ?? 0) > 0 ||
         (sessionPreview.notes?.some(
           (n) => typeof n === 'string' && n.trim().length > 0
         ) ??
@@ -506,8 +521,16 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         !!sessionPreview.heroSanityAssetId ||
         !!sessionPreview.draftVideoAssetId;
 
+      const jsonImageOpts = extractImagePublishOptionsFromBody(req.body);
+      const hasJsonBodyImages =
+        (jsonImageOpts?.imageAssetIds?.length ?? 0) > 0;
+
+      /** Multipart /publish is always dashboard ingest (notes and/or images in form, or relies on session). */
       const useTelegramIngest =
-        notesTrim !== undefined || (!isMultipart && hasSessionDraft);
+        notesTrim !== undefined ||
+        hasSessionDraft ||
+        isMultipart ||
+        hasJsonBodyImages;
 
       console.log(
         '[api] /publish extracted notes:',
