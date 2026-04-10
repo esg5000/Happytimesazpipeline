@@ -8,7 +8,7 @@ import { getSanityClient, uploadImageToSanity } from './sanityPublisher';
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
 /** Max events written to Sanity per run (manual API and scheduled cron). */
-export const MAX_EVENTS_PER_SYNC = 50;
+const MAX_EVENTS_PER_SYNC = 50;
 
 /** Cities to search (Google Events query + location). */
 const TARGET_CITIES = [
@@ -27,7 +27,7 @@ type SerpDateBlock = {
   when?: string;
 };
 
-export type SerpGoogleEvent = {
+type SerpGoogleEvent = {
   title?: string;
   date?: SerpDateBlock;
   address?: string[];

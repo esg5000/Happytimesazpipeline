@@ -20,7 +20,7 @@ const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.pr
  * Targeted SerpApi `q` strings: greater Phoenix metro + topic. Fetched in order until
  * we have enough unique URLs (maxFetch). Last entry is a broad Valley fallback.
  */
-export const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
+const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
   // Metro clusters + community / lifestyle
   'Phoenix Scottsdale Tempe feel good community stories Arizona',
   'Mesa Chandler Gilbert local heroes charity volunteering Arizona',
@@ -49,7 +49,7 @@ export const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
 const NEGATIVE_HEADLINE_RE =
   /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|deadly (crash|collision|wreck)|terror(ist|ism)?|suicide|sexual assault|kidnap|rape\b|school\s*shooting|armed robbery|stabbed|shot dead|police\s+shooting|charged with|sentenced to|arrested for|domestic violence|child abuse|overdose death|capitol\s*riot|january\s*6|impeachment|white\s*house|mar[- ]a[- ]lago|\bGOP\b|\bDNC\b|presidential\s*campaign|midterm\s*election|election\s*fraud|stop\s*the\s*steal|congressional\s*hearing|supreme\s*court\s*(rules?|decides)/i;
 
-export type SerpGoogleNewsItem = {
+type SerpGoogleNewsItem = {
   title: string;
   link: string;
   thumbnail: string | null;

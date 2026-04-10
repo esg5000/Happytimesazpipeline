@@ -334,7 +334,6 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           source: resolveApiClientSource(req),
           assetId,
           fileAssetId: assetId,
-          /** Same as assetId — Sanity file `_id` stored on the session as `draftVideoAssetId` and set on the post as `featuredVideo`. */
           sanityVideoAssetId: assetId,
           sessionChatId: chatId,
         });

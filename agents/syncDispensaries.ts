@@ -147,7 +147,7 @@ function maxStartOffset(): number {
   return Math.min(100, n);
 }
 
-export type SyncDispensariesResult = {
+type SyncDispensariesResult = {
   /** Unique dispensaries seen after dedupe (SerpApi + cross-city). */
   uniqueFound: number;
   /** Successfully written to Sanity. */

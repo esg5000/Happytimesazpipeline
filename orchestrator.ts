@@ -8,7 +8,6 @@ import {
   getExistingSlugs,
 } from './agents/sanityPublisher';
 import { ensureUniqueSlug } from './utils/slug';
-import { Article } from './utils/validator';
 
 interface PipelineResult {
   success: boolean;

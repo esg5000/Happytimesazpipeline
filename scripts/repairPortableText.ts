@@ -1,6 +1,6 @@
 import { createClient } from '@sanity/client';
 import { config } from '../config';
-import { markdownToPortableText } from '../agents/sanityPublisher'; // Assuming markdownToPortableText is in sanityPublisher
+import { markdownToPortableText } from '../agents/sanityPublisher';
 
 interface PostDocument {
   _id: string;

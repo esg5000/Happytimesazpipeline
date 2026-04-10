@@ -20,7 +20,6 @@ import {
   hydrateTelegramSessionsFromDisk,
   persistTelegramSessions,
   resetTelegramSession,
-  type TelegramDraftSession,
 } from './telegramSessionStore';
 
 function isAllowedUser(fromId?: number): boolean {
@@ -54,7 +53,7 @@ const VIDEO_ONLY_INGEST_SEED =
   'The editor submitted only a featured video via the dashboard (no text notes). Infer a specific Phoenix-area HappyTimesAZ-style article angle; keep factual claims conservative; the post will attach the uploaded video in Sanity.';
 
 /** Where a publish was started: dashboard/API skips all Telegram chat notifications. */
-export type PublishSource = 'telegram' | 'dashboard';
+type PublishSource = 'telegram' | 'dashboard';
 
 /**
  * Run bot actions from the HTTP API (daemon). Uses the allowed user's private chat id.
