@@ -27,13 +27,14 @@ const CITIES: readonly { name: string; ll: string }[] = [
 const TARGET_TOP = 25;
 const MAX_PAGES = 4;
 
+/** SerpAPI may return thumbnail URLs as strings or as small objects with a URL property. */
 type SerpMapsLocal = {
   title?: string;
   address?: string;
   phone?: string;
   website?: string;
-  thumbnail?: string;
-  serpapi_thumbnail?: string;
+  thumbnail?: string | Record<string, unknown>;
+  serpapi_thumbnail?: string | Record<string, unknown>;
   place_id?: string;
   types?: string[];
   type?: string;
@@ -65,27 +66,21 @@ function rankingScore(r: SerpMapsLocal): number {
   return rating * Math.sqrt(1 + reviews);
 }
 
-const GENERIC_TYPES = new Set(
-  [
-    'restaurant',
-    'food',
-    'point of interest',
-    'establishment',
-    'meal delivery',
-    'meal takeaway',
-  ].map((s) => s.toLowerCase())
-);
-
-function inferCuisine(type: string | undefined, types: string[] | undefined): string {
-  const candidates = [...(types || [])];
-  if (type?.trim()) candidates.unshift(type);
-  for (const c of candidates) {
-    const t = c.trim();
-    if (!t) continue;
-    if (GENERIC_TYPES.has(t.toLowerCase())) continue;
-    return t;
+/** SerpAPI Maps: `thumbnail` / `serpapi_thumbnail` are usually strings; sometimes nested objects. */
+function extractSerpApiImageUrl(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw === 'string') {
+    const t = raw.trim();
+    return t.length > 0 ? t : undefined;
   }
-  return type?.trim() || 'Restaurant';
+  if (typeof raw === 'object') {
+    const o = raw as Record<string, unknown>;
+    for (const k of ['url', 'link', 'src', 'href', 'thumbnail', 'image']) {
+      const v = o[k];
+      if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+    }
+  }
+  return undefined;
 }
 
 function priceToLevel(price: string | undefined): number | undefined {
@@ -236,13 +231,27 @@ async function syncRestaurantsForCity(
     const city = parseCityFromAddress(r.address, searchCity);
     const phone = r.phone?.trim() || '';
     const website = r.website?.trim() || '';
-    const cuisineType = inferCuisine(r.type, r.types);
+    /** Primary Maps category string from SerpAPI (`type`), unchanged for Sanity. */
+    const cuisineType = r.type?.trim() || undefined;
     const rating = typeof r.rating === 'number' ? r.rating : undefined;
     const reviewCount = typeof r.reviews === 'number' ? r.reviews : undefined;
     const priceLevel = priceToLevel(r.price);
-    const thumbUrl = r.thumbnail || r.serpapi_thumbnail;
-    const lat = r.gps_coordinates?.latitude;
-    const lng = r.gps_coordinates?.longitude;
+    const thumbUrl =
+      extractSerpApiImageUrl(r.thumbnail) ?? extractSerpApiImageUrl(r.serpapi_thumbnail);
+    const rawLat = r.gps_coordinates?.latitude;
+    const rawLng = r.gps_coordinates?.longitude;
+    const lat =
+      typeof rawLat === 'number'
+        ? rawLat
+        : typeof rawLat === 'string'
+          ? Number.parseFloat(rawLat)
+          : undefined;
+    const lng =
+      typeof rawLng === 'number'
+        ? rawLng
+        : typeof rawLng === 'string'
+          ? Number.parseFloat(rawLng)
+          : undefined;
 
     let thumbnail:
       | { _type: 'image'; asset: { _type: 'reference'; _ref: string } }
@@ -276,16 +285,17 @@ async function syncRestaurantsForCity(
       searchCity,
       address: address || undefined,
       city,
-      cuisineType,
+      ...(cuisineType !== undefined ? { cuisineType } : {}),
       rating,
       reviewCount,
       phone: phone || undefined,
       website: website || undefined,
-      source: 'google_maps_serpapi',
+      /** SerpAPI `engine` for this integration (`google_maps`). */
+      source: 'google_maps',
     };
 
     if (priceLevel !== undefined) doc.priceLevel = priceLevel;
-    if (r.place_id) doc.googlePlaceId = r.place_id;
+    if (r.place_id?.trim()) doc.googlePlaceId = r.place_id.trim();
     if (thumbnail) doc.thumbnail = thumbnail;
     if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
       doc.location = { _type: 'geopoint', lat, lng };
