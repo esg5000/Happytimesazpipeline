@@ -202,6 +202,20 @@ function resolveApiClientSource(req: express.Request): 'dashboard' | 'unknown' {
   return raw === 'dashboard' ? 'dashboard' : 'unknown';
 }
 
+/**
+ * Length/tone/spin GPT instructions apply only when the request identifies as dashboard:
+ * `X-Client-Source: dashboard` or JSON/multipart field `source: "dashboard"`.
+ */
+function requestIsDashboardSource(req: express.Request): boolean {
+  if (resolveApiClientSource(req) === 'dashboard') return true;
+  const b = req.body;
+  if (b && typeof b === 'object' && !Array.isArray(b)) {
+    const s = (b as Record<string, unknown>).source;
+    if (typeof s === 'string' && s.trim().toLowerCase() === 'dashboard') return true;
+  }
+  return false;
+}
+
 function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
   app.use(corsMiddleware);
 
@@ -424,7 +438,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON: { "command": "...", "notes"?: string (or story, body, content, …), "length"?: "short"|"medium"|"long", "tone"?: "straight-news"|"satirical"|"sarcastic"|"educational"|"opinion"|"interview"|"listicle", "uploadedImages"?: string[] } or multipart (same fields). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
       });
       return;
     }
@@ -545,9 +559,23 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       if (useTelegramIngest) {
         const effectiveNotes = notesTrim ?? '';
         const clientSource = resolveApiClientSource(req);
-        const articleStyle = extractArticleStyleFromBody(req.body);
+        const dashboardStyle = requestIsDashboardSource(req);
+        const articleStyle = dashboardStyle
+          ? extractArticleStyleFromBody(req.body)
+          : null;
+        const styleOpts = dashboardStyle
+          ? {
+              applyDashboardArticleStyle: true as const,
+              articleLength: articleStyle!.articleLength,
+              articleTone: articleStyle!.articleTone,
+            }
+          : { applyDashboardArticleStyle: false as const };
         console.log(
-          `[api] /publish → ingest path (client=${clientSource}, length=${articleStyle.articleLength}, tone=${articleStyle.articleTone})`
+          `[api] /publish → ingest path (client=${clientSource}, dashboardStyle=${dashboardStyle}${
+            dashboardStyle
+              ? `, length=${articleStyle!.articleLength}, tone=${articleStyle!.articleTone}`
+              : ''
+          })`
         );
         try {
           if (isMultipart) {
@@ -572,14 +600,14 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               );
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds,
-                ...articleStyle,
+                ...styleOpts,
               });
             } else {
               console.log(
                 '[api] /publish multipart: no files — using session recentUploadAssetIds if any (else DALL·E)'
               );
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
-                ...articleStyle,
+                ...styleOpts,
               });
             }
           } else {
@@ -590,11 +618,11 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               );
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds: imgOpts.imageAssetIds,
-                ...articleStyle,
+                ...styleOpts,
               });
             } else {
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
-                ...articleStyle,
+                ...styleOpts,
               });
             }
           }
@@ -604,8 +632,13 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
             command: '/publish',
             publishMode:
               clientSource === 'dashboard' ? 'dashboard_ingest' : 'telegram_ingest',
-            articleLength: articleStyle.articleLength,
-            articleTone: articleStyle.articleTone,
+            dashboardArticleStyle: dashboardStyle,
+            ...(dashboardStyle && articleStyle
+              ? {
+                  articleLength: articleStyle.articleLength,
+                  articleTone: articleStyle.articleTone,
+                }
+              : {}),
           });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -616,13 +649,21 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       }
 
       console.log('[api] /publish → autonomous pipeline (runPipelineJob)');
-      const pipelineStyle = extractArticleStyleFromBody(req.body);
+      const dashboardPipelineStyle = requestIsDashboardSource(req);
+      const pipelineStyle = dashboardPipelineStyle
+        ? extractArticleStyleFromBody(req.body)
+        : null;
       try {
-        const { skipped } = await runPipelineJob({
-          notes: notesTrim,
-          articleLength: pipelineStyle.articleLength,
-          articleTone: pipelineStyle.articleTone,
-        });
+        const { skipped } = await runPipelineJob(
+          dashboardPipelineStyle && pipelineStyle
+            ? {
+                notes: notesTrim,
+                applyDashboardArticleStyle: true,
+                articleLength: pipelineStyle.articleLength,
+                articleTone: pipelineStyle.articleTone,
+              }
+            : { notes: notesTrim }
+        );
         if (skipped) {
           res.status(409).json({
             error: 'Pipeline is already running',
@@ -634,6 +675,13 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           source: resolveApiClientSource(req),
           command: '/publish',
           publishMode: 'autonomous_pipeline',
+          dashboardArticleStyle: dashboardPipelineStyle,
+          ...(dashboardPipelineStyle && pipelineStyle
+            ? {
+                articleLength: pipelineStyle.articleLength,
+                articleTone: pipelineStyle.articleTone,
+              }
+            : {}),
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);

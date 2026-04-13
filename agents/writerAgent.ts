@@ -30,7 +30,12 @@ export type WriteArticleOptions = {
    * When true, the pipeline will not call DALL·E; heroImagePrompt is set to a fixed placeholder.
    */
   userSuppliedImages?: boolean;
-  /** Approximate body word target (dashboard / pipeline). Defaults: medium (~600), straight-news. */
+  /**
+   * When true (dashboard `source: 'dashboard'` or `X-Client-Source: dashboard`), append length/tone
+   * and spin/ending rules. Autonomous and Telegram paths omit this — base writer prompt only.
+   */
+  applyDashboardArticleStyle?: boolean;
+  /** Used only when `applyDashboardArticleStyle` is true. Defaults: medium, straight-news. */
   articleLength?: ArticleLength;
   articleTone?: ArticleTone;
 };
@@ -43,9 +48,12 @@ export async function writeArticle(
   options?: WriteArticleOptions
 ): Promise<Article> {
   const basePrompt = readFileSync(WRITER_PROMPT_PATH, 'utf-8');
+  const applyStyle = options?.applyDashboardArticleStyle === true;
   const length = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const tone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
-  const systemPrompt = `${basePrompt.trim()}${buildWriterArticleStyleAppend(length, tone)}`;
+  const systemPrompt = applyStyle
+    ? `${basePrompt.trim()}${buildWriterArticleStyleAppend(length, tone)}`
+    : basePrompt.trim();
 
   const notesBlock =
     options?.sourceNotes && options.sourceNotes.trim().length > 0
@@ -62,7 +70,9 @@ Section: ${topic.section}
 Description: ${topic.description}
 Keywords: ${topic.keywords.join(', ')}
 
-Generate a complete article following all guidelines (including RUN-SPECIFIC length and tone above).
+Generate a complete article following all guidelines${
+    applyStyle ? ' (including RUN-SPECIFIC length and tone above)' : ''
+  }.
 Remember: seoDescription must be at most 155 characters (count spaces).`;
 
   const response = await axios.post(

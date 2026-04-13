@@ -17,6 +17,8 @@ const TOPIC_PROMPT_PATH = join(process.cwd(), 'prompts', 'topic.prompt.txt');
 export type GenerateTopicsOptions = {
   /** Passed into each topic request to steer angles (e.g. API /publish). */
   notes?: string;
+  /** Dashboard-only: length/tone + spin rules on topic prompt. */
+  applyDashboardArticleStyle?: boolean;
   articleLength?: ArticleLength;
   articleTone?: ArticleTone;
 };
@@ -31,6 +33,7 @@ export async function generateTopics(
   const prompt = readFileSync(TOPIC_PROMPT_PATH, 'utf-8');
   const topics: Topic[] = [];
   const editorialNotes = options?.notes?.trim();
+  const applyStyle = options?.applyDashboardArticleStyle === true;
   const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
   if (editorialNotes) {
@@ -46,6 +49,7 @@ export async function generateTopics(
         prompt,
         topics,
         editorialNotes,
+        applyStyle,
         articleLength,
         articleTone
       );
@@ -66,10 +70,13 @@ async function generateSingleTopic(
   systemPrompt: string,
   existingTopics: Topic[] = [],
   editorialNotes?: string,
+  applyDashboardArticleStyle = false,
   articleLength: ArticleLength = DEFAULT_ARTICLE_LENGTH,
   articleTone: ArticleTone = DEFAULT_ARTICLE_TONE
 ): Promise<Topic> {
-  const styleAppend = buildIngestArticleStyleAppend(articleLength, articleTone);
+  const styleAppend = applyDashboardArticleStyle
+    ? buildIngestArticleStyleAppend(articleLength, articleTone)
+    : '';
   let systemContent = `${systemPrompt.trim()}${styleAppend}`;
   if (editorialNotes) {
     systemContent += `\n\n---\nWhen the user message includes EDITOR DIRECTION, you MUST prioritize it: title, section, description, and keywords must clearly reflect that direction while staying Phoenix-local and on-brand for HappyTimesAZ.`;

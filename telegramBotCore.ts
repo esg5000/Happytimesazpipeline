@@ -138,6 +138,8 @@ export async function publishStoryFromSourceNotes(
   sourceNotes: string,
   options?: {
     imageAssetIds?: string[];
+    /** When true, GPT gets dashboard length/tone + spin rules (HTTP must set from `source: dashboard`). */
+    applyDashboardArticleStyle?: boolean;
     articleLength?: ArticleLength;
     articleTone?: ArticleTone;
   }
@@ -184,14 +186,15 @@ export async function publishStoryFromSourceNotes(
     applyMergePublishNotes(chatId, text);
   }
 
+  const applyStyle = options?.applyDashboardArticleStyle === true;
   const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
 
   try {
     await publishFromSession(bot, chatId, {
       source: 'dashboard',
-      articleLength,
-      articleTone,
+      applyDashboardArticleStyle: applyStyle,
+      ...(applyStyle ? { articleLength, articleTone } : {}),
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -205,12 +208,14 @@ async function publishFromSession(
   chatId: number,
   options?: {
     source?: PublishSource;
+    applyDashboardArticleStyle?: boolean;
     articleLength?: ArticleLength;
     articleTone?: ArticleTone;
   }
 ): Promise<void> {
   const source: PublishSource = options?.source ?? 'telegram';
   const notifyTelegram = source === 'telegram';
+  const applyStyle = options?.applyDashboardArticleStyle === true;
   const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
   const session = getTelegramSession(chatId);
@@ -246,8 +251,8 @@ async function publishFromSession(
     title: session.title,
     keywords: session.keywords,
     notes: notesForIngest,
-    articleLength,
-    articleTone,
+    applyDashboardArticleStyle: applyStyle,
+    ...(applyStyle ? { articleLength, articleTone } : {}),
   });
 
   /** Any path where the hero is not DALL·E (dashboard uploads, /api/upload hero, Telegram photo). */
@@ -259,8 +264,8 @@ async function publishFromSession(
   const writeOpts: WriteArticleOptions = {
     sourceNotes: notesForIngest.trim() ? notesForIngest : undefined,
     userSuppliedImages,
-    articleLength,
-    articleTone,
+    applyDashboardArticleStyle: applyStyle,
+    ...(applyStyle ? { articleLength, articleTone } : {}),
   };
 
   let article = await writeArticle(topic, writeOpts);

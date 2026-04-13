@@ -11,11 +11,6 @@ import {
 } from './sanityPublisher';
 import { Article, validateArticle } from '../utils/validator';
 import { ensureUniqueSlug, generateSlug } from '../utils/slug';
-import {
-  DEFAULT_ARTICLE_LENGTH,
-  DEFAULT_ARTICLE_TONE,
-  buildWriterArticleStyleAppend,
-} from '../utils/articleStyle';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
@@ -172,9 +167,7 @@ Return JSON only:
 
 async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<Article> {
   console.log(`[google-news] ${label} → AI rewrite starting (model=${config.openai.model})`);
-  const base = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
-  const system =
-    `${base.trim()}${buildWriterArticleStyleAppend(DEFAULT_ARTICLE_LENGTH, DEFAULT_ARTICLE_TONE)}`;
+  const system = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
   const basis = [
     `Title: ${item.title}`,
     item.snippet ? `Snippet: ${item.snippet}` : '',

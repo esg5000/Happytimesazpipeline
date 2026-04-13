@@ -19,6 +19,8 @@ export type IngestInput = {
   title?: string;
   keywords?: string[];
   notes: string;
+  /** Dashboard-only: length/tone + spin rules on ingest prompt. */
+  applyDashboardArticleStyle?: boolean;
   articleLength?: ArticleLength;
   articleTone?: ArticleTone;
 };
@@ -28,9 +30,12 @@ export type IngestInput = {
  */
 export async function ingestToTopic(input: IngestInput): Promise<Topic> {
   const baseIngest = readFileSync(INGEST_PROMPT_PATH, 'utf-8');
+  const applyStyle = input.applyDashboardArticleStyle === true;
   const length = input.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const tone = input.articleTone ?? DEFAULT_ARTICLE_TONE;
-  const systemPrompt = `${baseIngest.trim()}${buildIngestArticleStyleAppend(length, tone)}`;
+  const systemPrompt = applyStyle
+    ? `${baseIngest.trim()}${buildIngestArticleStyleAppend(length, tone)}`
+    : baseIngest.trim();
 
   const userParts: string[] = [];
   if (input.section) userParts.push(`PREFERRED_SECTION: ${input.section}`);

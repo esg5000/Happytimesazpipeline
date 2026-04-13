@@ -28,7 +28,12 @@ interface PipelineResult {
 /** Optional steering for topic generation (e.g. API /publish body `notes`). */
 export type RunPipelineOptions = {
   notes?: string;
-  /** Dashboard `length` / `tone`; default medium + straight-news when omitted. */
+  /**
+   * When true (dashboard-marked HTTP request only), topic + writer get length/tone + spin rules.
+   * Cron / autonomous runs omit this — legacy prompts unchanged.
+   */
+  applyDashboardArticleStyle?: boolean;
+  /** Only used when `applyDashboardArticleStyle` is true. */
   articleLength?: ArticleLength;
   articleTone?: ArticleTone;
 };
@@ -56,12 +61,13 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         `   Editorial notes → topic agent (${options.notes.trim().length} chars)`
       );
     }
+    const applyStyle = options?.applyDashboardArticleStyle === true;
     const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
     const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
     const topics = await generateTopics(config.pipeline.articlesPerDay, {
       notes: options?.notes,
-      articleLength,
-      articleTone,
+      applyDashboardArticleStyle: applyStyle,
+      ...(applyStyle ? { articleLength, articleTone } : {}),
     });
     console.log(`✅ Generated ${topics.length} topics\n`);
 
@@ -75,7 +81,10 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
       try {
         // Step 2: Write article
         console.log('   ✍️  Writing article...');
-        let article = await writeArticle(topic, { articleLength, articleTone });
+        let article = await writeArticle(topic, {
+          applyDashboardArticleStyle: applyStyle,
+          ...(applyStyle ? { articleLength, articleTone } : {}),
+        });
 
         // Ensure slug uniqueness
         article = {
