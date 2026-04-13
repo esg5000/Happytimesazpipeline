@@ -8,7 +8,7 @@ import axios from 'axios';
 import type { SanityClient } from '@sanity/client';
 
 import { config } from '../config';
-import { getSanityClient, uploadImageToSanity } from '../agents/sanityPublisher';
+import { getSanityClient } from '../agents/sanityPublisher';
 import { generateSlug } from '../utils/slug';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
@@ -27,21 +27,21 @@ const CITIES: readonly { name: string; ll: string }[] = [
 const TARGET_TOP = 25;
 const MAX_PAGES = 4;
 
-/** SerpAPI may return thumbnail URLs as strings or as small objects with a URL property. */
+/** Local result shape from SerpAPI (fields may be absent or wrong type at runtime). */
 type SerpMapsLocal = {
-  title?: string;
-  address?: string;
-  phone?: string;
-  website?: string;
-  thumbnail?: string | Record<string, unknown>;
-  serpapi_thumbnail?: string | Record<string, unknown>;
-  place_id?: string;
-  types?: string[];
-  type?: string;
-  rating?: number;
-  reviews?: number;
-  price?: string;
-  gps_coordinates?: { latitude?: number; longitude?: number };
+  title?: unknown;
+  address?: unknown;
+  phone?: unknown;
+  website?: unknown;
+  thumbnail?: unknown;
+  serpapi_thumbnail?: unknown;
+  place_id?: unknown;
+  types?: unknown;
+  type?: unknown;
+  rating?: unknown;
+  reviews?: unknown;
+  price?: unknown;
+  gps_coordinates?: unknown;
 };
 
 type SerpMapsResponse = {
@@ -59,33 +59,72 @@ function validateEnv(): void {
   }
 }
 
+/** Only accept real strings — never persist objects as Sanity string fields. */
+function asNonEmptyString(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t.length > 0 ? t : undefined;
+}
+
+function asStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim());
+}
+
+function asFiniteNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') {
+    const n = Number.parseFloat(v.trim());
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
+function readGpsCoordinates(raw: unknown): { lat: number; lng: number } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const lat = asFiniteNumber(o.latitude);
+  const lng = asFiniteNumber(o.longitude);
+  if (lat === undefined || lng === undefined) return undefined;
+  return { lat, lng };
+}
+
 /** Rating × √(1 + reviews) — favors strong ratings with meaningful volume. */
 function rankingScore(r: SerpMapsLocal): number {
-  const rating = typeof r.rating === 'number' && Number.isFinite(r.rating) ? r.rating : 0;
-  const reviews = typeof r.reviews === 'number' && Number.isFinite(r.reviews) ? r.reviews : 0;
+  const rating = asFiniteNumber(r.rating) ?? 0;
+  const reviews = asFiniteNumber(r.reviews) ?? 0;
   return rating * Math.sqrt(1 + reviews);
 }
 
-/** SerpAPI Maps: `thumbnail` / `serpapi_thumbnail` are usually strings; sometimes nested objects. */
+/** If SerpAPI ever wraps a URL in an object, extract a string; prefer plain `thumbnail` string. */
 function extractSerpApiImageUrl(raw: unknown): string | undefined {
   if (raw == null) return undefined;
-  if (typeof raw === 'string') {
-    const t = raw.trim();
-    return t.length > 0 ? t : undefined;
-  }
+  const direct = asNonEmptyString(raw);
+  if (direct) return direct;
   if (typeof raw === 'object') {
     const o = raw as Record<string, unknown>;
     for (const k of ['url', 'link', 'src', 'href', 'thumbnail', 'image']) {
-      const v = o[k];
-      if (typeof v === 'string' && v.trim().length > 0) return v.trim();
+      const inner = asNonEmptyString(o[k]);
+      if (inner) return inner;
     }
   }
   return undefined;
 }
 
-function priceToLevel(price: string | undefined): number | undefined {
-  if (!price || typeof price !== 'string') return undefined;
-  const p = price.trim();
+/** Store `thumbnail` as the SerpAPI URL string (primary field `thumbnail`). */
+function resolveThumbnailUrlString(r: SerpMapsLocal): string | undefined {
+  return (
+    asNonEmptyString(r.thumbnail) ??
+    asNonEmptyString(r.serpapi_thumbnail) ??
+    extractSerpApiImageUrl(r.thumbnail) ??
+    extractSerpApiImageUrl(r.serpapi_thumbnail)
+  );
+}
+
+function priceToLevel(price: unknown): number | undefined {
+  const priceStr = asNonEmptyString(price);
+  if (!priceStr) return undefined;
+  const p = priceStr;
   if (p.length >= 1 && /^[\$€£]+$/u.test(p)) {
     return Math.min(4, Math.max(1, p.length));
   }
@@ -93,8 +132,8 @@ function priceToLevel(price: string | undefined): number | undefined {
 }
 
 function isRestaurantLike(r: SerpMapsLocal): boolean {
-  const types = (r.types || []).map((t) => t.toLowerCase());
-  const primary = (r.type || '').toLowerCase();
+  const types = asStringArray(r.types).map((t) => t.toLowerCase());
+  const primary = (asNonEmptyString(r.type) ?? '').toLowerCase();
   if (types.some((t) => t.includes('restaurant') || t.includes('cafe') || t.includes('diner'))) {
     return true;
   }
@@ -128,16 +167,17 @@ function parseCityFromAddress(address: string | undefined, fallbackCity: string)
 
 /** Stable _id per (searchCity, place) so each metro query keeps its own top-25 rows without cross-city overwrites. */
 function stableDocumentId(r: SerpMapsLocal, searchCity: string): string {
-  if (r.place_id && r.place_id.trim()) {
+  const pid = asNonEmptyString(r.place_id);
+  if (pid) {
     const hex = crypto
       .createHash('sha256')
-      .update(`pid:${searchCity}:${r.place_id.trim()}`)
+      .update(`pid:${searchCity}:${pid}`)
       .digest('hex')
       .slice(0, 32);
     return `restaurant-${hex}`;
   }
-  const name = (r.title || '').trim().toLowerCase();
-  const addr = (r.address || '').trim().toLowerCase();
+  const name = (asNonEmptyString(r.title) ?? '').toLowerCase();
+  const addr = (asNonEmptyString(r.address) ?? '').toLowerCase();
   const key = `na:${searchCity}|${name}|${addr}`;
   const hex = crypto.createHash('sha256').update(key).digest('hex').slice(0, 32);
   return `restaurant-${hex}`;
@@ -203,9 +243,11 @@ async function syncRestaurantsForCity(
 
     for (const r of results) {
       if (!isRestaurantLike(r)) continue;
-      const title = r.title?.trim();
+      const title = asNonEmptyString(r.title);
       if (!title) continue;
-      const pid = r.place_id?.trim() || `fallback:${title}:${r.address || ''}`;
+      const addrKey = asNonEmptyString(r.address) ?? '';
+      const pid =
+        asNonEmptyString(r.place_id) || `fallback:${title}:${addrKey}`;
       const existing = merged.get(pid);
       if (!existing || rankingScore(r) > rankingScore(existing)) {
         merged.set(pid, r);
@@ -217,7 +259,7 @@ async function syncRestaurantsForCity(
   }
 
   const ranked = [...merged.values()]
-    .filter((r) => r.title?.trim())
+    .filter((r) => asNonEmptyString(r.title))
     .sort((a, b) => rankingScore(b) - rankingScore(a))
     .slice(0, TARGET_TOP);
 
@@ -225,54 +267,21 @@ async function syncRestaurantsForCity(
   let updated = 0;
 
   for (const r of ranked) {
-    const title = r.title!.trim();
+    const title = asNonEmptyString(r.title)!;
     const _id = stableDocumentId(r, searchCity);
-    const address = r.address?.trim() || '';
-    const city = parseCityFromAddress(r.address, searchCity);
-    const phone = r.phone?.trim() || '';
-    const website = r.website?.trim() || '';
-    /** Primary Maps category string from SerpAPI (`type`), unchanged for Sanity. */
-    const cuisineType = r.type?.trim() || undefined;
-    const rating = typeof r.rating === 'number' ? r.rating : undefined;
-    const reviewCount = typeof r.reviews === 'number' ? r.reviews : undefined;
+    const address = asNonEmptyString(r.address) ?? '';
+    const city = parseCityFromAddress(asNonEmptyString(r.address), searchCity);
+    const phone = asNonEmptyString(r.phone) ?? '';
+    const website = asNonEmptyString(r.website) ?? '';
+    /** SerpAPI `type` string only — never an object. */
+    const cuisineType = asNonEmptyString(r.type);
+    const rating = asFiniteNumber(r.rating);
+    const reviewCount = asFiniteNumber(r.reviews);
     const priceLevel = priceToLevel(r.price);
-    const thumbUrl =
-      extractSerpApiImageUrl(r.thumbnail) ?? extractSerpApiImageUrl(r.serpapi_thumbnail);
-    const rawLat = r.gps_coordinates?.latitude;
-    const rawLng = r.gps_coordinates?.longitude;
-    const lat =
-      typeof rawLat === 'number'
-        ? rawLat
-        : typeof rawLat === 'string'
-          ? Number.parseFloat(rawLat)
-          : undefined;
-    const lng =
-      typeof rawLng === 'number'
-        ? rawLng
-        : typeof rawLng === 'string'
-          ? Number.parseFloat(rawLng)
-          : undefined;
-
-    let thumbnail:
-      | { _type: 'image'; asset: { _type: 'reference'; _ref: string } }
-      | undefined;
-    if (thumbUrl) {
-      try {
-        const assetId = await uploadImageToSanity(
-          thumbUrl,
-          `restaurant-${_id.replace(/^restaurant-/, '').slice(0, 20)}.jpg`
-        );
-        thumbnail = {
-          _type: 'image',
-          asset: { _type: 'reference', _ref: assetId },
-        };
-      } catch (e) {
-        console.warn(
-          `[restaurants] Thumbnail upload failed "${title}":`,
-          e instanceof Error ? e.message : e
-        );
-      }
-    }
+    const thumbnailUrl = resolveThumbnailUrlString(r);
+    const gps = readGpsCoordinates(r.gps_coordinates);
+    const lat = gps?.lat;
+    const lng = gps?.lng;
 
     const slugTail = _id.replace(/^restaurant-/, '').slice(0, 10);
     const slugCurrent = `${generateSlug(`${title} ${searchCity}`)}-${slugTail}`.slice(0, 96);
@@ -295,8 +304,9 @@ async function syncRestaurantsForCity(
     };
 
     if (priceLevel !== undefined) doc.priceLevel = priceLevel;
-    if (r.place_id?.trim()) doc.googlePlaceId = r.place_id.trim();
-    if (thumbnail) doc.thumbnail = thumbnail;
+    const placeId = asNonEmptyString(r.place_id);
+    if (placeId) doc.googlePlaceId = placeId;
+    if (thumbnailUrl) doc.thumbnail = thumbnailUrl;
     if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
       doc.location = { _type: 'geopoint', lat, lng };
     }
