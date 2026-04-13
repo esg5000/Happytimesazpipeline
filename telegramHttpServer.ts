@@ -12,7 +12,8 @@ import {
   uploadImageBufferToSanity,
   uploadVideoBufferToSanity,
 } from './agents/sanityPublisher';
-import { getPipelineStatusSnapshot } from './pipelineStatus';
+import { appendActivityLog, getPipelineStatusSnapshot } from './pipelineStatus';
+import { runFetchRestaurants } from './scripts/fetchRestaurants';
 import { runPipelineJob } from './pipelineRunner';
 import {
   executeTelegramDaemonCommand,
@@ -428,17 +429,25 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       typeof raw === 'string' ? raw.trim() : '';
     const isDaemonCommand = (
       s: string
-    ): s is '/publish' | '/new' | '/start' | 'syncEvents' | 'syncNews' | 'syncDispensaries' =>
+    ): s is
+      | '/publish'
+      | '/new'
+      | '/start'
+      | 'syncEvents'
+      | 'syncNews'
+      | 'syncDispensaries'
+      | 'syncRestaurants' =>
       s === '/publish' ||
       s === '/new' ||
       s === '/start' ||
       s === 'syncEvents' ||
       s === 'syncNews' ||
-      s === 'syncDispensaries';
+      s === 'syncDispensaries' ||
+      s === 'syncRestaurants';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries | syncRestaurants.',
       });
       return;
     }
@@ -510,6 +519,60 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncDispensaries failed:', msg);
+        res.status(500).json({ error: msg });
+      }
+      return;
+    }
+
+    if (command === 'syncRestaurants') {
+      if (!config.serpApi.apiKey) {
+        res.status(503).json({
+          error: 'SERPAPI_API_KEY is not configured',
+        });
+        return;
+      }
+      if (!config.sanity.projectId || !config.sanity.apiToken) {
+        res.status(503).json({
+          error: 'SANITY_PROJECT_ID and SANITY_API_TOKEN are required for restaurant sync',
+        });
+        return;
+      }
+      try {
+        console.log(
+          '[api] /api/command syncRestaurants → runFetchRestaurants (SerpApi Google Maps, 7 AZ cities)'
+        );
+        appendActivityLog(
+          'syncRestaurants: started (Phoenix, Scottsdale, Tempe, Mesa, Glendale, Chandler, Surprise AZ)',
+          'syncRestaurants'
+        );
+        const cities = await runFetchRestaurants({
+          onCityComplete: (r) => {
+            appendActivityLog(
+              `syncRestaurants: ${r.city}, AZ complete — created=${r.created}, updated=${r.updated}, candidates=${r.candidates}`,
+              'syncRestaurants'
+            );
+          },
+        });
+        appendActivityLog('syncRestaurants: all cities finished', 'syncRestaurants');
+        const totals = cities.reduce(
+          (acc, c) => ({
+            created: acc.created + c.created,
+            updated: acc.updated + c.updated,
+            candidates: acc.candidates + c.candidates,
+          }),
+          { created: 0, updated: 0, candidates: 0 }
+        );
+        res.json({
+          ok: true,
+          source: resolveApiClientSource(req),
+          command: 'syncRestaurants',
+          cities,
+          ...totals,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command syncRestaurants failed:', msg);
+        appendActivityLog(`syncRestaurants: failed — ${msg}`, 'syncRestaurants');
         res.status(500).json({ error: msg });
       }
       return;

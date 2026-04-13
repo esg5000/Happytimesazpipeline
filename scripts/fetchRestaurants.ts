@@ -5,6 +5,7 @@
 import crypto from 'crypto';
 
 import axios from 'axios';
+import type { SanityClient } from '@sanity/client';
 
 import { config } from '../config';
 import { getSanityClient, uploadImageToSanity } from '../agents/sanityPublisher';
@@ -176,131 +177,162 @@ async function fetchMapsPage(
   return { ok: true, results: data.local_results || [] };
 }
 
-export async function runFetchRestaurants(): Promise<void> {
+export type RestaurantCitySyncResult = {
+  city: string;
+  created: number;
+  updated: number;
+  candidates: number;
+};
+
+export type RunFetchRestaurantsOptions = {
+  /** Called after each metro finishes (same seven cities as the CLI script). */
+  onCityComplete?: (result: RestaurantCitySyncResult) => void;
+};
+
+async function syncRestaurantsForCity(
+  client: SanityClient,
+  searchCity: string,
+  ll: string
+): Promise<RestaurantCitySyncResult> {
+  const q = `best restaurants ${searchCity} AZ`;
+  const merged = new Map<string, SerpMapsLocal>();
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const start = page * 20;
+    const { ok, results, error } = await fetchMapsPage(q, ll, start);
+    if (!ok) {
+      console.warn(`[restaurants] ${searchCity}: page start=${start} failed: ${error || 'unknown'}`);
+      break;
+    }
+    if (results.length === 0) break;
+
+    for (const r of results) {
+      if (!isRestaurantLike(r)) continue;
+      const title = r.title?.trim();
+      if (!title) continue;
+      const pid = r.place_id?.trim() || `fallback:${title}:${r.address || ''}`;
+      const existing = merged.get(pid);
+      if (!existing || rankingScore(r) > rankingScore(existing)) {
+        merged.set(pid, r);
+      }
+    }
+
+    if (merged.size >= TARGET_TOP * 2) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const ranked = [...merged.values()]
+    .filter((r) => r.title?.trim())
+    .sort((a, b) => rankingScore(b) - rankingScore(a))
+    .slice(0, TARGET_TOP);
+
+  let created = 0;
+  let updated = 0;
+
+  for (const r of ranked) {
+    const title = r.title!.trim();
+    const _id = stableDocumentId(r, searchCity);
+    const address = r.address?.trim() || '';
+    const city = parseCityFromAddress(r.address, searchCity);
+    const phone = r.phone?.trim() || '';
+    const website = r.website?.trim() || '';
+    const cuisineType = inferCuisine(r.type, r.types);
+    const rating = typeof r.rating === 'number' ? r.rating : undefined;
+    const reviewCount = typeof r.reviews === 'number' ? r.reviews : undefined;
+    const priceLevel = priceToLevel(r.price);
+    const thumbUrl = r.thumbnail || r.serpapi_thumbnail;
+    const lat = r.gps_coordinates?.latitude;
+    const lng = r.gps_coordinates?.longitude;
+
+    let thumbnail:
+      | { _type: 'image'; asset: { _type: 'reference'; _ref: string } }
+      | undefined;
+    if (thumbUrl) {
+      try {
+        const assetId = await uploadImageToSanity(
+          thumbUrl,
+          `restaurant-${_id.replace(/^restaurant-/, '').slice(0, 20)}.jpg`
+        );
+        thumbnail = {
+          _type: 'image',
+          asset: { _type: 'reference', _ref: assetId },
+        };
+      } catch (e) {
+        console.warn(
+          `[restaurants] Thumbnail upload failed "${title}":`,
+          e instanceof Error ? e.message : e
+        );
+      }
+    }
+
+    const slugTail = _id.replace(/^restaurant-/, '').slice(0, 10);
+    const slugCurrent = `${generateSlug(`${title} ${searchCity}`)}-${slugTail}`.slice(0, 96);
+
+    const doc: Record<string, unknown> = {
+      _type: 'restaurant',
+      _id,
+      name: title,
+      slug: { _type: 'slug', current: slugCurrent },
+      searchCity,
+      address: address || undefined,
+      city,
+      cuisineType,
+      rating,
+      reviewCount,
+      phone: phone || undefined,
+      website: website || undefined,
+      source: 'google_maps_serpapi',
+    };
+
+    if (priceLevel !== undefined) doc.priceLevel = priceLevel;
+    if (r.place_id) doc.googlePlaceId = r.place_id;
+    if (thumbnail) doc.thumbnail = thumbnail;
+    if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
+      doc.location = { _type: 'geopoint', lat, lng };
+    }
+
+    try {
+      const before = await client.getDocument(_id);
+      await client.createOrReplace(doc as Parameters<typeof client.createOrReplace>[0]);
+      if (before) updated++;
+      else created++;
+    } catch (e) {
+      console.error(
+        `[restaurants] Sanity upsert failed "${title}" (${searchCity}):`,
+        e instanceof Error ? e.message : e
+      );
+    }
+
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+  console.log(
+    `[restaurants] ${searchCity}: done — created=${created}, updated=${updated}, candidates=${ranked.length}`
+  );
+
+  return { city: searchCity, created, updated, candidates: ranked.length };
+}
+
+/**
+ * Fetches top restaurants for Phoenix, Scottsdale, Tempe, Mesa, Glendale, Chandler, and Surprise, AZ.
+ */
+export async function runFetchRestaurants(
+  options?: RunFetchRestaurantsOptions
+): Promise<RestaurantCitySyncResult[]> {
   validateEnv();
   const client = getSanityClient();
 
   console.log('[restaurants] SerpAPI Google Maps → Sanity `restaurant` (top 25 per city by rating × √(1+reviews))\n');
 
+  const results: RestaurantCitySyncResult[] = [];
   for (const { name: searchCity, ll } of CITIES) {
-    const q = `best restaurants ${searchCity} AZ`;
-    const merged = new Map<string, SerpMapsLocal>();
-
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const start = page * 20;
-      const { ok, results, error } = await fetchMapsPage(q, ll, start);
-      if (!ok) {
-        console.warn(`[restaurants] ${searchCity}: page start=${start} failed: ${error || 'unknown'}`);
-        break;
-      }
-      if (results.length === 0) break;
-
-      for (const r of results) {
-        if (!isRestaurantLike(r)) continue;
-        const title = r.title?.trim();
-        if (!title) continue;
-        const pid = r.place_id?.trim() || `fallback:${title}:${r.address || ''}`;
-        const existing = merged.get(pid);
-        if (!existing || rankingScore(r) > rankingScore(existing)) {
-          merged.set(pid, r);
-        }
-      }
-
-      if (merged.size >= TARGET_TOP * 2) break;
-      await new Promise((r) => setTimeout(r, 300));
-    }
-
-    const ranked = [...merged.values()]
-      .filter((r) => r.title?.trim())
-      .sort((a, b) => rankingScore(b) - rankingScore(a))
-      .slice(0, TARGET_TOP);
-
-    let created = 0;
-    let updated = 0;
-
-    for (const r of ranked) {
-      const title = r.title!.trim();
-      const _id = stableDocumentId(r, searchCity);
-      const address = r.address?.trim() || '';
-      const city = parseCityFromAddress(r.address, searchCity);
-      const phone = r.phone?.trim() || '';
-      const website = r.website?.trim() || '';
-      const cuisineType = inferCuisine(r.type, r.types);
-      const rating = typeof r.rating === 'number' ? r.rating : undefined;
-      const reviewCount = typeof r.reviews === 'number' ? r.reviews : undefined;
-      const priceLevel = priceToLevel(r.price);
-      const thumbUrl = r.thumbnail || r.serpapi_thumbnail;
-      const lat = r.gps_coordinates?.latitude;
-      const lng = r.gps_coordinates?.longitude;
-
-      let thumbnail:
-        | { _type: 'image'; asset: { _type: 'reference'; _ref: string } }
-        | undefined;
-      if (thumbUrl) {
-        try {
-          const assetId = await uploadImageToSanity(
-            thumbUrl,
-            `restaurant-${_id.replace(/^restaurant-/, '').slice(0, 20)}.jpg`
-          );
-          thumbnail = {
-            _type: 'image',
-            asset: { _type: 'reference', _ref: assetId },
-          };
-        } catch (e) {
-          console.warn(
-            `[restaurants] Thumbnail upload failed "${title}":`,
-            e instanceof Error ? e.message : e
-          );
-        }
-      }
-
-      const slugTail = _id.replace(/^restaurant-/, '').slice(0, 10);
-      const slugCurrent = `${generateSlug(`${title} ${searchCity}`)}-${slugTail}`.slice(0, 96);
-
-      const doc: Record<string, unknown> = {
-        _type: 'restaurant',
-        _id,
-        name: title,
-        slug: { _type: 'slug', current: slugCurrent },
-        searchCity,
-        address: address || undefined,
-        city,
-        cuisineType,
-        rating,
-        reviewCount,
-        phone: phone || undefined,
-        website: website || undefined,
-        source: 'google_maps_serpapi',
-      };
-
-      if (priceLevel !== undefined) doc.priceLevel = priceLevel;
-      if (r.place_id) doc.googlePlaceId = r.place_id;
-      if (thumbnail) doc.thumbnail = thumbnail;
-      if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
-        doc.location = { _type: 'geopoint', lat, lng };
-      }
-
-      try {
-        const before = await client.getDocument(_id);
-        await client.createOrReplace(doc as Parameters<typeof client.createOrReplace>[0]);
-        if (before) updated++;
-        else created++;
-      } catch (e) {
-        console.error(
-          `[restaurants] Sanity upsert failed "${title}" (${searchCity}):`,
-          e instanceof Error ? e.message : e
-        );
-      }
-
-      await new Promise((r) => setTimeout(r, 150));
-    }
-
-    console.log(
-      `[restaurants] ${searchCity}: done — created=${created}, updated=${updated}, candidates=${ranked.length}`
-    );
+    const row = await syncRestaurantsForCity(client, searchCity, ll);
+    results.push(row);
+    options?.onCityComplete?.(row);
   }
 
   console.log('\n[restaurants] All cities finished.');
+  return results;
 }
 
 if (require.main === module) {
