@@ -16,6 +16,12 @@ import { ensureUniqueSlug } from './utils/slug';
 import type { SectionSlug } from './utils/validator';
 import { SECTION_SLUGS, VisualStyle } from './utils/validator';
 import {
+  type ArticleLength,
+  type ArticleTone,
+  DEFAULT_ARTICLE_LENGTH,
+  DEFAULT_ARTICLE_TONE,
+} from './utils/articleStyle';
+import {
   getTelegramSession,
   hydrateTelegramSessionsFromDisk,
   persistTelegramSessions,
@@ -130,7 +136,11 @@ export async function publishStoryFromSourceNotes(
   bot: Bot,
   chatId: number,
   sourceNotes: string,
-  options?: { imageAssetIds?: string[] }
+  options?: {
+    imageAssetIds?: string[];
+    articleLength?: ArticleLength;
+    articleTone?: ArticleTone;
+  }
 ): Promise<void> {
   const text = sourceNotes.trim();
   if (!text) {
@@ -174,8 +184,15 @@ export async function publishStoryFromSourceNotes(
     applyMergePublishNotes(chatId, text);
   }
 
+  const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
+  const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
+
   try {
-    await publishFromSession(bot, chatId, { source: 'dashboard' });
+    await publishFromSession(bot, chatId, {
+      source: 'dashboard',
+      articleLength,
+      articleTone,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('Publish error:', msg);
@@ -186,10 +203,16 @@ export async function publishStoryFromSourceNotes(
 async function publishFromSession(
   bot: Bot,
   chatId: number,
-  options?: { source?: PublishSource }
+  options?: {
+    source?: PublishSource;
+    articleLength?: ArticleLength;
+    articleTone?: ArticleTone;
+  }
 ): Promise<void> {
   const source: PublishSource = options?.source ?? 'telegram';
   const notifyTelegram = source === 'telegram';
+  const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
+  const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
   const session = getTelegramSession(chatId);
   let notes = session.notes.join('\n').trim();
   const hasHeroImageSource = Boolean(
@@ -223,6 +246,8 @@ async function publishFromSession(
     title: session.title,
     keywords: session.keywords,
     notes: notesForIngest,
+    articleLength,
+    articleTone,
   });
 
   /** Any path where the hero is not DALL·E (dashboard uploads, /api/upload hero, Telegram photo). */
@@ -234,6 +259,8 @@ async function publishFromSession(
   const writeOpts: WriteArticleOptions = {
     sourceNotes: notesForIngest.trim() ? notesForIngest : undefined,
     userSuppliedImages,
+    articleLength,
+    articleTone,
   };
 
   let article = await writeArticle(topic, writeOpts);

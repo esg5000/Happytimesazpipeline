@@ -3,6 +3,13 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { config } from '../config';
 import { validateTopic, Topic } from '../utils/validator';
+import {
+  type ArticleLength,
+  type ArticleTone,
+  DEFAULT_ARTICLE_LENGTH,
+  DEFAULT_ARTICLE_TONE,
+  buildIngestArticleStyleAppend,
+} from '../utils/articleStyle';
 
 // Resolve prompt path - works in both dev and compiled dist
 const INGEST_PROMPT_PATH = join(process.cwd(), 'prompts', 'ingest.prompt.txt');
@@ -12,13 +19,18 @@ export type IngestInput = {
   title?: string;
   keywords?: string[];
   notes: string;
+  articleLength?: ArticleLength;
+  articleTone?: ArticleTone;
 };
 
 /**
  * Converts Telegram notes into a validated Topic JSON object.
  */
 export async function ingestToTopic(input: IngestInput): Promise<Topic> {
-  const systemPrompt = readFileSync(INGEST_PROMPT_PATH, 'utf-8');
+  const baseIngest = readFileSync(INGEST_PROMPT_PATH, 'utf-8');
+  const length = input.articleLength ?? DEFAULT_ARTICLE_LENGTH;
+  const tone = input.articleTone ?? DEFAULT_ARTICLE_TONE;
+  const systemPrompt = `${baseIngest.trim()}${buildIngestArticleStyleAppend(length, tone)}`;
 
   const userParts: string[] = [];
   if (input.section) userParts.push(`PREFERRED_SECTION: ${input.section}`);

@@ -3,6 +3,13 @@ import { config } from '../config';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { validateTopic, Topic } from '../utils/validator';
+import {
+  type ArticleLength,
+  type ArticleTone,
+  DEFAULT_ARTICLE_LENGTH,
+  DEFAULT_ARTICLE_TONE,
+  buildIngestArticleStyleAppend,
+} from '../utils/articleStyle';
 
 // Resolve prompt path - works in both dev and compiled dist
 const TOPIC_PROMPT_PATH = join(process.cwd(), 'prompts', 'topic.prompt.txt');
@@ -10,6 +17,8 @@ const TOPIC_PROMPT_PATH = join(process.cwd(), 'prompts', 'topic.prompt.txt');
 export type GenerateTopicsOptions = {
   /** Passed into each topic request to steer angles (e.g. API /publish). */
   notes?: string;
+  articleLength?: ArticleLength;
+  articleTone?: ArticleTone;
 };
 
 /**
@@ -22,6 +31,8 @@ export async function generateTopics(
   const prompt = readFileSync(TOPIC_PROMPT_PATH, 'utf-8');
   const topics: Topic[] = [];
   const editorialNotes = options?.notes?.trim();
+  const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
+  const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
   if (editorialNotes) {
     console.log(
       `[topicAgent] Applying editorial notes to each topic request (${editorialNotes.length} chars)`
@@ -31,7 +42,13 @@ export async function generateTopics(
   for (let i = 0; i < count; i++) {
     try {
       // Pass context about previously generated topics to avoid repetition
-      const topic = await generateSingleTopic(prompt, topics, editorialNotes);
+      const topic = await generateSingleTopic(
+        prompt,
+        topics,
+        editorialNotes,
+        articleLength,
+        articleTone
+      );
       topics.push(topic);
     } catch (error) {
       console.error(`Error generating topic ${i + 1}:`, error);
@@ -48,11 +65,15 @@ export async function generateTopics(
 async function generateSingleTopic(
   systemPrompt: string,
   existingTopics: Topic[] = [],
-  editorialNotes?: string
+  editorialNotes?: string,
+  articleLength: ArticleLength = DEFAULT_ARTICLE_LENGTH,
+  articleTone: ArticleTone = DEFAULT_ARTICLE_TONE
 ): Promise<Topic> {
-  const systemContent = editorialNotes
-    ? `${systemPrompt.trim()}\n\n---\nWhen the user message includes EDITOR DIRECTION, you MUST prioritize it: title, section, description, and keywords must clearly reflect that direction while staying Phoenix-local and on-brand for HappyTimesAZ.`
-    : systemPrompt;
+  const styleAppend = buildIngestArticleStyleAppend(articleLength, articleTone);
+  let systemContent = `${systemPrompt.trim()}${styleAppend}`;
+  if (editorialNotes) {
+    systemContent += `\n\n---\nWhen the user message includes EDITOR DIRECTION, you MUST prioritize it: title, section, description, and keywords must clearly reflect that direction while staying Phoenix-local and on-brand for HappyTimesAZ.`;
+  }
 
   let userPrompt: string;
   if (editorialNotes) {

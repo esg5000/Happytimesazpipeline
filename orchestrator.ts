@@ -8,6 +8,12 @@ import {
   getExistingSlugs,
 } from './agents/sanityPublisher';
 import { ensureUniqueSlug } from './utils/slug';
+import {
+  type ArticleLength,
+  type ArticleTone,
+  DEFAULT_ARTICLE_LENGTH,
+  DEFAULT_ARTICLE_TONE,
+} from './utils/articleStyle';
 
 interface PipelineResult {
   success: boolean;
@@ -22,6 +28,9 @@ interface PipelineResult {
 /** Optional steering for topic generation (e.g. API /publish body `notes`). */
 export type RunPipelineOptions = {
   notes?: string;
+  /** Dashboard `length` / `tone`; default medium + straight-news when omitted. */
+  articleLength?: ArticleLength;
+  articleTone?: ArticleTone;
 };
 
 /**
@@ -47,7 +56,13 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         `   Editorial notes → topic agent (${options.notes.trim().length} chars)`
       );
     }
-    const topics = await generateTopics(config.pipeline.articlesPerDay, options);
+    const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
+    const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
+    const topics = await generateTopics(config.pipeline.articlesPerDay, {
+      notes: options?.notes,
+      articleLength,
+      articleTone,
+    });
     console.log(`✅ Generated ${topics.length} topics\n`);
 
     const results: PipelineResult[] = [];
@@ -60,7 +75,7 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
       try {
         // Step 2: Write article
         console.log('   ✍️  Writing article...');
-        let article = await writeArticle(topic);
+        let article = await writeArticle(topic, { articleLength, articleTone });
 
         // Ensure slug uniqueness
         article = {

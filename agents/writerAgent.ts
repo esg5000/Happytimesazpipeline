@@ -5,6 +5,13 @@ import { join } from 'path';
 import { validateArticle, Article } from '../utils/validator';
 import { Topic } from '../utils/validator';
 import { generateSlug } from '../utils/slug';
+import {
+  type ArticleLength,
+  type ArticleTone,
+  DEFAULT_ARTICLE_LENGTH,
+  DEFAULT_ARTICLE_TONE,
+  buildWriterArticleStyleAppend,
+} from '../utils/articleStyle';
 
 // Resolve prompt path - works in both dev and compiled dist
 const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
@@ -23,6 +30,9 @@ export type WriteArticleOptions = {
    * When true, the pipeline will not call DALL·E; heroImagePrompt is set to a fixed placeholder.
    */
   userSuppliedImages?: boolean;
+  /** Approximate body word target (dashboard / pipeline). Defaults: medium (~600), straight-news. */
+  articleLength?: ArticleLength;
+  articleTone?: ArticleTone;
 };
 
 /**
@@ -32,7 +42,10 @@ export async function writeArticle(
   topic: Topic,
   options?: WriteArticleOptions
 ): Promise<Article> {
-  const systemPrompt = readFileSync(WRITER_PROMPT_PATH, 'utf-8');
+  const basePrompt = readFileSync(WRITER_PROMPT_PATH, 'utf-8');
+  const length = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
+  const tone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
+  const systemPrompt = `${basePrompt.trim()}${buildWriterArticleStyleAppend(length, tone)}`;
 
   const notesBlock =
     options?.sourceNotes && options.sourceNotes.trim().length > 0
@@ -49,7 +62,7 @@ Section: ${topic.section}
 Description: ${topic.description}
 Keywords: ${topic.keywords.join(', ')}
 
-Generate a complete article following all guidelines.
+Generate a complete article following all guidelines (including RUN-SPECIFIC length and tone above).
 Remember: seoDescription must be at most 155 characters (count spaces).`;
 
   const response = await axios.post(

@@ -20,6 +20,7 @@ import {
   registerTelegramHandlers,
 } from './telegramBotCore';
 import { getTelegramSession, persistTelegramSessions } from './telegramSessionStore';
+import { extractArticleStyleFromBody } from './utils/articleStyle';
 
 const RENDER_HOST = '0.0.0.0';
 
@@ -423,7 +424,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON: { "command": "...", "notes"?: string (or story, body, content, text, sourceNotes, …), "uploadedImages"?: string[] } or "imageAssetIds" (first id = hero) or multipart/form-data: command, notes (same aliases), up to 5 files in field "images" (first = hero). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
+          'Use JSON: { "command": "...", "notes"?: string (or story, body, content, …), "length"?: "short"|"medium"|"long", "tone"?: "straight-news"|"satirical"|"sarcastic"|"educational"|"opinion"|"interview"|"listicle", "uploadedImages"?: string[] } or multipart (same fields). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries.',
       });
       return;
     }
@@ -544,8 +545,9 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       if (useTelegramIngest) {
         const effectiveNotes = notesTrim ?? '';
         const clientSource = resolveApiClientSource(req);
+        const articleStyle = extractArticleStyleFromBody(req.body);
         console.log(
-          `[api] /publish → ingest path (client=${clientSource}, notes as story source material)`
+          `[api] /publish → ingest path (client=${clientSource}, length=${articleStyle.articleLength}, tone=${articleStyle.articleTone})`
         );
         try {
           if (isMultipart) {
@@ -570,12 +572,15 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               );
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds,
+                ...articleStyle,
               });
             } else {
               console.log(
                 '[api] /publish multipart: no files — using session recentUploadAssetIds if any (else DALL·E)'
               );
-              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes);
+              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
+                ...articleStyle,
+              });
             }
           } else {
             const imgOpts = extractImagePublishOptionsFromBody(req.body);
@@ -585,9 +590,12 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               );
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds: imgOpts.imageAssetIds,
+                ...articleStyle,
               });
             } else {
-              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes);
+              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
+                ...articleStyle,
+              });
             }
           }
           res.json({
@@ -596,6 +604,8 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
             command: '/publish',
             publishMode:
               clientSource === 'dashboard' ? 'dashboard_ingest' : 'telegram_ingest',
+            articleLength: articleStyle.articleLength,
+            articleTone: articleStyle.articleTone,
           });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -606,8 +616,13 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       }
 
       console.log('[api] /publish → autonomous pipeline (runPipelineJob)');
+      const pipelineStyle = extractArticleStyleFromBody(req.body);
       try {
-        const { skipped } = await runPipelineJob();
+        const { skipped } = await runPipelineJob({
+          notes: notesTrim,
+          articleLength: pipelineStyle.articleLength,
+          articleTone: pipelineStyle.articleTone,
+        });
         if (skipped) {
           res.status(409).json({
             error: 'Pipeline is already running',
