@@ -282,7 +282,7 @@ async function collectGoogleNewsCandidates(
 }
 
 /**
- * SerpApi Google News → score up to 10 headlines → keep top 1–3 with score ≥ 7 → rewrite → Sanity (`news`, `google_news`).
+ * SerpApi Google News → score up to 10 headlines → keep top stories with score ≥ 6 → rewrite → Sanity (`news`, `google_news`).
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
@@ -300,7 +300,7 @@ export async function syncNewsApiToSanity(): Promise<{
 
   console.log('[google-news] ========== syncNewsApiToSanity (SerpApi Google News) start ==========');
   console.log(
-    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (top stories scoring ≥7)`
+    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (top stories scoring ≥6)`
   );
   console.log(
     `[google-news] Search strategy: ${GOOGLE_NEWS_SEARCH_QUERIES.length} targeted metro/topic queries (merge unique URLs, cap ${maxFetch})`
@@ -353,9 +353,9 @@ export async function syncNewsApiToSanity(): Promise<{
 
     try {
       const gate = await scoreAndGate(item, label);
-      if (gate.exclude || gate.relevanceScore < 7) {
+      if (gate.exclude || gate.relevanceScore < 6) {
         console.log(
-          `[google-news] ${label} SKIP: exclude=${gate.exclude}, score=${gate.relevanceScore} (need ≥7)`
+          `[google-news] ${label} SKIP: exclude=${gate.exclude}, score=${gate.relevanceScore} (need ≥6)`
         );
         skipped++;
         continue;
@@ -374,7 +374,7 @@ export async function syncNewsApiToSanity(): Promise<{
   const toPublish = scored.slice(0, maxPublish);
 
   console.log(
-    `[google-news] After scoring: ${scored.length} eligible (≥7, not excluded). Publishing top ${toPublish.length} (max ${maxPublish}):`
+    `[google-news] After scoring: ${scored.length} eligible (≥6, not excluded). Publishing top ${toPublish.length} (max ${maxPublish}):`
   );
   toPublish.forEach((s, idx) => {
     console.log(

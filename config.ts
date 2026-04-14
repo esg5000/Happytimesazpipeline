@@ -43,12 +43,12 @@ export const config = {
       10,
       Math.max(1, parseInt(process.env.GOOGLE_NEWS_MAX_FETCH || '10', 10) || 10)
     ),
-    /** After AI scoring (≥7), publish at most this many per run (1–3). */
+    /** After AI scoring (≥6), publish at most this many per run (1–5). */
     maxPublishPerRun: Math.min(
-      3,
+      5,
       Math.max(
         1,
-        parseInt(process.env.GOOGLE_NEWS_MAX_PUBLISH || '3', 10) || 3
+        parseInt(process.env.GOOGLE_NEWS_MAX_PUBLISH || '5', 10) || 5
       )
     ),
   },
