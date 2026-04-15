@@ -21,6 +21,74 @@ export function getSanityClient(): SanityClient {
   return client;
 }
 
+type FeaturedPostSnapshot = { _id: string; featuredAt?: string | null } | null;
+
+async function getCurrentFeaturedPost(sanityClient: SanityClient): Promise<FeaturedPostSnapshot> {
+  try {
+    const row = await sanityClient.fetch<{ _id: string; featuredAt?: string | null } | null>(
+      `*[_type == "post" && isFeatured == true] | order(featuredAt desc, _updatedAt desc)[0]{ _id, featuredAt }`
+    );
+    return row && typeof row._id === 'string' ? row : null;
+  } catch (e) {
+    console.warn(
+      '[sanity] Featured query failed (continuing without auto-feature):',
+      e instanceof Error ? e.message : e
+    );
+    return null;
+  }
+}
+
+function isFeaturedOlderThanHours(featuredAt: string | null | undefined, hours: number): boolean {
+  if (!featuredAt || typeof featuredAt !== 'string') return true;
+  const t = Date.parse(featuredAt);
+  if (!Number.isFinite(t)) return true;
+  const ageMs = Date.now() - t;
+  return ageMs > hours * 60 * 60 * 1000;
+}
+
+/**
+ * If there is no currently featured post (or it's older than 4 hours), feature `newPostId`
+ * and un-feature the previously featured post (if any).
+ */
+async function autoFeatureIfStale(
+  sanityClient: SanityClient,
+  newPostId: string,
+  opts?: { hours?: number; logLabel?: string }
+): Promise<void> {
+  const hours = typeof opts?.hours === 'number' && Number.isFinite(opts.hours) ? opts.hours : 4;
+  const label = opts?.logLabel ? `[${opts.logLabel}] ` : '';
+
+  const current = await getCurrentFeaturedPost(sanityClient);
+  if (current && !isFeaturedOlderThanHours(current.featuredAt, hours)) {
+    console.log(
+      `${label}[sanity] Featured unchanged: current=${current._id} featuredAt=${current.featuredAt || 'n/a'} (<${hours}h)`
+    );
+    return;
+  }
+
+  const nowIso = new Date().toISOString();
+  const prevId = current?._id;
+  console.log(
+    `${label}[sanity] Auto-featuring new post: new=${newPostId}` +
+      (prevId ? ` (prev=${prevId} stale/missing)` : ' (no current featured)')
+  );
+
+  try {
+    const tx = sanityClient.transaction();
+    if (prevId && prevId !== newPostId) {
+      tx.patch(prevId, (p) => p.set({ isFeatured: false }));
+    }
+    tx.patch(newPostId, (p) => p.set({ isFeatured: true, featuredAt: nowIso }));
+    await tx.commit();
+    console.log(`${label}[sanity] Auto-feature commit ok: featured=${newPostId}`);
+  } catch (e) {
+    console.warn(
+      `${label}[sanity] Auto-feature commit failed (continuing):`,
+      e instanceof Error ? e.message : e
+    );
+  }
+}
+
 /**
  * Uploads an image to Sanity assets
  */
@@ -467,6 +535,7 @@ export async function publishArticleToSanity(
       }
     }
 
+    await autoFeatureIfStale(sanityClient, result._id, { logLabel: 'writer' });
     return result._id;
   } catch (error: any) {
     console.error('❌ Sanity create error:', error?.response?.body || error);
@@ -609,6 +678,7 @@ export async function publishGoogleNewsArticleToSanity(
       await sanityClient.patch(result._id).set({ category: categoryRef }).commit();
       console.log(`[google-news][sanity] Category patch committed`);
     }
+    await autoFeatureIfStale(sanityClient, result._id, { logLabel: 'google-news' });
     return result._id;
   } catch (error: unknown) {
     console.error('[google-news][sanity] sanityClient.create or patch failed:', error);
