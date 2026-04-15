@@ -433,6 +433,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       | '/publish'
       | '/new'
       | '/start'
+      | 'runWriter'
       | 'syncEvents'
       | 'syncNews'
       | 'syncDispensaries'
@@ -440,6 +441,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       s === '/publish' ||
       s === '/new' ||
       s === '/start' ||
+      s === 'runWriter' ||
       s === 'syncEvents' ||
       s === 'syncNews' ||
       s === 'syncDispensaries' ||
@@ -447,8 +449,32 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | syncEvents | syncNews | syncDispensaries | syncRestaurants.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | runWriter | syncEvents | syncNews | syncDispensaries | syncRestaurants.',
       });
+      return;
+    }
+
+    if (command === 'runWriter') {
+      console.log('[api] /api/command runWriter → runPipelineJob (scheduled writer pipeline)');
+      try {
+        const { skipped } = await runPipelineJob();
+        if (skipped) {
+          res.status(409).json({
+            error: 'Pipeline is already running',
+          });
+          return;
+        }
+        res.json({
+          ok: true,
+          source: resolveApiClientSource(req),
+          command: 'runWriter',
+          message: 'Writer pipeline started',
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command runWriter failed:', msg);
+        res.status(500).json({ error: msg });
+      }
       return;
     }
 
