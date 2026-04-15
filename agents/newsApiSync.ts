@@ -11,6 +11,7 @@ import {
 } from './sanityPublisher';
 import { Article, validateArticle } from '../utils/validator';
 import { ensureUniqueSlug, generateSlug } from '../utils/slug';
+import { generateImage, generateImagePrompt } from './imageAgent';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
@@ -67,6 +68,39 @@ type ScoreResult = {
   exclude: boolean;
   excludeReason?: string;
 };
+
+function isValidHttpUrl(url: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const t = url.trim();
+  if (t.length < 10) return false;
+  try {
+    const u = new URL(t);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function generateAndUploadHeroForGoogleNews(
+  article: Article,
+  filenameBase: string,
+  label: string
+): Promise<string> {
+  const basePrompt =
+    (article as unknown as { heroImagePrompt?: unknown }).heroImagePrompt &&
+    typeof (article as unknown as { heroImagePrompt?: unknown }).heroImagePrompt === 'string'
+      ? ((article as unknown as { heroImagePrompt?: string }).heroImagePrompt as string)
+      : `A realistic editorial photo illustrating: ${article.title} (Phoenix, Arizona local news)`;
+
+  console.log(`[google-news] ${label} AI hero: generating image prompt…`);
+  const enhanced = await generateImagePrompt(basePrompt, article.visualStyle);
+  console.log(`[google-news] ${label} AI hero: generating image…`);
+  const imageUrl = await generateImage(enhanced);
+  console.log(`[google-news] ${label} AI hero: uploading to Sanity…`);
+  const heroId = await uploadImageToSanity(imageUrl, filenameBase);
+  console.log(`[google-news] ${label} AI hero asset=${heroId}`);
+  return heroId;
+}
 
 function flattenGoogleNewsResults(raw: unknown[] | undefined): SerpGoogleNewsItem[] {
   const out: SerpGoogleNewsItem[] = [];
@@ -401,22 +435,29 @@ export async function syncNewsApiToSanity(): Promise<{
       existingSlugs.push(article.slug);
 
       let heroId: string | undefined;
-      if (item.thumbnail) {
-        console.log(`[google-news] ${pubLabel} hero upload…`);
+      const filename = `google-news-${article.slug.slice(0, 24)}.jpg`;
+      const thumb = item.thumbnail?.trim() || '';
+      if (thumb && isValidHttpUrl(thumb)) {
+        console.log(`[google-news] ${pubLabel} hero upload (SerpAPI thumbnail)…`);
         try {
-          heroId = await uploadImageToSanity(
-            item.thumbnail,
-            `google-news-${article.slug.slice(0, 24)}.jpg`
-          );
+          heroId = await uploadImageToSanity(thumb, filename);
           console.log(`[google-news] ${pubLabel} hero asset=${heroId}`);
         } catch (e) {
           console.warn(
-            `[google-news] ${pubLabel} hero upload failed:`,
+            `[google-news] ${pubLabel} hero upload failed; falling back to AI hero:`,
             e instanceof Error ? e.message : e
           );
         }
+      } else if (thumb) {
+        console.log(
+          `[google-news] ${pubLabel} thumbnail invalid; falling back to AI hero`
+        );
       } else {
-        console.log(`[google-news] ${pubLabel} no thumbnail; publishing without hero`);
+        console.log(`[google-news] ${pubLabel} no thumbnail; falling back to AI hero`);
+      }
+
+      if (!heroId) {
+        heroId = await generateAndUploadHeroForGoogleNews(article, filename, pubLabel);
       }
 
       console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
