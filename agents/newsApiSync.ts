@@ -42,6 +42,11 @@ const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
   'Phoenix weather emergency news Arizona',
   'Arizona cannabis legalization policy news',
   'Phoenix food truck pop up events',
+  'Phoenix Suns news today',
+  'Arizona Cardinals news today',
+  'Arizona Diamondbacks news today',
+  'ASU Sun Devils sports news today',
+  'Phoenix Rising FC news today',
 ];
 
 /** Fast reject before AI — crime, tragedy, serious accidents, national partisan frame (headline-level). */
