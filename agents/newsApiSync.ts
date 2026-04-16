@@ -22,28 +22,26 @@ const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.pr
  * we have enough unique URLs (maxFetch). Last entry is a broad Valley fallback.
  */
 const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
-  // Metro clusters + community / lifestyle
-  'Phoenix Scottsdale Tempe feel good community stories Arizona',
-  'Mesa Chandler Gilbert local heroes charity volunteering Arizona',
-  'Glendale Peoria Surprise Goodyear positive community news Arizona',
-  'Sun City Fountain Hills Cave Creek Paradise Valley Arizona local community',
-  'Scottsdale Phoenix restaurant opening food dining Arizona',
-  'Phoenix Tempe Mesa arts culture museums Arizona',
-  'Chandler Gilbert Scottsdale local business entrepreneurs Arizona',
-  // Pro sports (local angle)
-  'Phoenix Suns Arizona',
-  'Arizona Cardinals Glendale',
-  'Arizona Diamondbacks Phoenix',
-  'Scottsdale Phoenix health wellness Arizona',
-  'Phoenix metro real estate development Arizona',
-  'Phoenix Scottsdale tourism attractions Arizona',
-  'Phoenix metro parks hiking outdoor recreation Arizona',
-  'Phoenix Arizona local people profiles inspiring stories',
-  // Local / state policy affecting daily life (not national partisan news)
-  'Arizona local government city council schools infrastructure housing policy',
-  'Phoenix Mesa education funding city policy Arizona',
-  // Broad Valley fallback if earlier queries return thin results
-  'Phoenix metro Arizona local lifestyle community',
+  'Phoenix Arizona news today',
+  'Scottsdale Tempe Mesa local news today',
+  'Phoenix cannabis dispensary news Arizona',
+  'Arizona marijuana cannabis industry news',
+  'Phoenix restaurant bar opening closing news',
+  'Phoenix nightlife entertainment news',
+  'Arizona food drink scene news',
+  'Phoenix events concerts festivals this week',
+  'Phoenix Scottsdale health wellness news',
+  'Arizona local business news today',
+  'Phoenix real estate development news',
+  'Arizona sports news today',
+  'Phoenix community local heroes news',
+  'Scottsdale arts culture events news',
+  'Arizona outdoor recreation hiking news',
+  'Phoenix metro crime safety news',
+  'Arizona politics government news today',
+  'Phoenix weather emergency news Arizona',
+  'Arizona cannabis legalization policy news',
+  'Phoenix food truck pop up events',
 ];
 
 /** Fast reject before AI — crime, tragedy, serious accidents, national partisan frame (headline-level). */
