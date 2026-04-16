@@ -44,6 +44,8 @@ export async function generateTopics(
 
   for (let i = 0; i < count; i++) {
     try {
+      const lastSection =
+        topics.length > 0 ? topics[topics.length - 1]!.section : undefined;
       // Pass context about previously generated topics to avoid repetition
       const topic = await generateSingleTopic(
         prompt,
@@ -51,7 +53,8 @@ export async function generateTopics(
         editorialNotes,
         applyStyle,
         articleLength,
-        articleTone
+        articleTone,
+        lastSection
       );
       topics.push(topic);
     } catch (error) {
@@ -72,7 +75,8 @@ async function generateSingleTopic(
   editorialNotes?: string,
   applyDashboardArticleStyle = false,
   articleLength: ArticleLength = DEFAULT_ARTICLE_LENGTH,
-  articleTone: ArticleTone = DEFAULT_ARTICLE_TONE
+  articleTone: ArticleTone = DEFAULT_ARTICLE_TONE,
+  lastGeneratedSection?: string
 ): Promise<Topic> {
   const styleAppend = applyDashboardArticleStyle
     ? buildIngestArticleStyleAppend(articleLength, articleTone)
@@ -92,6 +96,11 @@ async function generateSingleTopic(
     ].join('\n');
   } else {
     userPrompt = 'Generate a new article topic for HappyTimesAZ.com';
+  }
+
+  if (lastGeneratedSection && lastGeneratedSection.trim()) {
+    const s = lastGeneratedSection.trim();
+    userPrompt += `\n\nThe last article was in the ${s} section — do NOT generate another ${s} topic. Pick a different section.`;
   }
 
   if (existingTopics.length > 0) {
