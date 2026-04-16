@@ -199,6 +199,21 @@ Return JSON only:
   return result;
 }
 
+const SEO_TITLE_MAX = 70;
+
+function truncateSeoTitleIfNeeded(raw: unknown): void {
+  if (!raw || typeof raw !== 'object') return;
+  const o = raw as Record<string, unknown>;
+  const s = o.seoTitle;
+  if (typeof s !== 'string') return;
+  if (s.length <= SEO_TITLE_MAX) return;
+  const cut = s.slice(0, SEO_TITLE_MAX).trimEnd();
+  o.seoTitle = cut.length >= 10 ? cut : s.slice(0, SEO_TITLE_MAX);
+  console.log(
+    `[google-news] seoTitle exceeded ${SEO_TITLE_MAX} chars; truncated before validation (${s.length} → ${(o.seoTitle as string).length})`
+  );
+}
+
 async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<Article> {
   console.log(`[google-news] ${label} → AI rewrite starting (model=${config.openai.model})`);
   const system = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
@@ -213,6 +228,8 @@ async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<
   const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
 
   const parsed = await openAiJson<Record<string, unknown>>(system, user);
+
+  truncateSeoTitleIfNeeded(parsed);
 
   if (parsed && typeof parsed === 'object' && 'title' in parsed) {
     const o = parsed as { title: string; slug?: string };
