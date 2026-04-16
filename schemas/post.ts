@@ -191,6 +191,7 @@ export default defineType({
           'nightlife',
           'food',
           'events',
+          'sports',
           'global',
           'news',
         ]

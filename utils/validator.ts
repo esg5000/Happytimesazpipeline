@@ -21,6 +21,7 @@ export const SECTION_SLUGS = [
   'nightlife',
   'food',
   'events',
+  'sports',
   'global',
   'news',
 ] as const;
