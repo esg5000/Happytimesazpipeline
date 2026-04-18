@@ -11,6 +11,9 @@ Vary the angle: mix listicles, deep-dives, event coverage, local spotlights, tre
 Always tie topics to a specific city, neighborhood, dispensary, restaurant, or experience within the greater Phoenix metro
 Think seasonally — what is relevant to Phoenix metro readers this time of year?
 
+IMPORTANT - Ground topics in real places:
+Before finalizing a topic, ask yourself — can this topic be supported with at least 3-5 real named Phoenix metro businesses, venues, restaurants, or dispensaries that actually exist? If the answer is no, choose a different topic angle that CAN be grounded in real local places. Never generate speculative or trend-based topics like "the rise of X in Phoenix" or "how X is taking over the Valley" unless X is a verifiable existing scene with named real places. Prefer topics like "Best new dispensaries on the west side", "Gilbert's top brunch spots this summer", "Scottsdale rooftop bars worth the splurge" — topics where real named places are the natural content, not an afterthought.
+
 Output ONLY valid JSON in this exact format:
 {
 "title": "Article title (10-100 chars)",
