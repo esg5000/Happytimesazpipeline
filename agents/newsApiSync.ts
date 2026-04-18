@@ -17,6 +17,11 @@ const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
 const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.prompt.txt');
 
+/** OpenAI model for SerpApi Google News candidate scoring + topic/exclude gate. */
+const OPENAI_MODEL_GOOGLE_NEWS_SCORE = 'gpt-5.4-mini';
+/** OpenAI model for SerpApi Google News article rewrite → HappyTimesAZ JSON. */
+const OPENAI_MODEL_GOOGLE_NEWS_REWRITE = 'gpt-5.4';
+
 /**
  * Core team queries — run first; every unique URL from these is kept **without** counting
  * toward `maxFetch` (general queries fill up to `maxFetch` after).
@@ -179,11 +184,11 @@ function flattenGoogleNewsResults(raw: unknown[] | undefined): SerpGoogleNewsIte
   return out;
 }
 
-async function openAiJson<T>(system: string, user: string): Promise<T> {
+async function openAiJson<T>(system: string, user: string, model: string): Promise<T> {
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
-      model: config.openai.model,
+      model,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -207,7 +212,9 @@ async function openAiJson<T>(system: string, user: string): Promise<T> {
 
 async function scoreAndGate(item: SerpGoogleNewsItem, label: string): Promise<ScoreResult> {
   const text = [item.title, item.snippet || ''].join('\n\n').slice(0, 12000);
-  console.log(`[google-news] ${label} → OpenAI: relevance scoring + topic/exclude gate…`);
+  console.log(
+    `[google-news] ${label} → OpenAI (${OPENAI_MODEL_GOOGLE_NEWS_SCORE}): relevance scoring + topic/exclude gate…`
+  );
 
   const system = `You are an editor for HappyTimesAZ, a Phoenix AZ local lifestyle site covering the **greater Phoenix metro** (e.g. Phoenix, Scottsdale, Tempe, Mesa, Glendale, Peoria, Chandler, Gilbert, Surprise, Goodyear, Sun City, Fountain Hills, Cave Creek, Paradise Valley).
 
@@ -226,7 +233,7 @@ Return JSON only:
 
   const user = `Headline & snippet:\n${text}\n\nSource URL: ${item.link}`;
 
-  const raw = await openAiJson<ScoreResult>(system, user);
+  const raw = await openAiJson<ScoreResult>(system, user, OPENAI_MODEL_GOOGLE_NEWS_SCORE);
   const relevanceScore = Math.min(10, Math.max(1, Math.round(Number(raw.relevanceScore)) || 1));
   let topicDedupeKey: string | undefined;
   if (typeof raw.topicDedupeKey === 'string' && raw.topicDedupeKey.trim()) {
@@ -267,7 +274,9 @@ function truncateSeoTitleIfNeeded(raw: unknown): void {
 }
 
 async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<Article> {
-  console.log(`[google-news] ${label} → AI rewrite starting (model=${config.openai.model})`);
+  console.log(
+    `[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE})`
+  );
   const system = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
   const basis = [
     `Title: ${item.title}`,
@@ -279,7 +288,11 @@ async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<
 
   const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
 
-  const parsed = await openAiJson<Record<string, unknown>>(system, user);
+  const parsed = await openAiJson<Record<string, unknown>>(
+    system,
+    user,
+    OPENAI_MODEL_GOOGLE_NEWS_REWRITE
+  );
 
   truncateSeoTitleIfNeeded(parsed);
 
