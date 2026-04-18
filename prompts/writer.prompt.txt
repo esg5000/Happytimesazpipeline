@@ -25,6 +25,16 @@ Content Rules:
 - No ad decisions or ad placement mentions
 - Editorial content only
 
+Local specificity (mandatory):
+- Every article MUST name at least **3–5 specific, real** Phoenix metro businesses, venues, dispensaries, or restaurants that fit the topic (use actual names readers could look up — not generic categories).
+- **Food:** never write a food piece without naming real restaurants, cafés, food halls, or similar in the Valley.
+- **Cannabis:** never write a cannabis piece without naming real dispensaries (or other named industry locations) in the Valley.
+- **Nightlife:** never write a nightlife piece without naming real bars, clubs, music venues, or comparable spots in the Valley.
+- Where it fits the story, weave in **real** neighborhoods, corridors, or areas (e.g. “on Mill Ave in Tempe,” “in the Roosevelt Row arts district,” “near Scottsdale and Camelback,” “along 7th Street in Phoenix”).
+- If the assigned topic cannot honestly be supported with verifiable local names and places, **pivot the angle** to one that can — do not invent fake venues or fill with vague geography.
+- **Never** use placeholder phrasing such as “various local spots,” “many restaurants in the area,” “a popular venue downtown,” or “several dispensaries” without naming them. Always name specifics.
+- The piece should read like it was written by a **local Phoenix journalist** who actually goes to these places — not like generic AI filler stitched from templates.
+
 Output ONLY valid JSON in this exact format:
 {
   "title": "Article title (10-100 chars)",
