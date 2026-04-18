@@ -18,8 +18,19 @@ const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.prompt.txt');
 
 /**
- * Targeted SerpApi `q` strings: greater Phoenix metro + topic. Fetched in order until
- * we have enough unique URLs (maxFetch). Last entry is a broad Valley fallback.
+ * Core team queries — run first; every unique URL from these is kept **without** counting
+ * toward `maxFetch` (general queries fill up to `maxFetch` after).
+ */
+const GOOGLE_NEWS_PRIORITY_QUERIES: readonly string[] = [
+  'Phoenix Suns news today',
+  'Arizona Diamondbacks news today',
+  'Arizona Cardinals news today',
+  'ASU Sun Devils news today',
+];
+
+/**
+ * Targeted SerpApi `q` strings: greater Phoenix metro + topic (after priority batch).
+ * Fetched in order until enough unique URLs from this list alone reach `maxFetch` (priority URLs excluded from that count).
  */
 const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
   'Phoenix Arizona news today',
@@ -42,10 +53,6 @@ const GOOGLE_NEWS_SEARCH_QUERIES: readonly string[] = [
   'Phoenix weather emergency news Arizona',
   'Arizona cannabis legalization policy news',
   'Phoenix food truck pop up events',
-  'Phoenix Suns news today',
-  'Arizona Cardinals news today',
-  'Arizona Diamondbacks news today',
-  'ASU Sun Devils sports news today',
   'Phoenix Rising FC news today',
 ];
 
@@ -70,11 +77,17 @@ type ScoreResult = {
   relevanceScore: number;
   exclude: boolean;
   excludeReason?: string;
+  /** Same real-world event/thread → same key (max one article per run). */
+  topicDedupeKey?: string;
 };
 
 /** Phoenix metro core sports — never exclude; floor score 7 (enforced after model scores). */
 const LOCAL_CORE_SPORTS_RE =
   /\bphoenix\s+suns\b|\barizona\s+cardinals\b|\barizona\s+diamondbacks\b|\barizona\s+coyotes\b|\basu\s+sun\s+devils\b|\bsun\s+devils\b/i;
+
+function isLocalCoreSportsItem(item: SerpGoogleNewsItem): boolean {
+  return LOCAL_CORE_SPORTS_RE.test(`${item.title}\n${item.snippet || ''}`);
+}
 
 function applyGoogleNewsScoringOverrides(
   item: SerpGoogleNewsItem,
@@ -206,17 +219,30 @@ Score how relevant and valuable this story is for **local readers** (1–10). **
 
 Set **exclude=true** if the story is mainly: **crime**, **violence**, **tragedy**, **serious accidents**; **pure national** partisan noise with **no** Phoenix-area hook; **war**; **celebrity gossip** with no Arizona tie; or **remote** national political commentary with **no** in-person Valley event angle.
 
+**topicDedupeKey** (required): a short stable identifier for the **one** main real-world story thread or event (use lowercase words separated by underscores, 2–8 segments, ≤80 chars). Every article about the **same** rally, game, press conference, or incident must reuse the **identical** key (e.g. three headlines about the same Trump rally in Phoenix → same key). Unrelated stories → different keys.
+
 Return JSON only:
-{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <short string or omit>}`;
+{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <short string or omit>, "topicDedupeKey": "<string>"}`;
 
   const user = `Headline & snippet:\n${text}\n\nSource URL: ${item.link}`;
 
   const raw = await openAiJson<ScoreResult>(system, user);
   const relevanceScore = Math.min(10, Math.max(1, Math.round(Number(raw.relevanceScore)) || 1));
+  let topicDedupeKey: string | undefined;
+  if (typeof raw.topicDedupeKey === 'string' && raw.topicDedupeKey.trim()) {
+    topicDedupeKey = raw.topicDedupeKey
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9_]/g, '')
+      .slice(0, 80);
+    if (!topicDedupeKey) topicDedupeKey = undefined;
+  }
   const result = {
     relevanceScore,
     exclude: Boolean(raw.exclude),
     excludeReason: raw.excludeReason,
+    topicDedupeKey,
   };
   console.log(
     `[google-news] ${label} → score: relevanceScore=${result.relevanceScore}, exclude=${result.exclude}` +
@@ -312,18 +338,129 @@ async function fetchSerpGoogleNews(
   return { data, httpStatus: status };
 }
 
+type ScoredAttempt = { item: SerpGoogleNewsItem; gate: ScoreResult; label: string };
+
+function topicKeyForAttempt(a: ScoredAttempt): string {
+  const k = a.gate.topicDedupeKey?.trim();
+  if (k && k.length > 0) return k;
+  return `url:${a.item.link}`;
+}
+
+/** Walk `sorted` (best score first); keep at most `max` items with unique topicDedupeKey. */
+function pickDiversifiedByTopic(sorted: ScoredAttempt[], max: number): ScoredAttempt[] {
+  const usedTopics = new Set<string>();
+  const out: ScoredAttempt[] = [];
+  for (const a of sorted) {
+    const key = topicKeyForAttempt(a);
+    if (usedTopics.has(key)) continue;
+    usedTopics.add(key);
+    out.push(a);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 /**
- * Run targeted queries in order; merge unique stories by URL until `maxItems` or queries exhausted.
+ * If any Phoenix metro core sports candidate scored ≥5 and is not excluded, ensure one such
+ * story appears in `picks` by replacing the lowest-scoring non-sports slot when needed.
  */
-async function collectGoogleNewsCandidates(
-  maxItems: number
-): Promise<{ items: SerpGoogleNewsItem[]; queriesUsed: number; lastError?: string }> {
+function ensureAtLeastOneSportsStoryInPicks(
+  picks: ScoredAttempt[],
+  maxPublish: number,
+  attempts: ScoredAttempt[]
+): ScoredAttempt[] {
+  const sportPool = attempts.filter(
+    (a) =>
+      isLocalCoreSportsItem(a.item) &&
+      !a.gate.exclude &&
+      a.gate.relevanceScore >= 5
+  );
+  if (sportPool.length === 0) return picks;
+
+  const hasSport = (arr: ScoredAttempt[]) => arr.some((a) => isLocalCoreSportsItem(a.item));
+  if (hasSport(picks)) return picks;
+
+  const bestSport = [...sportPool].sort(
+    (a, b) => b.gate.relevanceScore - a.gate.relevanceScore
+  )[0]!;
+  if (picks.length === 0) {
+    return [bestSport].slice(0, maxPublish);
+  }
+
+  const next = picks.slice(0, maxPublish);
+  let worstIdx = -1;
+  let worstScore = Infinity;
+  for (let i = 0; i < next.length; i++) {
+    const a = next[i]!;
+    if (isLocalCoreSportsItem(a.item)) continue;
+    if (a.gate.relevanceScore < worstScore) {
+      worstScore = a.gate.relevanceScore;
+      worstIdx = i;
+    }
+  }
+  if (worstIdx < 0) return next;
+  next[worstIdx] = bestSport;
+  next.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  return next;
+}
+
+/**
+ * Priority queries (no cap), then general queries until `maxGeneralNew` new unique URLs
+ * from general queries are merged (priority URLs do not count toward that cap).
+ */
+async function collectGoogleNewsCandidates(maxGeneralNew: number): Promise<{
+  items: SerpGoogleNewsItem[];
+  queriesUsed: number;
+  lastError?: string;
+  priorityCount: number;
+  generalNewCount: number;
+}> {
   const seen = new Set<string>();
   const items: SerpGoogleNewsItem[] = [];
   let queriesUsed = 0;
   let lastError: string | undefined;
+  let generalNewCount = 0;
 
-  for (let qi = 0; qi < GOOGLE_NEWS_SEARCH_QUERIES.length && items.length < maxItems; qi++) {
+  for (let qi = 0; qi < GOOGLE_NEWS_PRIORITY_QUERIES.length; qi++) {
+    const q = GOOGLE_NEWS_PRIORITY_QUERIES[qi]!;
+    const label = `priority ${qi + 1}/${GOOGLE_NEWS_PRIORITY_QUERIES.length}`;
+    queriesUsed++;
+
+    try {
+      const { data, httpStatus } = await fetchSerpGoogleNews(q, label);
+      if (httpStatus !== 200 || data.error) {
+        const msg = data.error || `HTTP ${httpStatus}`;
+        lastError = msg;
+        console.warn(`[google-news] ${label} SKIP: ${msg}`);
+        continue;
+      }
+
+      const flat = flattenGoogleNewsResults(data.news_results);
+      let added = 0;
+      for (const it of flat) {
+        if (seen.has(it.link)) continue;
+        seen.add(it.link);
+        items.push(it);
+        added++;
+      }
+
+      console.log(
+        `[google-news] ${label}: +${added} new URL(s) from priority (uncapped); pool=${items.length}`
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      lastError = msg;
+      console.warn(`[google-news] ${label} ERROR: ${msg}`);
+    }
+  }
+
+  const priorityCount = items.length;
+
+  for (
+    let qi = 0;
+    qi < GOOGLE_NEWS_SEARCH_QUERIES.length && generalNewCount < maxGeneralNew;
+    qi++
+  ) {
     const q = GOOGLE_NEWS_SEARCH_QUERIES[qi]!;
     const label = `query ${qi + 1}/${GOOGLE_NEWS_SEARCH_QUERIES.length}`;
     queriesUsed++;
@@ -338,15 +475,18 @@ async function collectGoogleNewsCandidates(
       }
 
       const flat = flattenGoogleNewsResults(data.news_results);
+      let addedThisQuery = 0;
       for (const it of flat) {
         if (seen.has(it.link)) continue;
         seen.add(it.link);
         items.push(it);
-        if (items.length >= maxItems) break;
+        generalNewCount++;
+        addedThisQuery++;
+        if (generalNewCount >= maxGeneralNew) break;
       }
 
       console.log(
-        `[google-news] ${label}: merged unique so far=${items.length} (target ≤${maxItems})`
+        `[google-news] ${label}: +${addedThisQuery} toward general cap (${generalNewCount}/${maxGeneralNew}); pool=${items.length}`
       );
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -355,11 +495,11 @@ async function collectGoogleNewsCandidates(
     }
   }
 
-  return { items, queriesUsed, lastError };
+  return { items, queriesUsed, lastError, priorityCount, generalNewCount };
 }
 
 /**
- * SerpApi Google News → score candidates → keep top stories (score ≥ 6 by default; if fewer than 2 qualify, ≥ 5 for that run) → rewrite → Sanity (`news`, `google_news`).
+ * SerpApi Google News → score candidates → keep top stories (score ≥ 6 by default; if fewer than 2 qualify, ≥ 5 for that run), topic diversity (≤1 per topicDedupeKey), sports floor, then rewrite → Sanity (`news`, `google_news`).
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
@@ -380,10 +520,16 @@ export async function syncNewsApiToSanity(): Promise<{
     `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (default min score 6; if <2 eligible, min 5 for that run)`
   );
   console.log(
-    `[google-news] Search strategy: ${GOOGLE_NEWS_SEARCH_QUERIES.length} targeted metro/topic queries (merge unique URLs, cap ${maxFetch})`
+    `[google-news] Search strategy: ${GOOGLE_NEWS_PRIORITY_QUERIES.length} priority queries (uncapped), then ${GOOGLE_NEWS_SEARCH_QUERIES.length} general queries (cap ${maxFetch} new URLs from general only)`
   );
 
-  const { items: flat, queriesUsed, lastError } = await collectGoogleNewsCandidates(maxFetch);
+  const {
+    items: flat,
+    queriesUsed,
+    lastError,
+    priorityCount,
+    generalNewCount,
+  } = await collectGoogleNewsCandidates(maxFetch);
 
   if (flat.length === 0) {
     throw new Error(
@@ -394,7 +540,9 @@ export async function syncNewsApiToSanity(): Promise<{
   }
 
   const fetched = flat.length;
-  console.log(`[google-news] Flattened stories to process: ${fetched} (cap maxFetch=${maxFetch})`);
+  console.log(
+    `[google-news] Flattened stories to process: ${fetched} (priority URLs=${priorityCount}, from general cap=${generalNewCount}/${maxFetch})`
+  );
 
   const existingUrls = await getExistingNewsSourceUrls();
   const existingSlugs = await getExistingSlugs();
@@ -402,7 +550,6 @@ export async function syncNewsApiToSanity(): Promise<{
     `[google-news] Dedup: ${existingUrls.size} existing URL(s) in Sanity, ${existingSlugs.length} slug(s)`
   );
 
-  type ScoredAttempt = { item: SerpGoogleNewsItem; gate: ScoreResult; label: string };
   const attempts: ScoredAttempt[] = [];
   let skipped = 0;
   let errors = 0;
@@ -467,23 +614,37 @@ export async function syncNewsApiToSanity(): Promise<{
   }
 
   eligible.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
-  const toPublish = eligible.slice(0, maxPublish);
 
-  console.log(
-    `[google-news] After scoring: ${eligible.length} eligible (≥${publishMinScore}, not excluded). Publishing top ${toPublish.length} (max ${maxPublish}):`
-  );
-  toPublish.forEach((s, idx) => {
-    console.log(
-      `[google-news]   #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 90)}`
-    );
-  });
+  const diversified = pickDiversifiedByTopic(eligible, maxPublish);
+  const beforeSports = diversified.slice();
+  const toPublish = ensureAtLeastOneSportsStoryInPicks(diversified, maxPublish, attempts);
 
-  if (eligible.length > toPublish.length) {
-    skipped += eligible.length - toPublish.length;
+  const hadSportBefore = beforeSports.some((a) => isLocalCoreSportsItem(a.item));
+  const hasSportAfter = toPublish.some((a) => isLocalCoreSportsItem(a.item));
+  if (!hadSportBefore && hasSportAfter) {
     console.log(
-      `[google-news] ${eligible.length - toPublish.length} eligible story/stories not published (beyond maxPublishPerRun)`
+      '[google-news] Sports floor: ensured at least one Phoenix metro core sports story in this run (any such candidate scored ≥5; may have replaced the lowest-scoring non-sports pick).'
     );
   }
+
+  const publishLinks = new Set(toPublish.map((t) => t.item.link));
+  const eligibleNotPublished = eligible.filter((e) => !publishLinks.has(e.item.link));
+  skipped += eligibleNotPublished.length;
+  if (eligibleNotPublished.length > 0) {
+    console.log(
+      `[google-news] ${eligibleNotPublished.length} eligible story/stories not published (topic diversity, publish cap, or sports swap superseded).`
+    );
+  }
+
+  console.log(
+    `[google-news] After scoring: ${eligible.length} eligible (≥${publishMinScore}, not excluded). Publishing ${toPublish.length} (max ${maxPublish}, ≤1 per topicDedupeKey):`
+  );
+  toPublish.forEach((s, idx) => {
+    const tk = s.gate.topicDedupeKey ? ` topic=${s.gate.topicDedupeKey}` : '';
+    console.log(
+      `[google-news]   #${idx + 1} score=${s.gate.relevanceScore}${tk} — ${s.item.title.slice(0, 90)}`
+    );
+  });
 
   let published = 0;
 
