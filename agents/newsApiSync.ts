@@ -72,6 +72,25 @@ type ScoreResult = {
   excludeReason?: string;
 };
 
+/** Phoenix metro core sports — never exclude; floor score 7 (enforced after model scores). */
+const LOCAL_CORE_SPORTS_RE =
+  /\bphoenix\s+suns\b|\barizona\s+cardinals\b|\barizona\s+diamondbacks\b|\barizona\s+coyotes\b|\basu\s+sun\s+devils\b|\bsun\s+devils\b/i;
+
+function applyGoogleNewsScoringOverrides(
+  item: SerpGoogleNewsItem,
+  gate: ScoreResult
+): ScoreResult {
+  const blob = `${item.title}\n${item.snippet || ''}`;
+  if (LOCAL_CORE_SPORTS_RE.test(blob)) {
+    return {
+      relevanceScore: Math.max(7, gate.relevanceScore),
+      exclude: false,
+      excludeReason: undefined,
+    };
+  }
+  return { ...gate };
+}
+
 function isValidHttpUrl(url: string): boolean {
   if (!url || typeof url !== 'string') return false;
   const t = url.trim();
@@ -179,9 +198,13 @@ async function scoreAndGate(item: SerpGoogleNewsItem, label: string): Promise<Sc
 
   const system = `You are an editor for HappyTimesAZ, a Phoenix AZ local lifestyle site covering the **greater Phoenix metro** (e.g. Phoenix, Scottsdale, Tempe, Mesa, Glendale, Peoria, Chandler, Gilbert, Surprise, Goodyear, Sun City, Fountain Hills, Cave Creek, Paradise Valley).
 
-Score how relevant and valuable this story is for **local readers** (1–10). **Strongly prefer** when the angle fits: feel-good **community** stories; **local heroes** and **charity**; **food & dining** openings; **arts & culture**; **local business** and **entrepreneurs**; **Phoenix Suns**, **Arizona Cardinals**, **Arizona Diamondbacks**; **health & wellness**; **real estate / development**; **tourism & attractions**; **parks & outdoor** activities; **local people** profiles; **Arizona / local policy** that affects daily life (**schools**, **city** decisions, **infrastructure**, **housing**, **local government** initiatives)—not national partisan noise.
+Score how relevant and valuable this story is for **local readers** (1–10). **Strongly prefer** when the angle fits: feel-good **community** stories; **local heroes** and **charity**; **food & dining** openings; **arts & culture**; **local business** and **entrepreneurs**; **health & wellness**; **real estate / development**; **tourism & attractions**; **parks & outdoor** activities; **local people** profiles; **Arizona / local policy** that affects daily life (**schools**, **city** decisions, **infrastructure**, **housing**, **local government** initiatives)—not national partisan noise.
 
-Set **exclude=true** if the story is mainly: **crime**, **violence**, **tragedy**, **serious accidents**; **national partisan politics**, **election controversies**, **divisive opinion** pieces; **war**; **celebrity gossip** with no Arizona tie; or **pure national** stories with no local hook.
+**LOCAL PRO & COLLEGE SPORTS (MANDATORY):** Coverage of **Phoenix Suns**, **Arizona Cardinals**, **Arizona Diamondbacks**, **Arizona Coyotes**, or **ASU Sun Devils** (games, trades, injuries, standings, arena/stadium, Valley fan angle) is **core HappyTimesAZ content**. For those teams you MUST set **exclude=false** and **relevanceScore ≥ 7** (use 7–10 when the story is genuinely about the team or game).
+
+**NATIONAL POLITICAL FIGURE — IN-PERSON VALLEY EVENT:** If a **national political figure** held or will hold a **rally, speech, fundraiser, or public event physically in the greater Phoenix metro** (not a generic national op-ed), treat it as **local news** because of **local impact** (traffic/road closures, venue, security, Valley attendance, local business, community reaction). Score **6–7** when that local-event frame is clear. Do **NOT** set **exclude=true** *only* because the story involves national politics if the **event happened or will happen in person in the Valley**.
+
+Set **exclude=true** if the story is mainly: **crime**, **violence**, **tragedy**, **serious accidents**; **pure national** partisan noise with **no** Phoenix-area hook; **war**; **celebrity gossip** with no Arizona tie; or **remote** national political commentary with **no** in-person Valley event angle.
 
 Return JSON only:
 {"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <short string or omit>}`;
@@ -336,7 +359,7 @@ async function collectGoogleNewsCandidates(
 }
 
 /**
- * SerpApi Google News → score up to 10 headlines → keep top stories with score ≥ 6 → rewrite → Sanity (`news`, `google_news`).
+ * SerpApi Google News → score candidates → keep top stories (score ≥ 6 by default; if fewer than 2 qualify, ≥ 5 for that run) → rewrite → Sanity (`news`, `google_news`).
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
@@ -354,7 +377,7 @@ export async function syncNewsApiToSanity(): Promise<{
 
   console.log('[google-news] ========== syncNewsApiToSanity (SerpApi Google News) start ==========');
   console.log(
-    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (top stories scoring ≥6)`
+    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (default min score 6; if <2 eligible, min 5 for that run)`
   );
   console.log(
     `[google-news] Search strategy: ${GOOGLE_NEWS_SEARCH_QUERIES.length} targeted metro/topic queries (merge unique URLs, cap ${maxFetch})`
@@ -379,8 +402,8 @@ export async function syncNewsApiToSanity(): Promise<{
     `[google-news] Dedup: ${existingUrls.size} existing URL(s) in Sanity, ${existingSlugs.length} slug(s)`
   );
 
-  type Scored = { item: SerpGoogleNewsItem; gate: ScoreResult; label: string };
-  const scored: Scored[] = [];
+  type ScoredAttempt = { item: SerpGoogleNewsItem; gate: ScoreResult; label: string };
+  const attempts: ScoredAttempt[] = [];
   let skipped = 0;
   let errors = 0;
 
@@ -406,15 +429,12 @@ export async function syncNewsApiToSanity(): Promise<{
     }
 
     try {
-      const gate = await scoreAndGate(item, label);
-      if (gate.exclude || gate.relevanceScore < 6) {
-        console.log(
-          `[google-news] ${label} SKIP: exclude=${gate.exclude}, score=${gate.relevanceScore} (need ≥6)`
-        );
-        skipped++;
-        continue;
-      }
-      scored.push({ item, gate, label });
+      let gate = await scoreAndGate(item, label);
+      gate = applyGoogleNewsScoringOverrides(item, gate);
+      attempts.push({ item, gate, label });
+      console.log(
+        `[google-news] ${label} scored: exclude=${gate.exclude}, score=${gate.relevanceScore}`
+      );
     } catch (e) {
       errors++;
       console.error(
@@ -424,11 +444,33 @@ export async function syncNewsApiToSanity(): Promise<{
     }
   }
 
-  scored.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
-  const toPublish = scored.slice(0, maxPublish);
+  let publishMinScore = 6;
+  let eligible = attempts.filter((a) => !a.gate.exclude && a.gate.relevanceScore >= publishMinScore);
+  if (eligible.length < 2) {
+    publishMinScore = 5;
+    eligible = attempts.filter((a) => !a.gate.exclude && a.gate.relevanceScore >= publishMinScore);
+    if (attempts.length > 0) {
+      console.log(
+        `[google-news] Fewer than 2 candidates at ≥6; using threshold ≥${publishMinScore} for this run (${eligible.length} eligible).`
+      );
+    }
+  }
+
+  const eligibleLinks = new Set(eligible.map((e) => e.item.link));
+  for (const a of attempts) {
+    if (!eligibleLinks.has(a.item.link)) {
+      console.log(
+        `[google-news] ${a.label} not eligible at ≥${publishMinScore}: exclude=${a.gate.exclude}, score=${a.gate.relevanceScore}`
+      );
+      skipped++;
+    }
+  }
+
+  eligible.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  const toPublish = eligible.slice(0, maxPublish);
 
   console.log(
-    `[google-news] After scoring: ${scored.length} eligible (≥6, not excluded). Publishing top ${toPublish.length} (max ${maxPublish}):`
+    `[google-news] After scoring: ${eligible.length} eligible (≥${publishMinScore}, not excluded). Publishing top ${toPublish.length} (max ${maxPublish}):`
   );
   toPublish.forEach((s, idx) => {
     console.log(
@@ -436,10 +478,10 @@ export async function syncNewsApiToSanity(): Promise<{
     );
   });
 
-  if (scored.length > toPublish.length) {
-    skipped += scored.length - toPublish.length;
+  if (eligible.length > toPublish.length) {
+    skipped += eligible.length - toPublish.length;
     console.log(
-      `[google-news] ${scored.length - toPublish.length} eligible story/stories not published (beyond maxPublishPerRun)`
+      `[google-news] ${eligible.length - toPublish.length} eligible story/stories not published (beyond maxPublishPerRun)`
     );
   }
 
