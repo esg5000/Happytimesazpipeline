@@ -43,7 +43,7 @@ export const config = {
       20,
       Math.max(1, parseInt(process.env.GOOGLE_NEWS_MAX_FETCH || '20', 10) || 20)
     ),
-    /** After AI scoring (default ≥6; ≥5 if fewer than 2 qualify at ≥6), publish at most this many per run (1–5). */
+    /** After AI scoring (default ≥6; ≥4 if fewer than 3 remain after subject dedupe), publish at most this many per run (1–5). */
     maxPublishPerRun: Math.min(
       5,
       Math.max(

@@ -340,68 +340,148 @@ async function fetchSerpGoogleNews(
 
 type ScoredAttempt = { item: SerpGoogleNewsItem; gate: ScoreResult; label: string };
 
-function topicKeyForAttempt(a: ScoredAttempt): string {
-  const k = a.gate.topicDedupeKey?.trim();
-  if (k && k.length > 0) return k;
-  return `url:${a.item.link}`;
+/** Same team / same political figure / same incident thread → same key (one keeper per run). */
+function computeSubjectGroupKey(a: ScoredAttempt): string {
+  const blob = `${a.item.title}\n${a.item.snippet || ''}`;
+
+  if (/\bphoenix\s+suns\b|\bphx\s+suns\b/i.test(blob)) return 'subj:team_suns';
+  if (/\barizona\s+cardinals\b/i.test(blob)) return 'subj:team_cardinals';
+  if (/\barizona\s+diamondbacks\b|\bdiamondbacks\b|\bdbacks\b/i.test(blob)) return 'subj:team_diamondbacks';
+  if (/\barizona\s+coyotes\b/i.test(blob)) return 'subj:team_coyotes';
+  if (/\basu\b|\bsun\s+devils\b/i.test(blob)) return 'subj:team_asu';
+
+  const low = blob.toLowerCase();
+  const polPairs: [RegExp, string][] = [
+    [/\bdonald\s+trump\s+jr\b|\btrump\s+jr\b/i, 'pol_trumpjr'],
+    [/\bdonald\s+j?\s*trump\b|\bpresident\s+trump\b|\btrump\b/i, 'pol_trump'],
+    [/\bjoe\s+biden\b|\bpresident\s+biden\b|\bbiden\b/i, 'pol_biden'],
+    [/\bkamala\s+harris\b|\bvice\s+president\s+harris\b|\bharris\b/i, 'pol_harris'],
+    [/\barack\s+obama\b|\bobama\b/i, 'pol_obama'],
+    [/\bron\s+desantis\b|\bdesantis\b/i, 'pol_desantis'],
+    [/\bgavin\s+newsom\b|\bnewsom\b/i, 'pol_newsom'],
+    [/\bnancy\s+pelosi\b|\bpelosi\b/i, 'pol_pelosi'],
+    [/\bmitch\s+mcconnell\b|\bmcconnell\b/i, 'pol_mcconnell'],
+    [/\bmarjorie\s+taylor\s+greene\b|\bmtg\b/i, 'pol_greene'],
+    [/\bkari\s+lake\b/i, 'pol_lake'],
+    [/\bmark\s+kelly\b|\bsenator\s+kelly\b/i, 'pol_kelly'],
+    [/\bkrysten\s+sinema\b|\bsinema\b/i, 'pol_sinema'],
+  ];
+  for (const [re, id] of polPairs) {
+    if (re.test(blob)) return `subj:${id}`;
+  }
+
+  const tdk = a.gate.topicDedupeKey?.trim();
+  if (tdk && tdk.length >= 4) return `subj:evt_${tdk}`;
+
+  let h = 0;
+  for (let i = 0; i < a.item.link.length; i++) h = (h * 31 + a.item.link.charCodeAt(i)) >>> 0;
+  const slug = low
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 64);
+  return `subj:misc_${h.toString(36)}_${slug || 'x'}`;
 }
 
-/** Walk `sorted` (best score first); keep at most `max` items with unique topicDedupeKey. */
-function pickDiversifiedByTopic(sorted: ScoredAttempt[], max: number): ScoredAttempt[] {
-  const usedTopics = new Set<string>();
+/** One story per subject group — keep highest score (pool should be sorted score desc). */
+function dedupeBySubjectGroup(sortedScoreDesc: ScoredAttempt[]): ScoredAttempt[] {
+  const seen = new Set<string>();
   const out: ScoredAttempt[] = [];
-  for (const a of sorted) {
-    const key = topicKeyForAttempt(a);
-    if (usedTopics.has(key)) continue;
-    usedTopics.add(key);
+  for (const a of sortedScoreDesc) {
+    const k = computeSubjectGroupKey(a);
+    if (seen.has(k)) continue;
+    seen.add(k);
     out.push(a);
-    if (out.length >= max) break;
   }
   return out;
 }
 
+const HARD_LOCAL_NEWS_RE =
+  /\b(city council|city of phoenix|city of scottsdale|city of tempe|mayor|maricopa county|board of supervisors|DPS|ADOT|flood warning|power outage|water main|school board|bond measure|ballot measure|prop\s*\d+|lane closure|road closure|brush fire|wildfire|red flag|heat warning|excessive heat|i-10|i-17|loop\s*101|sr\s*51|valley metro|light rail|transit delay|public safety|missing (child|person)|amber alert|evacuation)\b/i;
+
+const LIFESTYLE_POSITIVE_RE =
+  /\b(community|charity|volunteer|donat(e|ion)|food bank|grand opening|opens|ribbon cutting|festival|concert|farmers market|art exhibit|museum|nonprofit|local hero|scholarship|feel-good|honors?|award(s)?|celebrat(e|ion)|family fun|kids?\s+day|wellness fair)\b/i;
+
+function isPoliticalStory(a: ScoredAttempt): boolean {
+  const blob = `${a.item.title}\n${a.item.snippet || ''}`;
+  if (
+    /\b(trump|biden|harris|obama|desantis|pelosi|mcconnell|marjorie taylor greene|mtg\b|kari lake|sinema|mark kelly)\b/i.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:gop|dnc|white house|capitol|impeachment|campaign stop|town hall|presidential primary|midterms?)\b/i.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(political rally|campaign rally|fundraising)\b/i.test(blob) &&
+    /\b(trump|biden|harris|president|campaign|governor|senate)\b/i.test(blob)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function isHardLocalNews(a: ScoredAttempt): boolean {
+  if (isLocalCoreSportsItem(a.item)) return false;
+  if (isPoliticalStory(a)) return false;
+  return HARD_LOCAL_NEWS_RE.test(`${a.item.title}\n${a.item.snippet || ''}`);
+}
+
+function isLifestyleCommunityPositive(a: ScoredAttempt): boolean {
+  if (isLocalCoreSportsItem(a.item)) return false;
+  return LIFESTYLE_POSITIVE_RE.test(`${a.item.title}\n${a.item.snippet || ''}`);
+}
+
 /**
- * If any Phoenix metro core sports candidate scored ≥5 and is not excluded, ensure one such
- * story appears in `picks` by replacing the lowest-scoring non-sports slot when needed.
+ * Daily mix: 1 core sports (≥5 if available), 1 hard local, 1 lifestyle/positive, then fill by score.
+ * At most 2 political items total; subject groups already unique in `deduped`.
  */
-function ensureAtLeastOneSportsStoryInPicks(
-  picks: ScoredAttempt[],
-  maxPublish: number,
-  attempts: ScoredAttempt[]
-): ScoredAttempt[] {
-  const sportPool = attempts.filter(
-    (a) =>
-      isLocalCoreSportsItem(a.item) &&
-      !a.gate.exclude &&
-      a.gate.relevanceScore >= 5
-  );
-  if (sportPool.length === 0) return picks;
+function buildPublishMix(deduped: ScoredAttempt[], maxPublish: number): ScoredAttempt[] {
+  const pool = [...deduped].sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  const selected: ScoredAttempt[] = [];
+  const used = new Set<string>();
+  let politicalCount = 0;
 
-  const hasSport = (arr: ScoredAttempt[]) => arr.some((a) => isLocalCoreSportsItem(a.item));
-  if (hasSport(picks)) return picks;
+  const canAdd = (a: ScoredAttempt): boolean => {
+    if (used.has(a.item.link)) return false;
+    if (isPoliticalStory(a) && politicalCount >= 2) return false;
+    return true;
+  };
 
-  const bestSport = [...sportPool].sort(
-    (a, b) => b.gate.relevanceScore - a.gate.relevanceScore
-  )[0]!;
-  if (picks.length === 0) {
-    return [bestSport].slice(0, maxPublish);
-  }
+  const push = (a: ScoredAttempt) => {
+    selected.push(a);
+    used.add(a.item.link);
+    if (isPoliticalStory(a)) politicalCount++;
+  };
 
-  const next = picks.slice(0, maxPublish);
-  let worstIdx = -1;
-  let worstScore = Infinity;
-  for (let i = 0; i < next.length; i++) {
-    const a = next[i]!;
-    if (isLocalCoreSportsItem(a.item)) continue;
-    if (a.gate.relevanceScore < worstScore) {
-      worstScore = a.gate.relevanceScore;
-      worstIdx = i;
+  const pickFirst = (pred: (x: ScoredAttempt) => boolean) => {
+    for (const a of pool) {
+      if (!canAdd(a)) continue;
+      if (!pred(a)) continue;
+      push(a);
+      return;
     }
+  };
+
+  pickFirst(
+    (a) => isLocalCoreSportsItem(a.item) && !a.gate.exclude && a.gate.relevanceScore >= 5
+  );
+  pickFirst((a) => isHardLocalNews(a));
+  pickFirst((a) => isLifestyleCommunityPositive(a));
+
+  for (const a of pool) {
+    if (selected.length >= maxPublish) break;
+    if (!canAdd(a)) continue;
+    push(a);
   }
-  if (worstIdx < 0) return next;
-  next[worstIdx] = bestSport;
-  next.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
-  return next;
+
+  return selected;
 }
 
 /**
@@ -499,7 +579,9 @@ async function collectGoogleNewsCandidates(maxGeneralNew: number): Promise<{
 }
 
 /**
- * SerpApi Google News → score candidates → keep top stories (score ≥ 6 by default; if fewer than 2 qualify, ≥ 5 for that run), topic diversity (≤1 per topicDedupeKey), sports floor, then rewrite → Sanity (`news`, `google_news`).
+ * SerpApi Google News → score → subject-group dedupe (teams / politics / incidents) → daily mix
+ * (sports + hard local + lifestyle + fill, ≤2 political) → rewrite → Sanity (`news`, `google_news`).
+ * If deduplicated eligible count < 3, min score becomes 4 for that run only.
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
@@ -517,7 +599,7 @@ export async function syncNewsApiToSanity(): Promise<{
 
   console.log('[google-news] ========== syncNewsApiToSanity (SerpApi Google News) start ==========');
   console.log(
-    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (default min score 6; if <2 eligible, min 5 for that run)`
+    `[google-news] Config: maxFetch=${maxFetch}, maxPublishPerRun=${maxPublish} (default min score 6; if <3 stories after subject dedupe, min 4 for that run)`
   );
   console.log(
     `[google-news] Search strategy: ${GOOGLE_NEWS_PRIORITY_QUERIES.length} priority queries (uncapped), then ${GOOGLE_NEWS_SEARCH_QUERIES.length} general queries (cap ${maxFetch} new URLs from general only)`
@@ -593,12 +675,17 @@ export async function syncNewsApiToSanity(): Promise<{
 
   let publishMinScore = 6;
   let eligible = attempts.filter((a) => !a.gate.exclude && a.gate.relevanceScore >= publishMinScore);
-  if (eligible.length < 2) {
-    publishMinScore = 5;
+  eligible.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  let deduped = dedupeBySubjectGroup(eligible);
+
+  if (deduped.length < 3) {
+    publishMinScore = 4;
     eligible = attempts.filter((a) => !a.gate.exclude && a.gate.relevanceScore >= publishMinScore);
+    eligible.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+    deduped = dedupeBySubjectGroup(eligible);
     if (attempts.length > 0) {
       console.log(
-        `[google-news] Fewer than 2 candidates at ≥6; using threshold ≥${publishMinScore} for this run (${eligible.length} eligible).`
+        `[google-news] Fewer than 3 stories after subject dedupe at ≥6; using threshold ≥${publishMinScore} for this run (deduped=${deduped.length}).`
       );
     }
   }
@@ -613,36 +700,39 @@ export async function syncNewsApiToSanity(): Promise<{
     }
   }
 
-  eligible.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
-
-  const diversified = pickDiversifiedByTopic(eligible, maxPublish);
-  const beforeSports = diversified.slice();
-  const toPublish = ensureAtLeastOneSportsStoryInPicks(diversified, maxPublish, attempts);
-
-  const hadSportBefore = beforeSports.some((a) => isLocalCoreSportsItem(a.item));
-  const hasSportAfter = toPublish.some((a) => isLocalCoreSportsItem(a.item));
-  if (!hadSportBefore && hasSportAfter) {
-    console.log(
-      '[google-news] Sports floor: ensured at least one Phoenix metro core sports story in this run (any such candidate scored ≥5; may have replaced the lowest-scoring non-sports pick).'
-    );
+  const dedupedLinks = new Set(deduped.map((d) => d.item.link));
+  for (const e of eligible) {
+    if (!dedupedLinks.has(e.item.link)) {
+      skipped++;
+      console.log(
+        `[google-news] ${e.label} superseded by higher-scoring story in same subject group (${computeSubjectGroupKey(e)})`
+      );
+    }
   }
 
+  const toPublish = buildPublishMix(deduped, maxPublish);
+
   const publishLinks = new Set(toPublish.map((t) => t.item.link));
-  const eligibleNotPublished = eligible.filter((e) => !publishLinks.has(e.item.link));
-  skipped += eligibleNotPublished.length;
-  if (eligibleNotPublished.length > 0) {
+  for (const d of deduped) {
+    if (!publishLinks.has(d.item.link)) {
+      skipped++;
+    }
+  }
+  const dedupedNotPublished = deduped.filter((d) => !publishLinks.has(d.item.link)).length;
+  if (dedupedNotPublished > 0) {
     console.log(
-      `[google-news] ${eligibleNotPublished.length} eligible story/stories not published (topic diversity, publish cap, or sports swap superseded).`
+      `[google-news] ${dedupedNotPublished} deduplicated story/stories not in final mix (slot mix, max ${maxPublish}, or max 2 political).`
     );
   }
 
   console.log(
-    `[google-news] After scoring: ${eligible.length} eligible (≥${publishMinScore}, not excluded). Publishing ${toPublish.length} (max ${maxPublish}, ≤1 per topicDedupeKey):`
+    `[google-news] After scoring: ${eligible.length} eligible (≥${publishMinScore}), ${deduped.length} after subject dedupe. Publishing ${toPublish.length} (mix: sports + hard local + lifestyle + fill, ≤2 political):`
   );
   toPublish.forEach((s, idx) => {
-    const tk = s.gate.topicDedupeKey ? ` topic=${s.gate.topicDedupeKey}` : '';
+    const gk = computeSubjectGroupKey(s);
+    const tk = s.gate.topicDedupeKey ? ` tdk=${s.gate.topicDedupeKey}` : '';
     console.log(
-      `[google-news]   #${idx + 1} score=${s.gate.relevanceScore}${tk} — ${s.item.title.slice(0, 90)}`
+      `[google-news]   #${idx + 1} score=${s.gate.relevanceScore} group=${gk}${tk} — ${s.item.title.slice(0, 90)}`
     );
   });
 
