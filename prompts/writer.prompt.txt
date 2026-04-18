@@ -51,7 +51,8 @@ Output ONLY valid JSON in this exact format:
 
 Visual Style Requirements:
 - Choose visualStyle that fits the article's section and vibe (food/nightlife/events can use neon_night_street; deep-dive culture can use film_35mm_grain; general lifestyle can use editorial_realistic; playful pieces can use playful_cartoon or bold_vector_flat).
-- heroImagePrompt must describe the specific scene/subject/location and composition for the hero image.
+- heroImagePrompt must describe a candid, documentary-feeling Phoenix metro scene with a specific subject + action (tied directly to the article), plus real local environmental details in the background.
+- Include Phoenix metro context when relevant (neighborhoods/areas/corridors like Roosevelt Row, Downtown Phoenix, Old Town Scottsdale, Mill Ave, Tempe, Mesa, Glendale, Camelback Mountain, Papago Park, etc.).
 - Do NOT hardcode a medium/style inside heroImagePrompt (no "watercolor", "vector", "cartoon", etc.). Style will be applied separately using visualStyle.
 
 Markdown Formatting:
