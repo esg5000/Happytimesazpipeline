@@ -273,6 +273,61 @@ function truncateSeoTitleIfNeeded(raw: unknown): void {
   );
 }
 
+const BODY_MARKDOWN_SAFETY_MAX = 4800;
+const EXCERPT_SAFETY_MAX = 190;
+const BODY_MARKDOWN_SCHEMA_MIN = 500;
+
+/** Truncate at the last complete sentence ending at or before `maxLen` (., !, ? followed by space/end). */
+function truncateBodyMarkdownAtLastSentence(body: string, maxLen: number): string {
+  if (body.length <= maxLen) return body;
+  const window = body.slice(0, maxLen);
+  let bestCut = -1;
+  for (let i = 0; i < window.length; i++) {
+    const ch = window[i]!;
+    if (
+      (ch === '.' || ch === '!' || ch === '?') &&
+      (i === window.length - 1 || /\s/.test(window[i + 1]!))
+    ) {
+      bestCut = i + 1;
+    }
+  }
+  if (bestCut >= BODY_MARKDOWN_SCHEMA_MIN) return window.slice(0, bestCut).trimEnd();
+  return window.trimEnd();
+}
+
+/** Truncate at the last word boundary at or before `maxLen`. */
+function truncateExcerptAtLastWord(excerpt: string, maxLen: number): string {
+  if (excerpt.length <= maxLen) return excerpt;
+  const slice = excerpt.slice(0, maxLen);
+  const lastSpace = slice.lastIndexOf(' ');
+  let out = lastSpace > 20 ? slice.slice(0, lastSpace).trimEnd() : slice.trimEnd();
+  if (out.length < 50 && excerpt.length >= 50) {
+    out = excerpt.slice(0, maxLen).trimEnd();
+  }
+  return out;
+}
+
+function truncateRewriteLengthsIfNeeded(raw: unknown, label: string): void {
+  if (!raw || typeof raw !== 'object') return;
+  const o = raw as Record<string, unknown>;
+  const body = o.bodyMarkdown;
+  if (typeof body === 'string' && body.length > BODY_MARKDOWN_SAFETY_MAX) {
+    const next = truncateBodyMarkdownAtLastSentence(body, BODY_MARKDOWN_SAFETY_MAX);
+    console.log(
+      `[google-news] ${label} bodyMarkdown safety truncate: ${body.length} → ${next.length} chars (cap ${BODY_MARKDOWN_SAFETY_MAX})`
+    );
+    o.bodyMarkdown = next;
+  }
+  const ex = o.excerpt;
+  if (typeof ex === 'string' && ex.length > EXCERPT_SAFETY_MAX) {
+    const next = truncateExcerptAtLastWord(ex, EXCERPT_SAFETY_MAX);
+    console.log(
+      `[google-news] ${label} excerpt safety truncate: ${ex.length} → ${next.length} chars (cap ${EXCERPT_SAFETY_MAX})`
+    );
+    o.excerpt = next;
+  }
+}
+
 async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<Article> {
   console.log(
     `[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE})`
@@ -295,6 +350,7 @@ async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<
   );
 
   truncateSeoTitleIfNeeded(parsed);
+  truncateRewriteLengthsIfNeeded(parsed, label);
 
   if (parsed && typeof parsed === 'object' && 'title' in parsed) {
     const o = parsed as { title: string; slug?: string };
@@ -494,7 +550,93 @@ function buildPublishMix(deduped: ScoredAttempt[], maxPublish: number): ScoredAt
     push(a);
   }
 
-  return selected;
+  return enforceMinThreeDiversityBuckets(selected, pool, maxPublish);
+}
+
+/** Metro pro/college teams share one bucket so we do not treat five different teams as five “subjects.” */
+function diversityBucketKey(a: ScoredAttempt): string {
+  const k = computeSubjectGroupKey(a);
+  if (k.startsWith('subj:team_')) return 'bucket:metro_pro_sports';
+  return k;
+}
+
+function politicalCountIn(arr: ScoredAttempt[]): number {
+  return arr.filter((a) => isPoliticalStory(a)).length;
+}
+
+function canAddPolitically(current: ScoredAttempt[], candidate: ScoredAttempt): boolean {
+  if (!isPoliticalStory(candidate)) return true;
+  return politicalCountIn(current) < 2;
+}
+
+/**
+ * Final publish list must span ≥3 diversity buckets when length ≥3 (e.g. not all metro pro sports).
+ * Swaps out lowest-scoring picks from the largest bucket for the highest-scoring unused pool story
+ * that introduces a new bucket, respecting the 2-political cap.
+ */
+function enforceMinThreeDiversityBuckets(
+  selected: ScoredAttempt[],
+  dedupedPool: ScoredAttempt[],
+  maxPublish: number
+): ScoredAttempt[] {
+  const poolSorted = [...dedupedPool].sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  let out = selected.slice(0, maxPublish);
+  if (out.length < 3) return out;
+
+  for (let iter = 0; iter < 12; iter++) {
+    const buckets = new Set(out.map(diversityBucketKey));
+    if (buckets.size >= 3) break;
+
+    const usedLinks = new Set(out.map((o) => o.item.link));
+
+    const freq = new Map<string, ScoredAttempt[]>();
+    for (const o of out) {
+      const b = diversityBucketKey(o);
+      if (!freq.has(b)) freq.set(b, []);
+      freq.get(b)!.push(o);
+    }
+    let biggestBucket = '';
+    let biggestSize = 0;
+    for (const [b, arr] of freq) {
+      if (arr.length > biggestSize) {
+        biggestSize = arr.length;
+        biggestBucket = b;
+      }
+    }
+    const victims = freq.get(biggestBucket) ?? [];
+    victims.sort((a, b) => a.gate.relevanceScore - b.gate.relevanceScore);
+    const victim = victims[0];
+    if (!victim) break;
+
+    const outSansVictim = out.filter((o) => o.item.link !== victim.item.link);
+    const bucketsSansVictim = new Set(outSansVictim.map(diversityBucketKey));
+
+    let replacement: ScoredAttempt | undefined;
+    for (const c of poolSorted) {
+      if (usedLinks.has(c.item.link)) continue;
+      if (!canAddPolitically(outSansVictim, c)) continue;
+      const bk = diversityBucketKey(c);
+      if (!bucketsSansVictim.has(bk)) {
+        replacement = c;
+        break;
+      }
+    }
+    if (!replacement) {
+      console.warn(
+        '[google-news] Subject diversity: could not reach 3 buckets — no suitable replacement in pool (political cap or pool exhausted).'
+      );
+      break;
+    }
+
+    console.log(
+      `[google-news] Subject diversity: swapping out score=${victim.gate.relevanceScore} (${computeSubjectGroupKey(victim)}) for score=${replacement.gate.relevanceScore} (${computeSubjectGroupKey(replacement)}) to widen buckets.`
+    );
+    out = outSansVictim;
+    out.push(replacement);
+    out.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  }
+
+  return out.slice(0, maxPublish);
 }
 
 /**

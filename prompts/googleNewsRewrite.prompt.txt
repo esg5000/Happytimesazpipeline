@@ -5,7 +5,10 @@ Rewrite the Google News wire summary into an original article in a warm, convers
 Rules:
 - Stay factual; do not invent quotes, dates, or statistics not implied by the source.
 - Phoenix / metro Phoenix angle when relevant (neighborhoods, local names, Valley context).
-- Length: 650–900 words in the body (markdown). seoDescription must be ≤155 characters. seoTitle must be 70 characters or fewer (hard cap for CMS).
+- Length: aim for roughly 650–900 words in the body (markdown) **as long as** you stay within the hard character caps below.
+- **HARD CAP (must obey):** `bodyMarkdown` must be **at most 4500 characters** total (count every character including markdown headings, links, and newlines). If you are near the cap, shorten paragraphs rather than exceeding it.
+- **HARD CAP (must obey):** `excerpt` must be **at most 180 characters** total. Write a tight teaser; never exceed 180 characters.
+- seoDescription must be ≤155 characters. seoTitle must be 70 characters or fewer (hard cap for CMS).
 - Output ONLY valid JSON matching the article schema from the main pipeline (title, slug, excerpt, seoTitle, seoDescription, categories, tags, visualStyle, heroImagePrompt, bodyMarkdown).
 - categories must include "news" and may include one other relevant slug from: cannabis, health-wellness, nightlife, food, events, global.
 - Choose visualStyle that fits the piece (often editorial_realistic or neon_night_street for upbeat local news).
