@@ -544,21 +544,78 @@ export async function publishArticleToSanity(
   }
 }
 
+/** SerpApi Google News sync slot ids (see agents/newsApiSync.ts). */
+export const GOOGLE_NEWS_SYNC_SLOT_IDS = [
+  'slot-1-suns',
+  'slot-2-sports',
+  'slot-3-local',
+  'slot-4-lifestyle',
+  'slot-5-events',
+] as const;
+
+export type GoogleNewsSyncSlotId = (typeof GOOGLE_NEWS_SYNC_SLOT_IDS)[number];
+
+export function parseGoogleNewsSlotId(slotLog: string): GoogleNewsSyncSlotId {
+  const id = slotLog.replace(/^\[|\]$/g, '');
+  if ((GOOGLE_NEWS_SYNC_SLOT_IDS as readonly string[]).includes(id)) {
+    return id as GoogleNewsSyncSlotId;
+  }
+  console.warn(
+    `[google-news][sanity] Unknown slotLog "${slotLog}"; using slot-3-local for category mapping.`
+  );
+  return 'slot-3-local';
+}
+
+const SLOT4_LIFESTYLE_CATEGORY_SLUGS = ['food', 'nightlife', 'health-wellness', 'cannabis'] as const;
+type Slot4LifestyleCategorySlug = (typeof SLOT4_LIFESTYLE_CATEGORY_SLUGS)[number];
+
+export type GoogleNewsPublishMeta = {
+  slot: GoogleNewsSyncSlotId;
+  /** Required context for slot-4: scorer picks one of food | nightlife | health-wellness | cannabis */
+  slot4LifestyleCategory?: string;
+};
+
+function resolveGoogleNewsPrimaryCategorySlug(meta: GoogleNewsPublishMeta): string {
+  switch (meta.slot) {
+    case 'slot-1-suns':
+    case 'slot-2-sports':
+      return 'sports';
+    case 'slot-3-local':
+      return 'news';
+    case 'slot-5-events':
+      return 'events';
+    case 'slot-4-lifestyle': {
+      const raw = (meta.slot4LifestyleCategory || '').toLowerCase().trim();
+      if (SLOT4_LIFESTYLE_CATEGORY_SLUGS.includes(raw as Slot4LifestyleCategorySlug)) {
+        return raw;
+      }
+      console.warn(
+        `[google-news][sanity] slot-4 category invalid or missing (${JSON.stringify(meta.slot4LifestyleCategory)}); using "food".`
+      );
+      return 'food';
+    }
+    default:
+      return 'news';
+  }
+}
+
 /**
- * Publishes a SerpApi Google News wire article: section `news`, source `google_news`, published + active.
+ * Publishes a SerpApi Google News wire article: `section` + primary `category` ref from slot metadata, source `google_news`, published + active.
  */
 export async function publishGoogleNewsArticleToSanity(
   article: Article,
   heroImageAssetId: string | undefined,
-  originalSourceUrl: string
+  originalSourceUrl: string,
+  publishMeta: GoogleNewsPublishMeta
 ): Promise<string> {
+  const primaryCategorySlug = resolveGoogleNewsPrimaryCategorySlug(publishMeta);
+
   console.log(
-    `[google-news][sanity] publishGoogleNewsArticleToSanity entered: title="${article.title.slice(0, 80)}${article.title.length > 80 ? '…' : ''}" slug=${article.slug} hero=${heroImageAssetId ? 'yes' : 'no'}`
+    `[google-news][sanity] publishGoogleNewsArticleToSanity entered: title="${article.title.slice(0, 80)}${article.title.length > 80 ? '…' : ''}" slug=${article.slug} hero=${heroImageAssetId ? 'yes' : 'no'} slot=${publishMeta.slot} primaryCategory=${primaryCategorySlug}`
   );
   console.log(`[google-news][sanity] originalSourceUrl=${originalSourceUrl}`);
 
   const sanityClient = getSanityClient();
-  const primarySection = 'news';
 
   if (!article.bodyMarkdown || typeof article.bodyMarkdown !== 'string') {
     throw new Error(`Invalid bodyMarkdown: expected string, got ${typeof article.bodyMarkdown}`);
@@ -568,13 +625,6 @@ export async function publishGoogleNewsArticleToSanity(
 
   if (!Array.isArray(portableTextBody) || portableTextBody.length === 0) {
     throw new Error('markdownToPortableText returned invalid body for Google News article');
-  }
-
-  let categoryStrings = article.categories || [];
-  if (!Array.isArray(categoryStrings) || categoryStrings.length === 0) {
-    categoryStrings = ['news'];
-  } else if (!categoryStrings.includes('news')) {
-    categoryStrings = ['news', ...categoryStrings];
   }
 
   const validCategoryValues = [
@@ -590,26 +640,24 @@ export async function publishGoogleNewsArticleToSanity(
     'culture',
     'entertainment',
   ];
-  categoryStrings = categoryStrings
+
+  let categoryStrings: string[] = [primaryCategorySlug];
+  const extraFromArticle = (article.categories || [])
     .map((cat) => {
       const c =
         typeof cat === 'string' ? cat.toLowerCase().trim() : String(cat).toLowerCase().trim();
       if (c === 'mushrooms' || c === 'wellness') return 'health-wellness';
       return c;
     })
-    .filter((cat) => validCategoryValues.includes(cat));
-
-  if (categoryStrings.length === 0 || !categoryStrings.includes('news')) {
-    categoryStrings = ['news'];
-  }
-  categoryStrings = [...new Set(['news', ...categoryStrings])];
+    .filter((cat) => validCategoryValues.includes(cat) && cat !== primaryCategorySlug);
+  categoryStrings = [...new Set([primaryCategorySlug, ...extraFromArticle])];
 
   let categoryRef: { _type: 'reference'; _ref: string } | null = null;
 
   try {
     const categoryDocs = await sanityClient.fetch<Array<{ _id: string; slug: { current: string } }>>(
       `*[_type == "category" && slug.current == $slug]{ _id, slug }`,
-      { slug: primarySection }
+      { slug: primaryCategorySlug }
     );
 
     if (categoryDocs && categoryDocs.length > 0) {
@@ -617,9 +665,9 @@ export async function publishGoogleNewsArticleToSanity(
         _type: 'reference' as const,
         _ref: categoryDocs[0]._id,
       };
-      console.log(`✅ Google News: category reference for: ${primarySection}`);
+      console.log(`✅ Google News: category reference for slug: ${primaryCategorySlug}`);
     } else {
-      console.warn(`⚠️  No Sanity category document for slug "${primarySection}"`);
+      console.warn(`⚠️  No Sanity category document for slug "${primaryCategorySlug}"`);
     }
   } catch (error: unknown) {
     console.error('❌ Google News category fetch error:', error);
@@ -647,7 +695,7 @@ export async function publishGoogleNewsArticleToSanity(
     categories: categoryStrings,
     tags: article.tags,
     body: portableTextBody,
-    section: primarySection,
+    section: primaryCategorySlug,
     contentSource: 'google_news',
     source: 'google_news',
     originalSourceUrl,
@@ -670,7 +718,7 @@ export async function publishGoogleNewsArticleToSanity(
 
   try {
     console.log(
-      `[google-news][sanity] sanityClient.create() calling… _id=${baseDoc._id} section=${primarySection} contentSource=google_news isActive=true status=published`
+      `[google-news][sanity] sanityClient.create() calling… _id=${baseDoc._id} section=${primaryCategorySlug} contentSource=google_news isActive=true status=published`
     );
     const result = await sanityClient.create(baseDoc);
     console.log(`[google-news][sanity] sanityClient.create() ok documentId=${result._id}`);

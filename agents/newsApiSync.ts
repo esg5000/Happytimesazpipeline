@@ -6,6 +6,7 @@ import { config } from '../config';
 import {
   getExistingNewsSourceUrls,
   getExistingSlugs,
+  parseGoogleNewsSlotId,
   publishGoogleNewsArticleToSanity,
   uploadImageToSanity,
 } from './sanityPublisher';
@@ -73,6 +74,11 @@ type ScoreResult = {
   excludeReason?: string;
   /** Same real-world event/thread → same key (max one article per run). */
   topicDedupeKey?: string;
+  /**
+   * Slot 4 only: Sanity category slug chosen by scorer — exactly one of
+   * food | nightlife | health-wellness | cannabis.
+   */
+  category?: string;
 };
 
 /** Phoenix metro core sports — never exclude; floor score 7 (enforced after model scores). */
@@ -305,15 +311,22 @@ Return JSON only:
       .slice(0, 80);
     if (!topicDedupeKey) topicDedupeKey = undefined;
   }
-  const result = {
+  let category: string | undefined;
+  if (typeof raw.category === 'string' && raw.category.trim()) {
+    category = raw.category.trim().toLowerCase();
+  }
+
+  const result: ScoreResult = {
     relevanceScore,
     exclude: Boolean(raw.exclude),
     excludeReason: raw.excludeReason,
     topicDedupeKey,
+    ...(category ? { category } : {}),
   };
   console.log(
     `[google-news] ${label} → score: relevanceScore=${result.relevanceScore}, exclude=${result.exclude}` +
-      (result.excludeReason ? `, excludeReason="${result.excludeReason}"` : '')
+      (result.excludeReason ? `, excludeReason="${result.excludeReason}"` : '') +
+      (result.category ? `, category=${result.category}` : '')
   );
   return result;
 }
@@ -802,7 +815,12 @@ export async function syncNewsApiToSanity(): Promise<{
     );
   }
 
-  const SLOT4_RULES = `This slot is Phoenix metro lifestyle, food, arts, dining, and entertainment — NOT sports and NOT hard breaking news (crime, disasters, heavy politics). Set exclude=true for sports or hard-news-dominant pieces.`;
+  const SLOT4_RULES = `This slot is Phoenix metro lifestyle, food, arts, dining, and entertainment — NOT sports and NOT hard breaking news (crime, disasters, heavy politics). Set exclude=true for sports or hard-news-dominant pieces.
+
+**category (required in JSON):** Pick the single best Sanity category slug for this story — exactly one of: **food**, **nightlife**, **health-wellness**, **cannabis** (use these exact strings). Examples: restaurant opening or chef → food; bars, clubs, live music venue → nightlife; medical study, fitness, spa, mental health → health-wellness; dispensary, regulation, cannabis industry → cannabis.
+
+Return JSON including **category** (in addition to relevanceScore, exclude, topicDedupeKey, and excludeReason when applicable):
+{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"|"cannabis"}`;
   const pool4 = await fetchSlotCandidatePool(SLOT4_QUERIES, '[slot-4-lifestyle]');
   fetched += pool4.length;
   const s4 = await runSlotPick({
@@ -820,7 +838,7 @@ export async function syncNewsApiToSanity(): Promise<{
     picked.push(s4);
     chosenThisRun.add(s4.item.link);
     console.log(
-      `[google-news] [slot-4-lifestyle] winner score=${s4.gate.relevanceScore} — ${s4.item.title.slice(0, 100)}`
+      `[google-news] [slot-4-lifestyle] winner score=${s4.gate.relevanceScore} category=${s4.gate.category ?? 'n/a'} — ${s4.item.title.slice(0, 100)}`
     );
   }
 
@@ -905,7 +923,11 @@ export async function syncNewsApiToSanity(): Promise<{
       }
 
       console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
-      await publishGoogleNewsArticleToSanity(article, heroId, row.item.link);
+      const slot = parseGoogleNewsSlotId(row.slotLog);
+      await publishGoogleNewsArticleToSanity(article, heroId, row.item.link, {
+        slot,
+        ...(slot === 'slot-4-lifestyle' ? { slot4LifestyleCategory: row.gate.category } : {}),
+      });
       publishedSlugsThisRun.add(article.slug);
       existingUrls.add(row.item.link);
       published++;
