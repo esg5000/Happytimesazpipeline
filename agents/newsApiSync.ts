@@ -563,6 +563,20 @@ function slot2Prefilter(item: SerpGoogleNewsItem, mode: Slot2Mode): boolean {
   return false;
 }
 
+/** Slot 3: strictly non-sports Phoenix local — drop obvious sports stories before scoring. */
+function slot3NonSportsPrefilter(item: SerpGoogleNewsItem): boolean {
+  const b = `${item.title}\n${item.snippet || ''}`;
+  if (LOCAL_CORE_SPORTS_RE.test(b)) return false;
+  if (
+    /\b(nfl|nba|mlb|nhl|wnba|ncaa|mls|super bowl|world series|stanley cup|final four|march madness|playoff|playoffs|overtime|touchdown|quarterback|pitcher|home run|hat trick|starting lineup|injury report|trade deadline|nba draft|nfl draft|game recap|box score)\b/i.test(
+      b
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function slot4Prefilter(item: SerpGoogleNewsItem): boolean {
   const blob = `${item.title}\n${item.snippet || ''}`;
   if (LOCAL_CORE_SPORTS_RE.test(blob)) return false;
@@ -764,7 +778,9 @@ export async function syncNewsApiToSanity(): Promise<{
     );
   }
 
-  const SLOT3_RULES = `This slot is for genuinely local greater-Phoenix metro news (city, neighborhoods, development, community). exclude=true for pure national politics with no physical Phoenix/Valley hook.`;
+  const SLOT3_RULES = `This slot is for genuinely local greater-Phoenix metro news (city, neighborhoods, development, community, business, infrastructure, environment, civic life). exclude=true for pure national politics with no physical Phoenix/Valley hook.
+
+**MANDATORY — NO SPORTS IN SLOT 3:** Set **exclude=true** for any story that is **primarily** about a **sports team, game, player, coach, trade, injury, standings, draft, season, stadium/arena, league, or sporting event** (pro, college, or high school). Slot 3 is **strictly non-sports** local Phoenix news — even a high-scoring sports story must be excluded.`;
   const pool3 = await fetchSlotCandidatePool(SLOT3_QUERIES, '[slot-3-local]');
   fetched += pool3.length;
   const s3 = await runSlotPick({
@@ -774,7 +790,7 @@ export async function syncNewsApiToSanity(): Promise<{
     chosenThisRun,
     counters,
     require48h: false,
-    preScoreFilter: () => true,
+    preScoreFilter: slot3NonSportsPrefilter,
     slotScoreRules: SLOT3_RULES,
     applyOverrides: true,
   });
@@ -842,6 +858,7 @@ export async function syncNewsApiToSanity(): Promise<{
   });
 
   let published = 0;
+  const publishedSlugsThisRun = new Set<string>();
 
   for (let p = 0; p < toPublish.length; p++) {
     const row = toPublish[p]!;
@@ -850,6 +867,15 @@ export async function syncNewsApiToSanity(): Promise<{
     try {
       const article = await rewriteArticle(row.item, `${row.label} / ${pubLabel}`);
       article.slug = ensureUniqueSlug(article.slug || generateSlug(article.title), existingSlugs);
+
+      if (publishedSlugsThisRun.has(article.slug)) {
+        console.warn(
+          `[google-news] ${pubLabel} SKIP: slug "${article.slug}" already published successfully this run (duplicate publish guard).`
+        );
+        counters.skipped++;
+        continue;
+      }
+
       existingSlugs.push(article.slug);
 
       let heroId: string | undefined;
@@ -880,6 +906,7 @@ export async function syncNewsApiToSanity(): Promise<{
 
       console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
       await publishGoogleNewsArticleToSanity(article, heroId, row.item.link);
+      publishedSlugsThisRun.add(article.slug);
       existingUrls.add(row.item.link);
       published++;
       console.log(`[google-news] ${pubLabel} ✓ published: ${article.title}`);
