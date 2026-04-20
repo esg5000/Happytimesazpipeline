@@ -16,6 +16,11 @@ import { generateImage, generateImagePrompt } from './imageAgent';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
+/** SerpApi `num` — cap news results per query (default is much higher). */
+const SERP_NEWS_NUM = 10;
+/** After per-slot URL dedupe, keep at most this many candidates (newest first) before OpenAI scoring. */
+const SLOT_CANDIDATE_POOL_CAP = 10;
+
 const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.prompt.txt');
 
 /** OpenAI model for SerpApi Google News candidate scoring + topic/exclude gate. */
@@ -451,10 +456,14 @@ function passesKeywordGate(item: SerpGoogleNewsItem): boolean {
 
 async function fetchSerpGoogleNews(
   q: string,
-  label: string
+  label: string,
+  usage: SerpRunUsage
 ): Promise<{ data: SerpGoogleNewsResponse; httpStatus: number }> {
+  usage.apiCalls += 1;
   console.log(`[google-news] ${label}: calling GET ${SERPAPI_SEARCH}`);
-  console.log(`[google-news] ${label}: params engine=google_news, gl=us, hl=en`);
+  console.log(
+    `[google-news] ${label}: params engine=google_news, gl=us, hl=en, num=${SERP_NEWS_NUM}`
+  );
   console.log(`[google-news] ${label}: q (exact)= ${q}`);
 
   const { data, status } = await axios.get<SerpGoogleNewsResponse>(SERPAPI_SEARCH, {
@@ -464,6 +473,7 @@ async function fetchSerpGoogleNews(
       q,
       gl: 'us',
       hl: 'en',
+      num: SERP_NEWS_NUM,
     },
     validateStatus: () => true,
   });
@@ -481,6 +491,9 @@ async function fetchSerpGoogleNews(
 }
 
 type RunCounters = { skipped: number; errors: number };
+
+/** Counts each HTTP request to SerpApi in this sync run (for usage tracking). */
+type SerpRunUsage = { apiCalls: number };
 
 type PickedSlotStory = {
   item: SerpGoogleNewsItem;
@@ -547,10 +560,8 @@ function buildSlot2Queries(mode: Slot2Mode, teamLabel: string, year: number): re
 
 function buildSlot5Queries(monthLong: string, year: number): readonly string[] {
   return [
-    'Phoenix events this weekend',
-    'Arizona festivals upcoming 2026',
+    `Arizona festivals upcoming ${year}`,
     'Phoenix concerts this week',
-    'things to do Phoenix this weekend',
     `Arizona events ${monthLong} ${year}`,
   ];
 }
@@ -597,9 +608,25 @@ function slot4Prefilter(item: SerpGoogleNewsItem): boolean {
   return true;
 }
 
+/** Keep newest `max` items by `publishedAt`; undated items sort last. */
+function capSlotPoolByRecency(items: SerpGoogleNewsItem[], max: number): SerpGoogleNewsItem[] {
+  if (items.length <= max) return items;
+  const tagged = items.map((it, idx) => ({ it, idx }));
+  tagged.sort((a, b) => {
+    const ta = a.it.publishedAt?.getTime();
+    const tb = b.it.publishedAt?.getTime();
+    if (ta != null && tb != null && tb !== ta) return tb - ta;
+    if (ta != null && tb == null) return -1;
+    if (ta == null && tb != null) return 1;
+    return a.idx - b.idx;
+  });
+  return tagged.slice(0, max).map((x) => x.it);
+}
+
 async function fetchSlotCandidatePool(
   queries: readonly string[],
-  slotTag: string
+  slotTag: string,
+  usage: SerpRunUsage
 ): Promise<SerpGoogleNewsItem[]> {
   const seen = new Set<string>();
   const out: SerpGoogleNewsItem[] = [];
@@ -607,7 +634,7 @@ async function fetchSlotCandidatePool(
     const q = queries[i]!;
     const label = `${slotTag} serp ${i + 1}/${queries.length}`;
     try {
-      const { data, httpStatus } = await fetchSerpGoogleNews(q, label);
+      const { data, httpStatus } = await fetchSerpGoogleNews(q, label, usage);
       if (httpStatus !== 200 || data.error) continue;
       for (const it of flattenGoogleNewsResults(data.news_results)) {
         if (seen.has(it.link)) continue;
@@ -618,7 +645,13 @@ async function fetchSlotCandidatePool(
       console.warn(`[google-news] ${label} ERROR:`, e instanceof Error ? e.message : e);
     }
   }
-  return out;
+  const capped = capSlotPoolByRecency(out, SLOT_CANDIDATE_POOL_CAP);
+  if (out.length > capped.length) {
+    console.log(
+      `[google-news] ${slotTag} pool cap: ${out.length} unique → ${capped.length} newest (max ${SLOT_CANDIDATE_POOL_CAP}) before scoring`
+    );
+  }
+  return capped;
 }
 
 function pickBestEligibleScored(
@@ -725,6 +758,7 @@ export async function syncNewsApiToSanity(): Promise<{
   const { mode: slot2Mode, teamLabel: slot2Team } = getSlot2Mode(now);
 
   const counters: RunCounters = { skipped: 0, errors: 0 };
+  const serpUsage: SerpRunUsage = { apiCalls: 0 };
   let fetched = 0;
 
   console.log('[google-news] ========== syncNewsApiToSanity (5-slot) start ==========');
@@ -742,7 +776,7 @@ export async function syncNewsApiToSanity(): Promise<{
   const picked: PickedSlotStory[] = [];
 
   const SLOT1_RULES = `This slot is ONLY for Phoenix Suns / NBA (games, results, playoffs, roster). exclude=true if the story is not primarily about the Phoenix Suns or NBA tied to the Suns.`;
-  const pool1 = await fetchSlotCandidatePool(SLOT1_QUERIES, '[slot-1-suns]');
+  const pool1 = await fetchSlotCandidatePool(SLOT1_QUERIES, '[slot-1-suns]', serpUsage);
   fetched += pool1.length;
   const s1 = await runSlotPick({
     slotLog: '[slot-1-suns]',
@@ -769,7 +803,8 @@ export async function syncNewsApiToSanity(): Promise<{
       : `This slot is ONLY for ${slot2Team} (not Phoenix Suns). exclude=true if the story is not primarily about ${slot2Team}.`;
   const pool2 = await fetchSlotCandidatePool(
     buildSlot2Queries(slot2Mode, slot2Team, year),
-    '[slot-2-sports]'
+    '[slot-2-sports]',
+    serpUsage
   );
   fetched += pool2.length;
   const s2 = await runSlotPick({
@@ -794,7 +829,7 @@ export async function syncNewsApiToSanity(): Promise<{
   const SLOT3_RULES = `This slot is for genuinely local greater-Phoenix metro news (city, neighborhoods, development, community, business, infrastructure, environment, civic life). exclude=true for pure national politics with no physical Phoenix/Valley hook.
 
 **MANDATORY — NO SPORTS IN SLOT 3:** Set **exclude=true** for any story that is **primarily** about a **sports team, game, player, coach, trade, injury, standings, draft, season, stadium/arena, league, or sporting event** (pro, college, or high school). Slot 3 is **strictly non-sports** local Phoenix news — even a high-scoring sports story must be excluded.`;
-  const pool3 = await fetchSlotCandidatePool(SLOT3_QUERIES, '[slot-3-local]');
+  const pool3 = await fetchSlotCandidatePool(SLOT3_QUERIES, '[slot-3-local]', serpUsage);
   fetched += pool3.length;
   const s3 = await runSlotPick({
     slotLog: '[slot-3-local]',
@@ -821,7 +856,7 @@ export async function syncNewsApiToSanity(): Promise<{
 
 Return JSON including **category** (in addition to relevanceScore, exclude, topicDedupeKey, and excludeReason when applicable):
 {"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"|"cannabis"}`;
-  const pool4 = await fetchSlotCandidatePool(SLOT4_QUERIES, '[slot-4-lifestyle]');
+  const pool4 = await fetchSlotCandidatePool(SLOT4_QUERIES, '[slot-4-lifestyle]', serpUsage);
   fetched += pool4.length;
   const s4 = await runSlotPick({
     slotLog: '[slot-4-lifestyle]',
@@ -843,7 +878,11 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
   }
 
   const SLOT5_RULES = `This slot is ONLY for upcoming Phoenix/Valley events (concerts, festivals, things to do) where the main event date is on or after ${phoenixYmd} (America/Phoenix). exclude=true if the event is clearly in the past or the piece is not event-focused.`;
-  const pool5 = await fetchSlotCandidatePool(buildSlot5Queries(monthLong, year), '[slot-5-events]');
+  const pool5 = await fetchSlotCandidatePool(
+    buildSlot5Queries(monthLong, year),
+    '[slot-5-events]',
+    serpUsage
+  );
   fetched += pool5.length;
   const s5 = await runSlotPick({
     slotLog: '[slot-5-events]',
@@ -941,7 +980,7 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
   }
 
   console.log(
-    `[google-news] ========== end: fetched=${fetched}, published=${published}, skipped=${counters.skipped}, errors=${counters.errors} ==========`
+    `[google-news] ========== end: fetched=${fetched}, published=${published}, skipped=${counters.skipped}, errors=${counters.errors}, serpApiCalls=${serpUsage.apiCalls} ==========`
   );
   return {
     fetched,
