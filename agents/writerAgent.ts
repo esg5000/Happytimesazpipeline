@@ -16,6 +16,9 @@ import {
 // Resolve prompt path - works in both dev and compiled dist
 const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
 
+/** Byline stored on Sanity for pipeline-written posts (`publishArticleToSanity`). */
+export const HAPPYTIMESAZ_EDITORIAL_AUTHOR = 'HappyTimesAZ Editorial';
+
 /** Stored on article when the editor uploaded real photos; hero is never AI-generated. */
 export const EDITOR_SUPPLIED_HERO_IMAGE_PROMPT =
   'Editor-supplied photography only; no AI-generated hero image for this article.';
@@ -126,7 +129,10 @@ Remember: seoDescription must be at most 155 characters (count spaces).`;
     );
   }
 
-  let article = validation.data!;
+  let article: Article = {
+    ...validation.data!,
+    author: HAPPYTIMESAZ_EDITORIAL_AUTHOR,
+  };
   if (options?.userSuppliedImages) {
     article = {
       ...article,

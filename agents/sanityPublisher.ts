@@ -1,6 +1,7 @@
 import { createClient, SanityClient } from '@sanity/client';
 import { config } from '../config';
 import { Article } from '../utils/validator';
+import { HAPPYTIMESAZ_EDITORIAL_AUTHOR } from './writerAgent';
 import { downloadImage } from './imageAgent';
 
 let client: SanityClient | null = null;
@@ -303,7 +304,7 @@ export async function publishArticleToSanity(
   heroImageAssetId: string,
   section: string,
   additionalImageAssetIds?: string[],
-  opts?: { videoAssetId?: string }
+  opts?: { videoAssetId?: string; authorName?: string }
 ): Promise<string> {
   const sanityClient = getSanityClient();
 
@@ -311,6 +312,12 @@ export async function publishArticleToSanity(
     typeof opts?.videoAssetId === 'string' && opts.videoAssetId.trim().length > 0
       ? opts.videoAssetId.trim()
       : undefined;
+
+  const authorFromRequest =
+    typeof opts?.authorName === 'string' && opts.authorName.trim().length > 0
+      ? opts.authorName.trim()
+      : undefined;
+  const sanityAuthor = authorFromRequest ?? article.author ?? HAPPYTIMESAZ_EDITORIAL_AUTHOR;
 
   let primarySection = section.trim().toLowerCase();
   if (primarySection === 'mushrooms' || primarySection === 'wellness') {
@@ -432,6 +439,7 @@ export async function publishArticleToSanity(
       _type: 'slug',
       current: article.slug,
     },
+    author: sanityAuthor,
     excerpt: article.excerpt,
     seoTitle: article.seoTitle,
     seoDescription: article.seoDescription,
@@ -575,7 +583,7 @@ export type GoogleNewsPublishMeta = {
   slot4LifestyleCategory?: string;
 };
 
-function resolveGoogleNewsPrimaryCategorySlug(meta: GoogleNewsPublishMeta): string {
+export function resolveGoogleNewsPrimaryCategorySlug(meta: GoogleNewsPublishMeta): string {
   switch (meta.slot) {
     case 'slot-1-suns':
     case 'slot-2-sports':
@@ -598,6 +606,10 @@ function resolveGoogleNewsPrimaryCategorySlug(meta: GoogleNewsPublishMeta): stri
       return 'news';
   }
 }
+
+const GOOGLE_NEWS_SANITY_AUTHOR = 'HappyTimesAZ AI Desk';
+const GOOGLE_NEWS_SANITY_DISCLAIMER =
+  'This article was sourced from publicly available news feeds and rewritten by AI. Original reporting credit to the linked source.';
 
 /**
  * Publishes a SerpApi Google News wire article: `section` + primary `category` ref from slot metadata, source `google_news`, published + active.
@@ -682,6 +694,8 @@ export async function publishGoogleNewsArticleToSanity(
       _type: 'slug',
       current: article.slug,
     },
+    author: GOOGLE_NEWS_SANITY_AUTHOR,
+    disclaimer: GOOGLE_NEWS_SANITY_DISCLAIMER,
     excerpt: article.excerpt,
     seoTitle: article.seoTitle,
     seoDescription: article.seoDescription,

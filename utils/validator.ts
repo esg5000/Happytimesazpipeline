@@ -42,6 +42,8 @@ export const ArticleSchema = z.object({
   visualStyle: VisualStyleSchema,
   heroImagePrompt: z.string().min(20).max(500),
   bodyMarkdown: z.string().min(500).max(5000),
+  /** Byline for Sanity; set by the writer pipeline, not the model. */
+  author: z.string().optional(),
 });
 
 export type Article = z.infer<typeof ArticleSchema>;

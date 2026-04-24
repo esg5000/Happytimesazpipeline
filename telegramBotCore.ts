@@ -142,6 +142,8 @@ export async function publishStoryFromSourceNotes(
     applyDashboardArticleStyle?: boolean;
     articleLength?: ArticleLength;
     articleTone?: ArticleTone;
+    /** Dashboard POST /publish: overrides Sanity `author` when non-empty. */
+    authorName?: string;
   }
 ): Promise<void> {
   const text = sourceNotes.trim();
@@ -190,11 +192,14 @@ export async function publishStoryFromSourceNotes(
   const articleLength = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const articleTone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
 
+  const trimmedAuthor =
+    typeof options?.authorName === 'string' ? options.authorName.trim() : '';
   try {
     await publishFromSession(bot, chatId, {
       source: 'dashboard',
       applyDashboardArticleStyle: applyStyle,
       ...(applyStyle ? { articleLength, articleTone } : {}),
+      ...(trimmedAuthor ? { authorName: trimmedAuthor } : {}),
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -211,6 +216,8 @@ async function publishFromSession(
     applyDashboardArticleStyle?: boolean;
     articleLength?: ArticleLength;
     articleTone?: ArticleTone;
+    /** From dashboard `/publish` body `authorName`; sets Sanity post author when set. */
+    authorName?: string;
   }
 ): Promise<void> {
   const source: PublishSource = options?.source ?? 'telegram';
@@ -325,12 +332,25 @@ async function publishFromSession(
     );
   }
 
+  const publishOpts: {
+    videoAssetId?: string;
+    authorName?: string;
+  } = {};
+  if (featuredVideoAssetId) {
+    publishOpts.videoAssetId = featuredVideoAssetId;
+  }
+  const dashAuthor =
+    typeof options?.authorName === 'string' ? options.authorName.trim() : '';
+  if (dashAuthor) {
+    publishOpts.authorName = dashAuthor;
+  }
+
   const sanityId = await publishArticleToSanity(
     article,
     heroImageAssetId,
     topic.section,
     additionalImageAssetIds,
-    featuredVideoAssetId ? { videoAssetId: featuredVideoAssetId } : undefined
+    Object.keys(publishOpts).length > 0 ? publishOpts : undefined
   );
 
   if (notifyTelegram) {

@@ -179,6 +179,13 @@ export default defineType({
     defineField({ name: 'needsFactCheck', type: 'boolean', title: 'Needs Fact-Check', initialValue: false }),
     defineField({ name: 'needsLocalInfo', type: 'boolean', title: 'Needs Local Info', initialValue: false }),
     defineField({ name: 'author', type: 'string', title: 'Author' }),
+    defineField({
+      name: 'disclaimer',
+      type: 'text',
+      title: 'Disclaimer',
+      rows: 3,
+      description: 'e.g. wire/AI sourcing notice shown with the article',
+    }),
     // Pipeline-specific: used by the content generation pipeline for section routing
     defineField({
       name: 'section',

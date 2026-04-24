@@ -8,6 +8,7 @@ import {
   getExistingSlugs,
   parseGoogleNewsSlotId,
   publishGoogleNewsArticleToSanity,
+  resolveGoogleNewsPrimaryCategorySlug,
   uploadImageToSanity,
 } from './sanityPublisher';
 import { Article, validateArticle } from '../utils/validator';
@@ -109,30 +110,20 @@ function applyGoogleNewsScoringOverrides(
   return { ...gate };
 }
 
-function isValidHttpUrl(url: string): boolean {
-  if (!url || typeof url !== 'string') return false;
-  const t = url.trim();
-  if (t.length < 10) return false;
-  try {
-    const u = new URL(t);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 async function generateAndUploadHeroForGoogleNews(
   article: Article,
+  sectionSlug: string,
   filenameBase: string,
   label: string
 ): Promise<string> {
-  const basePrompt =
-    (article as unknown as { heroImagePrompt?: unknown }).heroImagePrompt &&
-    typeof (article as unknown as { heroImagePrompt?: unknown }).heroImagePrompt === 'string'
-      ? ((article as unknown as { heroImagePrompt?: string }).heroImagePrompt as string)
-      : `A realistic editorial photo illustrating: ${article.title} (Phoenix, Arizona local news)`;
+  const headline = article.title.trim();
+  const modelScene =
+    typeof article.heroImagePrompt === 'string' && article.heroImagePrompt.trim().length >= 20
+      ? article.heroImagePrompt.trim()
+      : 'Photorealistic editorial photograph suited to the headline; Arizona / greater Phoenix context where appropriate.';
+  const basePrompt = `HappyTimesAZ ${sectionSlug} (greater Phoenix, Arizona metro): "${headline}".\n\nHero scene direction: ${modelScene}\n\nNo overlaid text, watermarks, third-party logos, or identifiable news outlet branding in the image.`;
 
-  console.log(`[google-news] ${label} AI hero: generating image prompt…`);
+  console.log(`[google-news] ${label} AI hero (DALL·E, section=${sectionSlug}): generating image prompt…`);
   const enhanced = await generateImagePrompt(basePrompt, article.visualStyle);
   console.log(`[google-news] ${label} AI hero: generating image…`);
   const imageUrl = await generateImage(enhanced);
@@ -935,38 +926,22 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
 
       existingSlugs.push(article.slug);
 
-      let heroId: string | undefined;
       const filename = `google-news-${article.slug.slice(0, 24)}.jpg`;
-      const thumb = row.item.thumbnail?.trim() || '';
-      if (thumb && isValidHttpUrl(thumb)) {
-        console.log(`[google-news] ${pubLabel} hero upload (SerpAPI thumbnail)…`);
-        try {
-          heroId = await uploadImageToSanity(thumb, filename);
-          console.log(`[google-news] ${pubLabel} hero asset=${heroId}`);
-        } catch (e) {
-          console.warn(
-            `[google-news] ${pubLabel} hero upload failed; falling back to AI hero:`,
-            e instanceof Error ? e.message : e
-          );
-        }
-      } else if (thumb) {
-        console.log(
-          `[google-news] ${pubLabel} thumbnail invalid; falling back to AI hero`
-        );
-      } else {
-        console.log(`[google-news] ${pubLabel} no thumbnail; falling back to AI hero`);
-      }
-
-      if (!heroId) {
-        heroId = await generateAndUploadHeroForGoogleNews(article, filename, pubLabel);
-      }
-
-      console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
       const slot = parseGoogleNewsSlotId(row.slotLog);
-      await publishGoogleNewsArticleToSanity(article, heroId, row.item.link, {
+      const publishMeta = {
         slot,
         ...(slot === 'slot-4-lifestyle' ? { slot4LifestyleCategory: row.gate.category } : {}),
-      });
+      };
+      const sectionSlug = resolveGoogleNewsPrimaryCategorySlug(publishMeta);
+      const heroId = await generateAndUploadHeroForGoogleNews(
+        article,
+        sectionSlug,
+        filename,
+        pubLabel
+      );
+
+      console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
+      await publishGoogleNewsArticleToSanity(article, heroId, row.item.link, publishMeta);
       publishedSlugsThisRun.add(article.slug);
       existingUrls.add(row.item.link);
       published++;

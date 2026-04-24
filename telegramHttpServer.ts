@@ -119,6 +119,16 @@ function extractImagePublishOptionsFromBody(body: unknown): { imageAssetIds: str
   return { imageAssetIds };
 }
 
+/** Dashboard /publish: optional byline for the Sanity post `author` field. */
+function extractAuthorNameFromBody(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const v = (body as Record<string, unknown>).authorName;
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  if (!t) return undefined;
+  return t.slice(0, 200);
+}
+
 /** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
 function getCorsAllowlist(): string[] {
   const raw = process.env.CORS_ORIGINS?.trim();
@@ -659,6 +669,9 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               articleTone: articleStyle!.articleTone,
             }
           : { applyDashboardArticleStyle: false as const };
+        const publishAuthorName = extractAuthorNameFromBody(req.body);
+        const authorOpts =
+          publishAuthorName !== undefined ? { authorName: publishAuthorName } : {};
         console.log(
           `[api] /publish → ingest path (client=${clientSource}, dashboardStyle=${dashboardStyle}${
             dashboardStyle
@@ -690,6 +703,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds,
                 ...styleOpts,
+                ...authorOpts,
               });
             } else {
               console.log(
@@ -697,6 +711,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               );
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 ...styleOpts,
+                ...authorOpts,
               });
             }
           } else {
@@ -708,10 +723,12 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 imageAssetIds: imgOpts.imageAssetIds,
                 ...styleOpts,
+                ...authorOpts,
               });
             } else {
               await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
                 ...styleOpts,
+                ...authorOpts,
               });
             }
           }
