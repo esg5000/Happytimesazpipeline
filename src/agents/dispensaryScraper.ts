@@ -2,11 +2,21 @@
  * Dispensary website scraper: Playwright loads each dispensary site, scores deal-like page text,
  * optionally captures a homepage logo screenshot, uploads to Sanity assets, and patches the dispensary doc.
  *
+ * Redirects: an axios preflight (maxRedirects: 10) resolves the final base URL after 301/302/307/308
+ * chains; `page.goto` also follows HTTP redirects by default in Chromium.
+ *
  * Requires: `playwright` (see package.json). First run on a machine: `npx playwright install chromium`
  */
-import { chromium, type Browser, type Page } from 'playwright';
+import axios, { type AxiosResponse } from 'axios';
+import { chromium, type BrowserContext, type Page } from 'playwright';
 
 import { getSanityClient, uploadImageBufferToSanity } from '../../agents/sanityPublisher';
+
+const AXIOS_REDIRECT_OPTS = {
+  maxRedirects: 10,
+  timeout: 20_000,
+  validateStatus: () => true,
+} as const;
 
 const DEAL_PATHS = [
   '',
@@ -75,6 +85,44 @@ function joinUrl(base: string, path: string): string {
   return `${b}${p}`;
 }
 
+/** Final URL after axios follows redirects (Node `responseUrl` when available). */
+function getFinalUrlFromAxiosResponse(res: AxiosResponse, fallback: string): string {
+  const req = res.request as { res?: { responseUrl?: string } } | undefined;
+  const ru = req?.res?.responseUrl;
+  if (typeof ru === 'string' && ru.length > 0) return ru;
+  const u = res.config?.url;
+  if (typeof u === 'string' && u.length > 0) return u;
+  return fallback;
+}
+
+/**
+ * Follow redirect chains (301/302/307/308, etc.) up to 10 hops so Playwright uses the live base URL.
+ */
+async function resolveDispensaryBaseUrlAfterRedirects(url: string): Promise<string> {
+  try {
+    const res = await axios.head(url, { ...AXIOS_REDIRECT_OPTS });
+    const finalUrl = getFinalUrlFromAxiosResponse(res, url);
+    if (res.status >= 200 && res.status < 400 && finalUrl) return finalUrl;
+  } catch {
+    // HEAD unsupported or blocked — try GET
+  }
+  try {
+    const res = await axios.get(url, {
+      ...AXIOS_REDIRECT_OPTS,
+      responseType: 'stream',
+    });
+    const stream = res.data as NodeJS.ReadableStream & { destroy?: () => void };
+    if (typeof stream?.destroy === 'function') {
+      stream.destroy();
+    }
+    const finalUrl = getFinalUrlFromAxiosResponse(res, url);
+    if (res.status >= 200 && res.status < 400 && finalUrl) return finalUrl;
+  } catch {
+    // keep original
+  }
+  return url;
+}
+
 function scoreDealText(text: string): number {
   const hits = text.match(DEAL_HINT_RE);
   const n = hits ? hits.length : 0;
@@ -83,6 +131,7 @@ function scoreDealText(text: string): number {
 
 async function loadPage(page: Page, url: string): Promise<boolean> {
   try {
+    // Chromium follows HTTP redirects (301/302/307/308, …) automatically on navigation.
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 35_000 });
     return true;
   } catch {
@@ -141,17 +190,25 @@ async function screenshotHomepageLogo(page: Page, baseUrl: string): Promise<Buff
   return null;
 }
 
-async function scrapeOneDispensary(browser: Browser, row: DispensaryRow): Promise<'ok' | 'fail' | 'skip'> {
+async function scrapeOneDispensary(
+  context: BrowserContext,
+  row: DispensaryRow
+): Promise<'ok' | 'fail' | 'skip'> {
   const label = row.name?.trim() || row._id;
   const slug = row.slug?.trim() || '(no-slug)';
-  const baseUrl = normalizeWebsiteUrl(row.website);
+  const rawBase = normalizeWebsiteUrl(row.website);
 
-  if (!baseUrl) {
+  if (!rawBase) {
     console.log(`[dispensaryScraper] SKIP "${label}" [${slug}] — missing or invalid website`);
     return 'skip';
   }
 
-  const page = await browser.newPage();
+  const baseUrl = await resolveDispensaryBaseUrlAfterRedirects(rawBase);
+  if (baseUrl !== rawBase) {
+    console.log(`[dispensaryScraper]   resolved redirects: ${rawBase} → ${baseUrl}`);
+  }
+
+  const page = await context.newPage();
   page.setDefaultTimeout(35_000);
 
   try {
@@ -225,11 +282,13 @@ export async function scrapeDispensaries(): Promise<ScrapeDispensariesResult> {
   let failed = 0;
   let skipped = 0;
 
+  // Chromium follows redirects on navigation by default; shared context per run.
   const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
   try {
     for (const row of list) {
       try {
-        const r = await scrapeOneDispensary(browser, row);
+        const r = await scrapeOneDispensary(context, row);
         if (r === 'ok') ok++;
         else if (r === 'skip') skipped++;
         else failed++;
@@ -242,6 +301,7 @@ export async function scrapeDispensaries(): Promise<ScrapeDispensariesResult> {
       }
     }
   } finally {
+    await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
   }
 
