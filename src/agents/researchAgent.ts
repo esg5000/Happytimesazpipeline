@@ -1,15 +1,16 @@
 /**
- * Research agent: expands editor notes with Anthropic web search (`web_search_20250305`),
+ * Research agent: expands editor notes with OpenAI Responses API + hosted `web_search`,
  * parallel per-query research passes, and structured sources + enriched notes.
  *
- * Requires `ANTHROPIC_API_KEY`. Optional: `ANTHROPIC_RESEARCH_MODEL`, `ANTHROPIC_EXTRACT_MODEL`.
+ * Requires `OPENAI_API_KEY` (same as the rest of the pipeline). Model: `gpt-5.4-mini`.
  */
 import axios from 'axios';
 
 import { config } from '../../config';
 
-const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_VERSION = '2023-06-01';
+const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
+/** Cost-conscious model; web search is enabled only on research turns that need it. */
+const RESEARCH_OPENAI_MODEL = 'gpt-5.4-mini';
 
 export type Source = {
   title: string;
@@ -24,63 +25,81 @@ export type ResearchTopicResult = {
   enrichedNotes: string;
 };
 
-type AnthropicContentBlock = {
-  type?: string;
-  text?: string;
-};
-
-type AnthropicMessageResponse = {
-  content?: AnthropicContentBlock[];
-  error?: { type?: string; message?: string };
-};
-
-async function anthropicMessages(
-  body: Record<string, unknown>,
+async function openaiResponses(
+  params: {
+    instructions?: string;
+    /** String or Responses API message array. */
+    input: string | unknown[];
+    tools?: unknown[];
+    max_output_tokens?: number;
+    temperature?: number;
+  },
   timeoutMs = 180_000
-): Promise<AnthropicMessageResponse> {
-  const key = config.anthropic.apiKey;
+): Promise<unknown> {
+  const key = config.openai.apiKey;
   if (!key) {
-    throw new Error('ANTHROPIC_API_KEY is not set (required for researchTopic)');
+    throw new Error('OPENAI_API_KEY is not set (required for researchTopic)');
   }
-  const res = await axios.post<AnthropicMessageResponse>(ANTHROPIC_MESSAGES_URL, body, {
+
+  const body: Record<string, unknown> = {
+    model: RESEARCH_OPENAI_MODEL,
+    input: params.input,
+    max_output_tokens: params.max_output_tokens ?? 8192,
+  };
+  if (params.instructions) {
+    body.instructions = params.instructions;
+  }
+  if (params.tools && params.tools.length > 0) {
+    body.tools = params.tools;
+    body.tool_choice = 'auto';
+  }
+  if (typeof params.temperature === 'number') {
+    body.temperature = params.temperature;
+  }
+
+  const res = await axios.post(OPENAI_RESPONSES_URL, body, {
     headers: {
-      'x-api-key': key,
-      'anthropic-version': ANTHROPIC_VERSION,
-      'content-type': 'application/json',
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
     },
     timeout: timeoutMs,
     validateStatus: () => true,
   });
+
   const data = res.data;
   if (res.status >= 400) {
     const msg =
-      typeof data === 'object' && data && 'error' in data && data.error
-        ? typeof data.error === 'object' && data.error && 'message' in data.error
-          ? String((data.error as { message?: string }).message)
-          : JSON.stringify(data.error)
+      typeof data === 'object' && data && 'error' in (data as object)
+        ? JSON.stringify((data as { error?: unknown }).error)
         : res.statusText || String(res.status);
-    throw new Error(`Anthropic API HTTP ${res.status}: ${msg}`);
-  }
-  if (typeof data === 'object' && data && 'error' in data && data.error) {
-    const msg =
-      typeof data.error === 'object' && data.error && 'message' in data.error
-        ? String((data.error as { message?: string }).message)
-        : JSON.stringify(data.error);
-    throw new Error(`Anthropic API error: ${msg}`);
+    throw new Error(`OpenAI Responses API HTTP ${res.status}: ${msg}`);
   }
   return data;
 }
 
-function collectAssistantText(content: unknown): string {
-  if (!Array.isArray(content)) return '';
-  return content
-    .map((b) => {
-      if (!b || typeof b !== 'object') return '';
-      const block = b as AnthropicContentBlock;
-      return block.type === 'text' && typeof block.text === 'string' ? block.text : '';
-    })
-    .filter(Boolean)
-    .join('\n');
+function extractOutputTextFromResponse(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const d = data as Record<string, unknown>;
+  if (typeof d.output_text === 'string' && d.output_text.trim()) {
+    return d.output_text.trim();
+  }
+  const output = d.output;
+  if (!Array.isArray(output)) return '';
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    if (o.type === 'message' && Array.isArray(o.content)) {
+      for (const c of o.content as unknown[]) {
+        if (!c || typeof c !== 'object') continue;
+        const block = c as Record<string, unknown>;
+        if (block.type === 'output_text' && typeof block.text === 'string') {
+          parts.push(block.text);
+        }
+      }
+    }
+  }
+  return parts.join('\n').trim();
 }
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
@@ -170,7 +189,7 @@ function fallbackQueries(notes: string): string[] {
 }
 
 async function extractSearchQueries(notes: string): Promise<string[]> {
-  const system = `You output only valid JSON, no markdown fences, no commentary.`;
+  const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
   const user = `Read the editor notes below and propose between 3 and 5 short, distinct web search queries (each suitable for a news/web search engine) that would best surface facts and reputable sources for an article based on these notes. Prefer specific entities, places, dates, or bill names if present.
 
 Return exactly this JSON shape: {"queries":["query1","query2",...]}
@@ -180,43 +199,37 @@ EDITOR NOTES:
 ${notes.slice(0, 12000)}
 ---`;
 
-  const tryModel = async (model: string) => {
-    const res = await anthropicMessages({
-      model,
-      max_tokens: 600,
+  const runExtract = async (): Promise<string | null> => {
+    const raw = await openaiResponses({
+      instructions,
+      input: user,
+      max_output_tokens: 600,
       temperature: 0.2,
-      system,
-      messages: [{ role: 'user', content: user }],
     });
-    const text = collectAssistantText(res.content).trim();
-    const obj = tryParseJsonObject(text);
-    const q = obj?.queries;
-    if (!Array.isArray(q)) return null;
-    const out = q
-      .filter((x): x is string => typeof x === 'string' && x.trim().length > 2)
-      .map((x) => x.trim())
-      .slice(0, 5);
-    return out.length >= 3 ? out : out.length > 0 ? out : null;
+    return extractOutputTextFromResponse(raw);
   };
 
-  let queries =
-    (await tryModel(config.anthropic.extractModel)) ??
-    (config.anthropic.extractModel === config.anthropic.researchModel
-      ? null
-      : await tryModel(config.anthropic.researchModel));
-
-  if (!queries || queries.length < 3) {
-    queries = fallbackQueries(notes);
+  let text = await runExtract();
+  if (!text) {
+    return fallbackQueries(notes);
   }
-  if (queries.length > 5) queries = queries.slice(0, 5);
-  return queries;
+
+  let obj = tryParseJsonObject(text);
+  let q = obj?.queries;
+  if (!Array.isArray(q) || q.length === 0) {
+    return fallbackQueries(notes);
+  }
+  const out = q
+    .filter((x): x is string => typeof x === 'string' && x.trim().length > 2)
+    .map((x) => x.trim())
+    .slice(0, 5);
+  if (out.length >= 3) return out;
+  if (out.length > 0 && out.length < 3) return out;
+  return fallbackQueries(notes);
 }
 
-async function runWebResearchForQuery(
-  notes: string,
-  query: string
-): Promise<Source[]> {
-  const system = `You are a careful research assistant. Use the web_search tool to find current, credible sources. After you finish searching, reply with ONLY a JSON array (no markdown code fences, no prose before or after) of 0 to 6 objects, each:
+async function runWebResearchForQuery(notes: string, query: string): Promise<Source[]> {
+  const instructions = `You are a careful research assistant. You MUST use the web_search tool to find current, credible sources before answering. After you finish searching, reply with ONLY a JSON array (no markdown code fences, no prose before or after) of 0 to 6 objects, each:
 {"title":"string","url":"string starting with http","summary":"2-4 sentences of what matters for the editor","relevanceScore":integer 1-10}
 Use real URLs from search results. relevanceScore reflects usefulness for the editor's notes.`;
 
@@ -230,23 +243,15 @@ ${query}
 
 Return only the JSON array as specified.`;
 
-  const res = await anthropicMessages({
-    model: config.anthropic.researchModel,
-    max_tokens: 8192,
+  const raw = await openaiResponses({
+    instructions,
+    input: user,
+    tools: [{ type: 'web_search' }],
+    max_output_tokens: 8192,
     temperature: 0.3,
-    system,
-    messages: [{ role: 'user', content: user }],
-    tools: [
-      {
-        type: 'web_search_20250305',
-        name: 'web_search',
-        /** One focused search pass per query; parallel calls cover 3–5 angles total. */
-        max_uses: 1,
-      },
-    ],
   });
 
-  const text = collectAssistantText(res.content);
+  const text = extractOutputTextFromResponse(raw);
   const arr = tryParseJsonArray(text);
   if (!arr) return [];
   const sources: Source[] = [];
@@ -299,7 +304,7 @@ export async function researchTopicWithProgress(
 }
 
 /**
- * Runs keyword extraction → 3–5 parallel Anthropic web-search passes (each with `web_search_20250305`),
+ * Runs keyword extraction → 3–5 parallel OpenAI web-search passes (`web_search` hosted tool),
  * merges deduplicated sources, and appends a RESEARCH FINDINGS section to the notes.
  */
 export async function researchTopic(notes: string): Promise<ResearchTopicResult> {
@@ -309,7 +314,7 @@ export async function researchTopic(notes: string): Promise<ResearchTopicResult>
 type FactCheckWarning = { verbatim: string; reason?: string };
 
 /**
- * Uses Claude (Anthropic Messages, no web search) to find article substrings not adequately supported by `sources`,
+ * Uses OpenAI (Responses API, no web search) to find article substrings not adequately supported by `sources`,
  * and inserts a **⚠️** marker immediately before each flagged verbatim substring (first occurrence only).
  */
 export async function factCheckArticleMarkdownAnthropic(
@@ -320,7 +325,7 @@ export async function factCheckArticleMarkdownAnthropic(
   if (!trimmed) return bodyMarkdown;
   if (sources.length === 0) return bodyMarkdown;
 
-  const system = `You output only valid JSON, no markdown fences, no commentary.`;
+  const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
   const user = `You are a fact-checking editor. Given research SOURCES and an ARTICLE in Markdown, list phrases or short sentences in the article that make specific factual claims (numbers, dates, legal outcomes, quotes, medical claims, etc.) that are NOT clearly supported by the source summaries/URLs.
 
 SOURCES (JSON, up to 25):
@@ -338,21 +343,20 @@ Rules:
 - Prefer the shortest distinctive substring that contains the unsupported claim.
 - Do not repeat overlapping strings; longer substrings preferred over many tiny ones.`;
 
-  const res = await anthropicMessages({
-    model: config.anthropic.researchModel,
-    max_tokens: 4096,
+  const raw = await openaiResponses({
+    instructions,
+    input: user,
+    max_output_tokens: 4096,
     temperature: 0.1,
-    system,
-    messages: [{ role: 'user', content: user }],
   });
 
-  const text = collectAssistantText(res.content);
+  const text = extractOutputTextFromResponse(raw);
   const obj = tryParseJsonObject(text);
-  const raw = obj?.warnings;
-  if (!Array.isArray(raw) || raw.length === 0) return bodyMarkdown;
+  const rawWarnings = obj?.warnings;
+  if (!Array.isArray(rawWarnings) || rawWarnings.length === 0) return bodyMarkdown;
 
   const warnings: FactCheckWarning[] = [];
-  for (const row of raw) {
+  for (const row of rawWarnings) {
     if (!row || typeof row !== 'object') continue;
     const w = row as Record<string, unknown>;
     const verbatim = typeof w.verbatim === 'string' ? w.verbatim : '';

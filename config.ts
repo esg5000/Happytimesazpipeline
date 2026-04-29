@@ -7,15 +7,6 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY || '',
     model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
   },
-  /** Anthropic Messages API (e.g. `src/agents/researchAgent.ts` web search). */
-  anthropic: {
-    apiKey: (process.env.ANTHROPIC_API_KEY || '').trim(),
-    /** Model for web-search research turns (must support `web_search_20250305`). */
-    researchModel:
-      (process.env.ANTHROPIC_RESEARCH_MODEL || 'claude-sonnet-4-20250514').trim(),
-    /** Lightweight model for query extraction (no tools). */
-    extractModel: (process.env.ANTHROPIC_EXTRACT_MODEL || 'claude-3-5-haiku-latest').trim(),
-  },
   /** Unsplash — Dig & Write hero on `POST /api/command/researchAndWrite` only. */
   unsplash: {
     accessKey: (process.env.UNSPLASH_ACCESS_KEY || '').trim(),

@@ -252,7 +252,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
   app.use(corsMiddleware);
 
   /**
-   * Dashboard: research (Anthropic web search) + single-article writer in parallel where possible,
+   * Dashboard: research (OpenAI web search via Responses API) + single-article writer in parallel where possible,
    * stream merged `sources` as SSE, then fact-check (⚠️) + Sources section; final payload on `article` event.
    * Body: same steering as autonomous `/publish` — `notes` (or aliases), optional `length`/`tone`, optional `authorName`,
    * dashboard via `X-Client-Source: dashboard` and/or `source: "dashboard"`.
