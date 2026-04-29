@@ -1,17 +1,23 @@
 /**
  * Research agent: expands editor notes with OpenAI Responses API + hosted `web_search`,
  * at most three web-search turns (one targeted hint if present, plus two generic angles),
- * merged sources, optional HTTP page text (capped per URL), and enriched notes.
+ * merged sources, optional HTTP page text (capped per URL; Playwright fallback if thin), and enriched notes.
  *
  * Requires `OPENAI_API_KEY` (same as the rest of the pipeline). Model: `gpt-5.4-mini`.
  */
 import axios from 'axios';
+import { chromium } from 'playwright';
 
 import { config } from '../../config';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 /** Cost-conscious model; web search is enabled only on research turns that need it. */
 const RESEARCH_OPENAI_MODEL = 'gpt-5.4-mini';
+
+/** Plain-text length (collapsed whitespace) before Playwright fallback is considered. */
+const PAGE_FETCH_MEANINGFUL_MIN_CHARS = 500;
+/** Max characters retained from Playwright `document.body.innerText`. */
+const PLAYWRIGHT_FETCH_MAX_CHARS = 5000;
 
 export type Source = {
   title: string;
@@ -269,6 +275,42 @@ function htmlToPlainText(html: string): string {
   return t;
 }
 
+function meaningfulPlainTextLength(text: string): number {
+  return text.replace(/\s+/g, ' ').trim().length;
+}
+
+/**
+ * Headless Chromium: rendered DOM text when static HTTP fetch yields little content.
+ */
+async function fetchPagePlainTextWithPlaywright(url: string): Promise<string | null> {
+  console.log(`[researchAgent] Playwright fallback triggered for ${url}`);
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    await page.goto(url, { waitUntil: 'load', timeout: 45_000 });
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    } catch {
+      // Many SPAs never reach networkidle; `load` above is enough to try innerText.
+    }
+    const inner = await page.locator('body').innerText({ timeout: 10_000 }).catch(() => '');
+    let t = (inner || '').replace(/\s+/g, ' ').trim();
+    if (t.length > PLAYWRIGHT_FETCH_MAX_CHARS) {
+      t = `${t.slice(0, PLAYWRIGHT_FETCH_MAX_CHARS)}… [truncated]`;
+    }
+    return t.length > 0 ? t : null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[researchAgent] Playwright fallback failed:', url, msg);
+    return null;
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
+}
+
 async function fetchPagePlainText(url: string): Promise<string | null> {
   let parsed: URL;
   try {
@@ -280,8 +322,11 @@ async function fetchPagePlainText(url: string): Promise<string | null> {
     return null;
   }
 
+  const href = parsed.toString();
+  let axiosText: string | null = null;
+
   try {
-    const res = await axios.get<string>(parsed.toString(), {
+    const res = await axios.get<string>(href, {
       timeout: 25_000,
       maxContentLength: 2_000_000,
       maxBodyLength: 2_000_000,
@@ -295,12 +340,26 @@ async function fetchPagePlainText(url: string): Promise<string | null> {
     });
     const html = typeof res.data === 'string' ? res.data : '';
     const text = htmlToPlainText(html);
-    return text.length > 40 ? text : null;
+    if (text.length > 0) {
+      axiosText = text;
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[researchAgent] fetchPagePlainText failed:', url, msg);
-    return null;
+    console.warn('[researchAgent] fetchPagePlainText (axios) failed:', href, msg);
   }
+
+  const axiosMeaningful =
+    axiosText !== null && meaningfulPlainTextLength(axiosText) >= PAGE_FETCH_MEANINGFUL_MIN_CHARS;
+  if (axiosMeaningful && axiosText !== null) {
+    return axiosText.length > 40 ? axiosText : null;
+  }
+
+  const pwText = await fetchPagePlainTextWithPlaywright(href);
+  if (pwText && pwText.length > 0) {
+    return pwText;
+  }
+
+  return axiosText && axiosText.length > 40 ? axiosText : null;
 }
 
 /** For the top N sources by score after merge, attach full-page text from HTTP GET when possible. */
