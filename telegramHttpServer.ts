@@ -22,6 +22,7 @@ import {
 } from './telegramBotCore';
 import { getTelegramSession, persistTelegramSessions } from './telegramSessionStore';
 import { extractArticleStyleFromBody } from './utils/articleStyle';
+import { runResearchAndWrite } from './agents/researchAndWritePipeline';
 
 const RENDER_HOST = '0.0.0.0';
 
@@ -129,6 +130,21 @@ function extractAuthorNameFromBody(body: unknown): string | undefined {
   return t.slice(0, 200);
 }
 
+/** Dig & Write: Unsplash hero on researchAndWrite; `mode`, `digAndWrite`, or `writeMode`. */
+function extractDigAndWriteMode(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const o = body as Record<string, unknown>;
+  if (o.digAndWrite === true || o.digWrite === true) return true;
+  const mode = o.mode;
+  if (typeof mode === 'string') {
+    const m = mode.trim().toLowerCase().replace(/\s+/g, '-');
+    if (m === 'dig-and-write' || m === 'digwrite' || m === 'dig_write') return true;
+  }
+  const wm = o.writeMode;
+  if (typeof wm === 'string' && /\bdig\b/i.test(wm) && /\bwrite\b/i.test(wm)) return true;
+  return false;
+}
+
 /** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
 function getCorsAllowlist(): string[] {
   const raw = process.env.CORS_ORIGINS?.trim();
@@ -227,8 +243,79 @@ function requestIsDashboardSource(req: express.Request): boolean {
   return false;
 }
 
+function writeSse(res: express.Response, event: string, data: unknown): void {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
 function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
   app.use(corsMiddleware);
+
+  /**
+   * Dashboard: research (Anthropic web search) + single-article writer in parallel where possible,
+   * stream merged `sources` as SSE, then fact-check (⚠️) + Sources section; final payload on `article` event.
+   * Body: same steering as autonomous `/publish` — `notes` (or aliases), optional `length`/`tone`, optional `authorName`,
+   * dashboard via `X-Client-Source: dashboard` and/or `source: "dashboard"`.
+   * Dig & Write: set `mode: "dig-and-write"` or `digAndWrite: true` to use Unsplash hero (`UNSPLASH_ACCESS_KEY`); otherwise DALL·E hero (same image stack as orchestrator, only on this route).
+   */
+  app.post(
+    '/api/command/researchAndWrite',
+    requireApiKey,
+    async (req, res) => {
+      const notesRaw = extractPublishNotesFromBody(req.body);
+      const notes = notesRaw?.trim() ?? '';
+      if (!notes) {
+        res.status(400).json({
+          error:
+            'Missing notes: provide `notes` or story/body/content/… (same field names as the publish / runWriter payload).',
+        });
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      const dashboardStyle = requestIsDashboardSource(req);
+      const articleStyle = extractArticleStyleFromBody(req.body);
+      const authorName = extractAuthorNameFromBody(req.body);
+      const digAndWrite = extractDigAndWriteMode(req.body);
+
+      try {
+        const { article, sources, heroImageAssetId, heroImageSource } = await runResearchAndWrite({
+          notes,
+          applyDashboardArticleStyle: dashboardStyle,
+          ...(dashboardStyle
+            ? { articleLength: articleStyle.articleLength, articleTone: articleStyle.articleTone }
+            : {}),
+          ...(authorName ? { authorName } : {}),
+          digAndWrite,
+          onSourceProgress: ({ sources: src }) => {
+            writeSse(res, 'sources', { sources: src });
+          },
+        });
+
+        writeSse(res, 'article', {
+          ok: true,
+          source: resolveApiClientSource(req),
+          article,
+          sources,
+          heroImageAssetId,
+          heroImageSource,
+        });
+        writeSse(res, 'done', { ok: true });
+        res.end();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command/researchAndWrite failed:', msg);
+        writeSse(res, 'error', { ok: false, message: msg });
+        writeSse(res, 'done', { ok: false });
+        res.end();
+      }
+    }
+  );
 
   app.post(
     '/api/upload',
