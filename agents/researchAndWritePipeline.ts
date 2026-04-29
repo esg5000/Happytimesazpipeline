@@ -2,6 +2,7 @@ import { generateTopics } from './topicAgent';
 import { writeArticle, HAPPYTIMESAZ_EDITORIAL_AUTHOR } from './writerAgent';
 import { generateImage, generateImagePrompt } from './imageAgent';
 import {
+  publishArticleToSanity,
   uploadImageBufferToSanity,
   uploadImageToSanity,
 } from './sanityPublisher';
@@ -42,11 +43,13 @@ export type ResearchAndWriteResult = {
   /** Sanity image asset `_id` for hero (Unsplash or DALL·E). */
   heroImageAssetId: string;
   heroImageSource: 'unsplash' | 'dall-e';
+  /** Sanity draft post `_id` after `publishArticleToSanity`. */
+  sanityDocumentId: string;
 };
 
 /**
  * Runs web research (with optional progress) in parallel with topic generation, then writes one article
- * using enriched research notes, fact-checks with Claude, and appends a Sources section (no Sanity publish).
+ * using enriched research notes, fact-checks, appends a Sources section, uploads hero to Sanity, and publishes a draft post to Sanity.
  */
 export async function runResearchAndWrite(
   options: ResearchAndWriteOptions
@@ -119,10 +122,61 @@ export async function runResearchAndWrite(
     throw new Error('researchAndWrite: hero image upload failed');
   }
 
+  console.log('[researchAndWrite] Hero image on Sanity; preparing article publish…', {
+    heroImageAssetId: finalHeroId,
+    heroImageSource: finalHeroSource,
+  });
+
+  console.log('[researchAndWrite] Starting article publish to Sanity...');
+  let sanityDocumentId: string;
+  try {
+    let articleJsonForLog: string;
+    try {
+      articleJsonForLog = JSON.stringify(article, null, 2);
+    } catch (stringifyErr: unknown) {
+      const se =
+        stringifyErr instanceof Error ? stringifyErr : new Error(String(stringifyErr));
+      console.error(
+        '[researchAndWrite] Failed to JSON.stringify article for logging:',
+        se.message,
+        se.stack ?? '(no stack)'
+      );
+      articleJsonForLog = `[unserializable article: ${se.message}]`;
+    }
+    console.log('[researchAndWrite] Full article object for Sanity publish:\n', articleJsonForLog);
+
+    const publishAuthorOpts =
+      typeof options.authorName === 'string' && options.authorName.trim().length > 0
+        ? { authorName: options.authorName.trim() }
+        : undefined;
+
+    sanityDocumentId = await publishArticleToSanity(
+      article,
+      finalHeroId,
+      topic.section,
+      undefined,
+      publishAuthorOpts
+    );
+
+    console.log(
+      '[researchAndWrite] Article publish to Sanity finished successfully. sanityDocumentId=',
+      sanityDocumentId
+    );
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      console.error('[researchAndWrite] Sanity publish failed — message:', err.message);
+      console.error('[researchAndWrite] Sanity publish failed — stack:\n', err.stack ?? '(no stack)');
+    } else {
+      console.error('[researchAndWrite] Sanity publish failed — non-Error value:', err);
+    }
+    throw err;
+  }
+
   return {
     article,
     sources: research.sources,
     heroImageAssetId: finalHeroId,
     heroImageSource: finalHeroSource,
+    sanityDocumentId,
   };
 }

@@ -284,7 +284,13 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       const digAndWrite = extractDigAndWriteMode(req.body);
 
       try {
-        const { article, sources, heroImageAssetId, heroImageSource } = await runResearchAndWrite({
+        const {
+          article,
+          sources,
+          heroImageAssetId,
+          heroImageSource,
+          sanityDocumentId,
+        } = await runResearchAndWrite({
           notes,
           applyDashboardArticleStyle: dashboardStyle,
           ...(dashboardStyle
@@ -304,12 +310,16 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           sources,
           heroImageAssetId,
           heroImageSource,
+          sanityDocumentId,
         });
         writeSse(res, 'done', { ok: true });
         res.end();
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command/researchAndWrite failed:', msg);
+        if (err instanceof Error && err.stack) {
+          console.error('[api] /api/command/researchAndWrite stack:\n', err.stack);
+        }
         writeSse(res, 'error', { ok: false, message: msg });
         writeSse(res, 'done', { ok: false });
         res.end();
