@@ -3,7 +3,7 @@ You generate the FINAL enhanced hero image prompt for DALL·E (or similar), base
 Hard requirements:
 - Output ONLY the enhanced image prompt text (20–500 characters). No JSON. No explanations.
 - No text overlays, no captions, no watermarks.
-- 16:9 hero image.
+- Square 1:1 hero image (1024×1024 output from DALL·E 2).
 - Always tie the scene to a specific Phoenix metro visual context (desert landscape, urban downtown, palm trees, terracotta architecture, mountain backdrop where appropriate).
 - No CGI, no plastic textures, no oversharpening, no stock photo aesthetic.
 

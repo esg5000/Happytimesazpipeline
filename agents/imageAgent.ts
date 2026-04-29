@@ -48,16 +48,15 @@ export async function generateImagePrompt(
 }
 
 /**
- * Generates an image using DALL-E
+ * Generates an image using DALL·E 2 (1024×1024; all pipeline heroes use this path).
  */
 export async function generateImage(prompt: string): Promise<string> {
   const response = await axios.post(
     'https://api.openai.com/v1/images/generations',
     {
-      model: 'dall-e-3',
+      model: 'dall-e-2',
       prompt: prompt,
-      size: '1792x1024', // 16:9 ratio
-      quality: 'standard',
+      size: '1024x1024',
       n: 1,
     },
     {

@@ -119,7 +119,7 @@ npm run type-check
 
 1. **Generate Topics**: Creates 3 article topics using OpenAI
 2. **Write Articles**: Generates full articles (650-900 words) for each topic
-3. **Generate Images**: Creates hero images using DALL-E 3
+3. **Generate Images**: Creates hero images using DALL·E 2 (1024×1024)
 4. **Upload Images**: Uploads images to Sanity assets API
 5. **Publish Drafts**: Creates post documents in Sanity as drafts
 6. **Log Results**: Outputs summary of successful/failed articles
@@ -158,7 +158,7 @@ All outputs are validated against strict schemas before publishing.
 
 - **Style**: Profile-driven (visualStyle), while staying on-brand for Phoenix
 - **Color Palette**: Desert colors (warm earth tones, sunset colors)
-- **Format**: 16:9 aspect ratio (hero images)
+- **Format**: 1024×1024 square (hero images; DALL·E 2)
 - **No Text Overlays**: Clean editorial photography only
 
 ## Sanity CMS Integration

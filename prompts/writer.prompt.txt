@@ -49,7 +49,7 @@ Output ONLY valid JSON in this exact format:
   "categories": ["category1", "category2"],
   "tags": ["tag1", "tag2", "tag3"],
   "visualStyle": "one of: editorial_realistic, cinematic_hyperreal, film_35mm_grain, documentary_candid, neon_night_street, illustrated_watercolor, bold_vector_flat, playful_cartoon, clay_3d",
-  "heroImagePrompt": "Hero image scene description for a 16:9 image (no style words, no text overlays) (20-500 chars)",
+  "heroImagePrompt": "Hero image scene description for a square 1:1 (1024×1024) hero (no style words, no text overlays) (20-500 chars)",
   "bodyMarkdown": "Full article body in Markdown (min 500 chars; must stay under 4500 chars before output)"
 }
 

@@ -12,6 +12,7 @@
     "cleanup-events": "ts-node scripts/cleanupEvents.ts",
     "sync-dispensaries": "ts-node scripts/syncDispensaries.ts",
     "scrape-dispensaries": "ts-node src/agents/dispensaryScraper.ts",
+    "audit-dispensaries": "ts-node src/agents/dispensaryUrlAudit.ts",
     "fetch-restaurants": "ts-node scripts/fetchRestaurants.ts",
     "fetch-restaurants:node": "node scripts/fetchRestaurants.js",
     "pipeline": "npm run build && node dist/orchestrator.js",
