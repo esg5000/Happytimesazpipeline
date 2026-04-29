@@ -178,6 +178,152 @@ function mergeSourcesByUrl(rows: Source[]): Source[] {
   return [...map.values()].sort((a, b) => b.relevanceScore - a.relevanceScore);
 }
 
+/**
+ * Detects editor phrasing like "search [source] for …" or "find info on …" and returns
+ * high-priority web-search angles that run before generic query extraction.
+ */
+function extractTargetedResearchAngles(notes: string): string[] {
+  type Entry = { key: string; angle: string };
+  const found: Entry[] = [];
+  const seen = new Set<string>();
+
+  const push = (key: string, angle: string) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push({ key, angle });
+  };
+
+  let m: RegExpExecArray | null;
+
+  const reSearchFor = /\bsearch\s+([^\n]+?)\s+for\s+([^\n]+)/gi;
+  while ((m = reSearchFor.exec(notes)) !== null) {
+    const sourceHint = m[1]!.trim().replace(/\s+/g, ' ');
+    const infoHint = m[2]!.trim().replace(/\s+/g, ' ');
+    if (sourceHint.length < 2 || infoHint.length < 2) continue;
+    push(`search-for:${sourceHint.toLowerCase()}|${infoHint.toLowerCase()}`, [
+      'EDITOR PRIORITY — The editor explicitly asked to search this source/site/publication first:',
+      `"${sourceHint}"`,
+      'for:',
+      `"${infoHint}".`,
+      'Use web_search to locate the best canonical or official pages from that named source (prefer matching domain or byline).',
+      'Return real URLs and summaries grounded in what you find there; treat this as the primary angle before broader web context.',
+    ].join(' '));
+  }
+
+  const reFindInfoOn = /\bfind\s+(?:info|information)\s+on\s+([^\n,;.]+)/gi;
+  while ((m = reFindInfoOn.exec(notes)) !== null) {
+    const siteHint = m[1]!.trim().replace(/\s+/g, ' ');
+    if (siteHint.length < 2) continue;
+    push(
+      `find-on:${siteHint.toLowerCase()}`,
+      [
+        'EDITOR PRIORITY — The editor asked to find information on:',
+        `"${siteHint}"`,
+        'in the context of the full editor notes.',
+        'Use web_search to find authoritative pages from that site, outlet, or named source (prefer URLs clearly belonging to it).',
+        'Summarize what is most relevant to the notes.',
+      ].join(' ')
+    );
+  }
+
+  return found.slice(0, 5).map((e) => e.angle);
+}
+
+function htmlToPlainText(html: string): string {
+  let t = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ');
+  t = t.replace(/<[^>]+>/g, ' ');
+  t = t
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(\d+);/g, (match, n: string) => {
+      const code = parseInt(n, 10);
+      if (!Number.isFinite(code) || code < 32) return match;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return match;
+      }
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (match, h: string) => {
+      const code = parseInt(h, 16);
+      if (!Number.isFinite(code) || code < 32) return match;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return match;
+      }
+    });
+  t = t.replace(/\s+/g, ' ').trim();
+  const max = 14_000;
+  if (t.length > max) {
+    t = `${t.slice(0, max)}… [truncated]`;
+  }
+  return t;
+}
+
+async function fetchPagePlainText(url: string): Promise<string | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return null;
+  }
+
+  try {
+    const res = await axios.get<string>(parsed.toString(), {
+      timeout: 25_000,
+      maxContentLength: 2_000_000,
+      maxBodyLength: 2_000_000,
+      responseType: 'text',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (compatible; HappyTimesAZ-ResearchBot/1.0; +https://happytimesaz.com)',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+      },
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+    const html = typeof res.data === 'string' ? res.data : '';
+    const text = htmlToPlainText(html);
+    return text.length > 40 ? text : null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[researchAgent] fetchPagePlainText failed:', url, msg);
+    return null;
+  }
+}
+
+/** For the top N sources by score after merge, attach full-page text from HTTP GET when possible. */
+async function enrichTopSourcesWithFetchedPageText(
+  sources: Source[],
+  topN: number
+): Promise<Source[]> {
+  if (sources.length === 0) return sources;
+  const n = Math.min(topN, sources.length);
+  const copy = sources.map((s) => ({ ...s }));
+  const tasks = Array.from({ length: n }, (_, i) => i).map(async (i) => {
+    const s = copy[i]!;
+    const pageText = await fetchPagePlainText(s.url);
+    if (pageText && pageText.length > 80) {
+      copy[i] = {
+        ...s,
+        summary: `Detailed page content (HTTP fetch):\n${pageText}\n\n--- Web search summary ---\n${s.summary}`,
+      };
+    }
+  });
+  await Promise.all(tasks);
+  return mergeSourcesByUrl(copy);
+}
+
 function fallbackQueries(notes: string): string[] {
   const t = notes.trim().replace(/\s+/g, ' ');
   const head = t.slice(0, 100).trim() || 'topic research';
@@ -287,8 +433,25 @@ export async function researchTopicWithProgress(
     throw new Error('researchTopicWithProgress: notes must be a non-empty string');
   }
 
-  const queries = await extractSearchQueries(trimmed);
   const accumulated: Source[] = [];
+
+  const targetedAngles = extractTargetedResearchAngles(trimmed);
+  if (targetedAngles.length > 0) {
+    console.log(
+      `[researchAgent] Running ${targetedAngles.length} targeted source search(es) before generic queries.`
+    );
+    await Promise.all(
+      targetedAngles.map(async (angle) => {
+        const batch = await runWebResearchForQuery(trimmed, angle);
+        accumulated.push(...batch);
+        if (onProgress) {
+          onProgress({ sources: mergeSourcesByUrl(accumulated) });
+        }
+      })
+    );
+  }
+
+  const queries = await extractSearchQueries(trimmed);
   await Promise.all(
     queries.map(async (q) => {
       const batch = await runWebResearchForQuery(trimmed, q);
@@ -298,14 +461,21 @@ export async function researchTopicWithProgress(
       }
     })
   );
-  const sources = mergeSourcesByUrl(accumulated);
+
+  let sources = mergeSourcesByUrl(accumulated);
+  sources = await enrichTopSourcesWithFetchedPageText(sources, 2);
+  if (onProgress) {
+    onProgress({ sources });
+  }
+
   const enrichedNotes = buildEnrichedNotes(trimmed, sources);
   return { sources, enrichedNotes };
 }
 
 /**
- * Runs keyword extraction → 3–5 parallel OpenAI web-search passes (`web_search` hosted tool),
- * merges deduplicated sources, and appends a RESEARCH FINDINGS section to the notes.
+ * Runs optional targeted source angles from editor phrasing → keyword extraction → parallel
+ * OpenAI web-search passes (`web_search` hosted tool), merges deduplicated sources, fetches full
+ * HTML text for the top two scored URLs when possible, and appends a RESEARCH FINDINGS section.
  */
 export async function researchTopic(notes: string): Promise<ResearchTopicResult> {
   return researchTopicWithProgress(notes, undefined);
