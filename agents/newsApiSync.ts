@@ -382,7 +382,7 @@ function truncateRewriteLengthsIfNeeded(raw: unknown, label: string): void {
   const body = o.bodyMarkdown;
   if (typeof body === 'string' && body.length > BODY_MARKDOWN_SAFETY_MAX) {
     const next = truncateBodyMarkdownAtLastSentence(body, BODY_MARKDOWN_SAFETY_MAX);
-    console.log(
+    console.warn(
       `[google-news] ${label} bodyMarkdown safety truncate: ${body.length} → ${next.length} chars (cap ${BODY_MARKDOWN_SAFETY_MAX})`
     );
     o.bodyMarkdown = next;
@@ -390,7 +390,7 @@ function truncateRewriteLengthsIfNeeded(raw: unknown, label: string): void {
   const ex = o.excerpt;
   if (typeof ex === 'string' && ex.length > EXCERPT_SAFETY_MAX) {
     const next = truncateExcerptAtLastWord(ex, EXCERPT_SAFETY_MAX);
-    console.log(
+    console.warn(
       `[google-news] ${label} excerpt safety truncate: ${ex.length} → ${next.length} chars (cap ${EXCERPT_SAFETY_MAX})`
     );
     o.excerpt = next;

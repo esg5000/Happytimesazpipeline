@@ -18,6 +18,10 @@ SEO Requirements:
 - Include relevant keywords organically
 - seoDescription (CRITICAL): Must be **155 characters or fewer** (count every character including spaces). Sanity rejects longer values (hard limit 160). Never exceed 155. If unsure, shorten until the string length is ≤ 155.
 
+Hard character limits (mandatory — count every character including spaces, markdown, and newlines):
+- **bodyMarkdown** must be **under 4500 characters maximum** (strict: never reach or exceed 4500). If the draft is long, shorten sections before you exceed this cap.
+- **excerpt** must be **under 180 characters maximum** (strict: never reach or exceed 180). Write a tight teaser that fits comfortably under 180.
+
 Content Rules:
 - If the user message includes a "PRIMARY SOURCE MATERIAL" block (editor notes from Telegram or the dashboard), that block is the article’s mandate — expand and polish it, but do not replace it with a different story angle or unrelated topic.
 - Focus on: food, nightlife, cannabis, health-wellness, news, or events
@@ -39,14 +43,14 @@ Output ONLY valid JSON in this exact format:
 {
   "title": "Article title (10-100 chars)",
   "slug": "url-friendly-slug",
-  "excerpt": "Compelling excerpt (50-200 chars)",
+  "excerpt": "Compelling excerpt (50–180 chars; hard max under 180)",
   "seoTitle": "SEO title (10-70 chars)",
   "seoDescription": "SEO meta description: 50–155 chars only (strict max 155; must fit Sanity 160 limit)",
   "categories": ["category1", "category2"],
   "tags": ["tag1", "tag2", "tag3"],
   "visualStyle": "one of: editorial_realistic, cinematic_hyperreal, film_35mm_grain, documentary_candid, neon_night_street, illustrated_watercolor, bold_vector_flat, playful_cartoon, clay_3d",
   "heroImagePrompt": "Hero image scene description for a 16:9 image (no style words, no text overlays) (20-500 chars)",
-  "bodyMarkdown": "Full article body in Markdown format (500-5000 chars)"
+  "bodyMarkdown": "Full article body in Markdown (min 500 chars; must stay under 4500 chars before output)"
 }
 
 Visual Style Requirements:

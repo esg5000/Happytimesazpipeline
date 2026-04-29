@@ -19,6 +19,61 @@ const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
 /** OpenAI model for Chat Completions article JSON (`writeArticle`). */
 const WRITER_OPENAI_MODEL = 'gpt-5.4-mini';
 
+const BODY_MARKDOWN_SAFETY_MAX = 4800;
+const EXCERPT_SAFETY_MAX = 190;
+const BODY_MARKDOWN_SCHEMA_MIN = 500;
+
+/** Truncate at the last complete sentence ending at or before `maxLen` (., !, ? followed by space/end). */
+function truncateBodyMarkdownAtLastSentence(body: string, maxLen: number): string {
+  if (body.length <= maxLen) return body;
+  const window = body.slice(0, maxLen);
+  let bestCut = -1;
+  for (let i = 0; i < window.length; i++) {
+    const ch = window[i]!;
+    if (
+      (ch === '.' || ch === '!' || ch === '?') &&
+      (i === window.length - 1 || /\s/.test(window[i + 1]!))
+    ) {
+      bestCut = i + 1;
+    }
+  }
+  if (bestCut >= BODY_MARKDOWN_SCHEMA_MIN) return window.slice(0, bestCut).trimEnd();
+  return window.trimEnd();
+}
+
+/** Truncate at the last word boundary at or before `maxLen`. */
+function truncateExcerptAtLastWord(excerpt: string, maxLen: number): string {
+  if (excerpt.length <= maxLen) return excerpt;
+  const slice = excerpt.slice(0, maxLen);
+  const lastSpace = slice.lastIndexOf(' ');
+  let out = lastSpace > 20 ? slice.slice(0, lastSpace).trimEnd() : slice.trimEnd();
+  if (out.length < 50 && excerpt.length >= 50) {
+    out = excerpt.slice(0, maxLen).trimEnd();
+  }
+  return out;
+}
+
+function applyWriterArticleLengthSafetyTruncate(parsed: unknown): void {
+  if (!parsed || typeof parsed !== 'object') return;
+  const o = parsed as Record<string, unknown>;
+  const body = o.bodyMarkdown;
+  if (typeof body === 'string' && body.length > BODY_MARKDOWN_SAFETY_MAX) {
+    const next = truncateBodyMarkdownAtLastSentence(body, BODY_MARKDOWN_SAFETY_MAX);
+    console.warn(
+      `[writerAgent] bodyMarkdown safety truncate: ${body.length} → ${next.length} chars (cap ${BODY_MARKDOWN_SAFETY_MAX})`
+    );
+    o.bodyMarkdown = next;
+  }
+  const ex = o.excerpt;
+  if (typeof ex === 'string' && ex.length > EXCERPT_SAFETY_MAX) {
+    const next = truncateExcerptAtLastWord(ex, EXCERPT_SAFETY_MAX);
+    console.warn(
+      `[writerAgent] excerpt safety truncate: ${ex.length} → ${next.length} chars (cap ${EXCERPT_SAFETY_MAX})`
+    );
+    o.excerpt = next;
+  }
+}
+
 /** Byline stored on Sanity for pipeline-written posts (`publishArticleToSanity`). */
 export const HAPPYTIMESAZ_EDITORIAL_AUTHOR = 'HappyTimesAZ Editorial';
 
@@ -124,6 +179,8 @@ Remember: seoDescription must be at most 155 characters (count spaces).`;
       articleObj.slug = generateSlug(articleObj.title);
     }
   }
+
+  applyWriterArticleLengthSafetyTruncate(parsedContent);
 
   const validation = validateArticle(parsedContent);
   if (!validation.success) {
