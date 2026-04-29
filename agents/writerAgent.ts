@@ -16,6 +16,9 @@ import {
 // Resolve prompt path - works in both dev and compiled dist
 const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
 
+/** OpenAI model for Chat Completions article JSON (`writeArticle`). */
+const WRITER_OPENAI_MODEL = 'gpt-5.4-mini';
+
 /** Byline stored on Sanity for pipeline-written posts (`publishArticleToSanity`). */
 export const HAPPYTIMESAZ_EDITORIAL_AUTHOR = 'HappyTimesAZ Editorial';
 
@@ -81,7 +84,7 @@ Remember: seoDescription must be at most 155 characters (count spaces).`;
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
-      model: config.openai.model,
+      model: WRITER_OPENAI_MODEL,
       messages: [
         {
           role: 'system',

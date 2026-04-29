@@ -14,6 +14,9 @@ import {
 // Resolve prompt path - works in both dev and compiled dist
 const TOPIC_PROMPT_PATH = join(process.cwd(), 'prompts', 'topic.prompt.txt');
 
+/** OpenAI model for Chat Completions topic JSON (`generateTopics` / `generateSingleTopic`). */
+const TOPIC_OPENAI_MODEL = 'gpt-5.4-mini';
+
 export type GenerateTopicsOptions = {
   /** Passed into each topic request to steer angles (e.g. API /publish). */
   notes?: string;
@@ -111,7 +114,7 @@ async function generateSingleTopic(
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
-      model: config.openai.model,
+      model: TOPIC_OPENAI_MODEL,
       messages: [
         {
           role: 'system',

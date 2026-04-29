@@ -27,7 +27,7 @@ const REWRITE_PROMPT_PATH = join(process.cwd(), 'prompts', 'googleNewsRewrite.pr
 /** OpenAI model for SerpApi Google News candidate scoring + topic/exclude gate. */
 const OPENAI_MODEL_GOOGLE_NEWS_SCORE = 'gpt-5.4-mini';
 /** OpenAI model for SerpApi Google News article rewrite → HappyTimesAZ JSON. */
-const OPENAI_MODEL_GOOGLE_NEWS_REWRITE = 'gpt-5.4';
+const OPENAI_MODEL_GOOGLE_NEWS_REWRITE = 'gpt-5.4-mini';
 
 /** Slot 1 — Suns / NBA */
 const SLOT1_QUERIES = [
