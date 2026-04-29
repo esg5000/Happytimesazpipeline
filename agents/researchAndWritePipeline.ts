@@ -35,6 +35,11 @@ export type ResearchAndWriteOptions = {
   digAndWrite?: boolean;
   /** Fired whenever merged sources update (parallel search angles complete). */
   onSourceProgress?: (payload: { sources: Source[] }) => void;
+  /**
+   * When true, runs the OpenAI fact-check pass (⚠️ markers) on the draft body before Sources.
+   * Default false to save cost on typical Dig & Write runs.
+   */
+  runFactCheck?: boolean;
 };
 
 export type ResearchAndWriteResult = {
@@ -49,7 +54,8 @@ export type ResearchAndWriteResult = {
 
 /**
  * Runs web research (with optional progress) in parallel with topic generation, then writes one article
- * using enriched research notes, fact-checks, appends a Sources section, uploads hero to Sanity, and publishes a draft post to Sanity.
+ * using enriched research notes, optional fact-check (`runFactCheck`, default false), Sources section,
+ * hero upload, and Sanity draft publish.
  */
 export async function runResearchAndWrite(
   options: ResearchAndWriteOptions
@@ -89,7 +95,10 @@ export async function runResearchAndWrite(
       : HAPPYTIMESAZ_EDITORIAL_AUTHOR;
   article = { ...article, author };
 
-  let body = await factCheckArticleMarkdownAnthropic(article.bodyMarkdown, research.sources);
+  let body = article.bodyMarkdown;
+  if (options.runFactCheck === true) {
+    body = await factCheckArticleMarkdownAnthropic(body, research.sources);
+  }
   body = appendSourcesSectionMarkdown(body, research.sources);
   article = { ...article, bodyMarkdown: body };
 

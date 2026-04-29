@@ -145,6 +145,14 @@ function extractDigAndWriteMode(body: unknown): boolean {
   return false;
 }
 
+/** Optional OpenAI fact-check (⚠️) on `POST /api/command/researchAndWrite`; default off. */
+function extractRunFactCheckFromBody(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const o = body as Record<string, unknown>;
+  if (o.runFactCheck === true || o.factCheck === true) return true;
+  return false;
+}
+
 /** Comma-separated origins (e.g. https://your-app.vercel.app). Empty = allow any origin (*). */
 function getCorsAllowlist(): string[] {
   const raw = process.env.CORS_ORIGINS?.trim();
@@ -253,7 +261,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
 
   /**
    * Dashboard: research (OpenAI web search via Responses API) + single-article writer in parallel where possible,
-   * stream merged `sources` as SSE, then fact-check (⚠️) + Sources section; final payload on `article` event.
+   * stream merged `sources` as SSE, optional fact-check (`runFactCheck` or `factCheck: true`) then Sources section; final payload on `article` event.
    * Body: same steering as autonomous `/publish` — `notes` (or aliases), optional `length`/`tone`, optional `authorName`,
    * dashboard via `X-Client-Source: dashboard` and/or `source: "dashboard"`.
    * Dig & Write: set `mode: "dig-and-write"` or `digAndWrite: true` to use Unsplash hero (`UNSPLASH_ACCESS_KEY`); otherwise DALL·E hero (same image stack as orchestrator, only on this route).
@@ -282,6 +290,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       const articleStyle = extractArticleStyleFromBody(req.body);
       const authorName = extractAuthorNameFromBody(req.body);
       const digAndWrite = extractDigAndWriteMode(req.body);
+      const runFactCheck = extractRunFactCheckFromBody(req.body);
 
       try {
         const {
@@ -298,6 +307,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
             : {}),
           ...(authorName ? { authorName } : {}),
           digAndWrite,
+          runFactCheck,
           onSourceProgress: ({ sources: src }) => {
             writeSse(res, 'sources', { sources: src });
           },

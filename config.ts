@@ -5,7 +5,7 @@ dotenv.config();
 export const config = {
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
-    model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+    model: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
   },
   /** Unsplash — Dig & Write hero on `POST /api/command/researchAndWrite` only. */
   unsplash: {

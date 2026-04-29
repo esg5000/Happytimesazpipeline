@@ -1,6 +1,7 @@
 /**
  * Research agent: expands editor notes with OpenAI Responses API + hosted `web_search`,
- * parallel per-query research passes, and structured sources + enriched notes.
+ * at most three web-search turns (one targeted hint if present, plus two generic angles),
+ * merged sources, optional HTTP page text (capped per URL), and enriched notes.
  *
  * Requires `OPENAI_API_KEY` (same as the rest of the pipeline). Model: `gpt-5.4-mini`.
  */
@@ -226,7 +227,7 @@ function extractTargetedResearchAngles(notes: string): string[] {
     );
   }
 
-  return found.slice(0, 5).map((e) => e.angle);
+  return found.slice(0, 1).map((e) => e.angle);
 }
 
 function htmlToPlainText(html: string): string {
@@ -261,7 +262,7 @@ function htmlToPlainText(html: string): string {
       }
     });
   t = t.replace(/\s+/g, ' ').trim();
-  const max = 14_000;
+  const max = 3000;
   if (t.length > max) {
     t = `${t.slice(0, max)}… [truncated]`;
   }
@@ -327,18 +328,14 @@ async function enrichTopSourcesWithFetchedPageText(
 function fallbackQueries(notes: string): string[] {
   const t = notes.trim().replace(/\s+/g, ' ');
   const head = t.slice(0, 100).trim() || 'topic research';
-  return [
-    `${head} overview`,
-    `${head} recent news`,
-    `${head} background facts`,
-  ];
+  return [`${head} overview`, `${head} recent news`];
 }
 
 async function extractSearchQueries(notes: string): Promise<string[]> {
   const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
-  const user = `Read the editor notes below and propose between 3 and 5 short, distinct web search queries (each suitable for a news/web search engine) that would best surface facts and reputable sources for an article based on these notes. Prefer specific entities, places, dates, or bill names if present.
+  const user = `Read the editor notes below and propose exactly 2 short, distinct web search queries (each suitable for a news/web search engine) that would best surface facts and reputable sources for an article based on these notes. Prefer specific entities, places, dates, or bill names if present.
 
-Return exactly this JSON shape: {"queries":["query1","query2",...]}
+Return exactly this JSON shape: {"queries":["query1","query2"]}
 
 EDITOR NOTES:
 ---
@@ -368,10 +365,10 @@ ${notes.slice(0, 12000)}
   const out = q
     .filter((x): x is string => typeof x === 'string' && x.trim().length > 2)
     .map((x) => x.trim())
-    .slice(0, 5);
-  if (out.length >= 3) return out;
-  if (out.length > 0 && out.length < 3) return out;
-  return fallbackQueries(notes);
+    .slice(0, 2);
+  if (out.length >= 2) return out;
+  if (out.length === 1) return out;
+  return fallbackQueries(notes).slice(0, 2);
 }
 
 async function runWebResearchForQuery(notes: string, query: string): Promise<Source[]> {
@@ -451,7 +448,7 @@ export async function researchTopicWithProgress(
     );
   }
 
-  const queries = await extractSearchQueries(trimmed);
+  const queries = (await extractSearchQueries(trimmed)).slice(0, 2);
   await Promise.all(
     queries.map(async (q) => {
       const batch = await runWebResearchForQuery(trimmed, q);
@@ -473,9 +470,9 @@ export async function researchTopicWithProgress(
 }
 
 /**
- * Runs optional targeted source angles from editor phrasing → keyword extraction → parallel
- * OpenAI web-search passes (`web_search` hosted tool), merges deduplicated sources, fetches full
- * HTML text for the top two scored URLs when possible, and appends a RESEARCH FINDINGS section.
+ * Runs at most one targeted source angle → query extraction → two generic web-search passes
+ * (`web_search`, max three Responses calls with tools), merges deduplicated sources, fetches plain
+ * text for the top two scored URLs (≤3000 chars each) when possible, and appends RESEARCH FINDINGS.
  */
 export async function researchTopic(notes: string): Promise<ResearchTopicResult> {
   return researchTopicWithProgress(notes, undefined);
