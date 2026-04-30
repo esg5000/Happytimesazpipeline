@@ -1,6 +1,7 @@
 /**
  * Dispensary website scraper: Playwright loads each dispensary site, scores deal-like page text,
- * optionally captures a homepage logo screenshot, uploads to Sanity assets, and patches the dispensary doc.
+ * optionally captures a homepage screenshot into `scrapedImage` (never `image` or manual `logo`),
+ * uploads to Sanity assets, and patches the dispensary doc.
  *
  * Redirects: an axios preflight (maxRedirects: 10) resolves the final base URL after 301/302/307/308
  * chains; `page.goto` also follows HTTP redirects by default in Chromium.
@@ -56,6 +57,8 @@ type DispensaryRow = {
   name: string | null;
   slug: string | null;
   website: string | null;
+  /** True when manual `logo` image is set — scraper must not capture or patch scraped image. */
+  hasManualLogo: boolean;
 };
 
 function normalizeWebsiteUrl(raw: unknown): string | null {
@@ -216,21 +219,29 @@ async function scrapeOneDispensary(
 
     const dealsText = await scrapeBestDealsText(page, baseUrl);
 
-    let imageAssetId: string | undefined;
-    const logoBuf = await screenshotHomepageLogo(page, baseUrl);
-    if (logoBuf) {
-      try {
-        const safe = (row.slug || row._id).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 48);
-        imageAssetId = await uploadImageBufferToSanity(logoBuf, `dispensary-logo-${safe}.png`);
-        console.log(`[dispensaryScraper]   uploaded logo asset: ${imageAssetId}`);
-      } catch (e) {
-        console.warn(
-          `[dispensaryScraper]   logo upload failed:`,
-          e instanceof Error ? e.message : e
-        );
-      }
+    let scrapedImageAssetId: string | undefined;
+    if (row.hasManualLogo) {
+      const nameForLog = row.name?.trim() || slug;
+      console.log(`[dispensaryScraper] logo already set for ${nameForLog} — skipping image scrape`);
     } else {
-      console.log(`[dispensaryScraper]   no homepage logo screenshot captured`);
+      const logoBuf = await screenshotHomepageLogo(page, baseUrl);
+      if (logoBuf) {
+        try {
+          const safe = (row.slug || row._id).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 48);
+          scrapedImageAssetId = await uploadImageBufferToSanity(
+            logoBuf,
+            `dispensary-scraped-${safe}.png`
+          );
+          console.log(`[dispensaryScraper]   uploaded scrapedImage asset: ${scrapedImageAssetId}`);
+        } catch (e) {
+          console.warn(
+            `[dispensaryScraper]   scrapedImage upload failed:`,
+            e instanceof Error ? e.message : e
+          );
+        }
+      } else {
+        console.log(`[dispensaryScraper]   no homepage screenshot captured for scrapedImage`);
+      }
     }
 
     const client = getSanityClient();
@@ -238,16 +249,16 @@ async function scrapeOneDispensary(
       scrapedDealsText: dealsText || '',
       dealsScrapedAt: new Date().toISOString(),
     };
-    if (imageAssetId) {
-      fields.image = {
+    if (scrapedImageAssetId) {
+      fields.scrapedImage = {
         _type: 'image',
-        asset: { _type: 'reference', _ref: imageAssetId },
+        asset: { _type: 'reference', _ref: scrapedImageAssetId },
       };
     }
     await client.patch(row._id).set(fields).commit();
 
     console.log(
-      `[dispensaryScraper] OK "${label}" [${slug}] — dealsChars=${(dealsText || '').length}, imagePatched=${Boolean(imageAssetId)}`
+      `[dispensaryScraper] OK "${label}" [${slug}] — dealsChars=${(dealsText || '').length}, scrapedImagePatched=${Boolean(scrapedImageAssetId)}`
     );
     return 'ok';
   } catch (e) {
@@ -260,8 +271,9 @@ async function scrapeOneDispensary(
 }
 
 /**
- * Fetches all dispensaries with a website, scrapes deal/special text and optional homepage logo per row,
- * patches `scrapedDealsText`, `dealsScrapedAt`, and `image` (when a new logo asset was uploaded).
+ * Fetches all dispensaries with a website, scrapes deal/special text and optional homepage capture per row,
+ * patches `scrapedDealsText`, `dealsScrapedAt`, and `scrapedImage` (never `image` or `logo`).
+ * Rows with a manual `logo` skip image capture; only text fields are updated.
  * One failure does not stop the batch.
  */
 export async function scrapeDispensaries(): Promise<ScrapeDispensariesResult> {
@@ -271,7 +283,8 @@ export async function scrapeDispensaries(): Promise<ScrapeDispensariesResult> {
       _id,
       name,
       "slug": slug.current,
-      website
+      website,
+      "hasManualLogo": defined(logo.asset._ref)
     }`
   );
 

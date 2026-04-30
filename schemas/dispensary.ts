@@ -33,6 +33,14 @@ export default defineType({
       ],
     }),
     defineField({ name: 'image', type: 'image', options: { hotspot: true } }),
+    defineField({
+      name: 'logo',
+      type: 'image',
+      title: 'Logo / storefront (manual)',
+      description:
+        'When set, the dispensary scraper skips homepage image capture and only updates deal text.',
+      options: { hotspot: true },
+    }),
     defineField({ name: 'isActive', type: 'boolean', initialValue: true }),
     defineField({
       name: 'source',
@@ -43,6 +51,24 @@ export default defineType({
       name: 'googlePlaceId',
       type: 'string',
       description: 'Google Maps place_id when available (dedupe key)',
+    }),
+    defineField({
+      name: 'scrapedDealsText',
+      type: 'text',
+      title: 'Scraped deals / specials text',
+      rows: 12,
+    }),
+    defineField({
+      name: 'dealsScrapedAt',
+      type: 'datetime',
+      title: 'Deals scraped at',
+    }),
+    defineField({
+      name: 'scrapedImage',
+      type: 'image',
+      title: 'Scraped homepage image',
+      description: 'Auto-capture from the website; does not replace `image` or manual `logo`.',
+      options: { hotspot: true },
     }),
   ],
   preview: {
