@@ -83,10 +83,38 @@ function normalizeWebsiteUrl(raw: unknown): string | null {
   }
 }
 
+function stripQueryAndHash(url: string): string {
+  try {
+    const u = new URL(url);
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    // Best-effort fallback: drop anything after ? or #
+    return url.split('?')[0]!.split('#')[0]!;
+  }
+}
+
+/**
+ * Join a base URL with a path safely.
+ * Important: the base URL is first sanitized to remove any query/UTM parameters so we never append
+ * `/deals` after `?utm_source=...`.
+ */
 function joinUrl(base: string, path: string): string {
-  const b = base.replace(/\/+$/, '');
-  const p = path.startsWith('/') ? path : `/${path}`;
-  return `${b}${p}`;
+  const cleaned = stripQueryAndHash(base);
+  try {
+    const u = new URL(cleaned);
+    u.search = '';
+    u.hash = '';
+    // Remove trailing slashes from pathname so `/foo/` + `/deals` doesn't become `/foo//deals`
+    u.pathname = (u.pathname || '/').replace(/\/+$/, '');
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return new URL(p, u.toString() + '/').toString();
+  } catch {
+    const b = cleaned.replace(/\/+$/, '');
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return `${b}${p}`;
+  }
 }
 
 function matchDealsUrlOverride(baseUrl: string): string | null {
@@ -261,11 +289,20 @@ async function scrapeDomainOnce(
   const page = await context.newPage();
   page.setDefaultTimeout(35_000);
   try {
-    const dealsUrl = await findDealsUrl(baseUrl);
-    if (dealsUrl) {
-      console.log(`[dispensaryScraper]   deals URL found: ${dealsUrl}`);
+    let dealsUrl: string | null = null;
+    if (/age[-_]?gate/i.test(baseUrl)) {
+      const nameForLog =
+        representative.name?.trim() || representative.slug || representative._id;
+      console.log(
+        `[dispensaryScraper] age gate detected for ${nameForLog} — skipping deals URL`
+      );
     } else {
-      console.log(`[dispensaryScraper]   deals URL not found`);
+      dealsUrl = await findDealsUrl(baseUrl);
+      if (dealsUrl) {
+        console.log(`[dispensaryScraper]   deals URL found: ${dealsUrl}`);
+      } else {
+        console.log(`[dispensaryScraper]   deals URL not found`);
+      }
     }
 
     let scrapedImageAssetId: string | undefined;
