@@ -28,8 +28,15 @@ const AXIOS_REDIRECT_OPTS = {
  * - or pathnames (/deals, /specials, /promotions, …) which will be resolved against the base origin.
  */
 const DEALS_URL_MAP: Record<string, string> = {
-  // Example:
-  // 'exampledispensary.com': '/daily-deals',
+  'trulieve.com': 'https://www.trulieve.com/deals',
+  'pondyaz.com': 'https://www.pondyaz.com/deals',
+  'theflowershopusa.com': 'https://theflowershopusa.com/specials',
+  'menu.thegooddispensary.com':
+    'https://menu.thegooddispensary.com/stores/the-good-dispensary/deals',
+  'votsmd.com': 'https://www.votsmd.com/deals',
+  'tucsonsaints.com': 'https://tucsonsaints.com/specials',
+  'thesuperiordispensary.com': 'https://thesuperiordispensary.com/specials',
+  'phoenixcannabisco.com': 'https://phoenixcannabisco.com/specials',
 };
 
 const COMMON_DEALS_PATHS = ['/deals', '/specials', '/promotions'] as const;
