@@ -38,7 +38,7 @@ export default defineType({
       type: 'image',
       title: 'Logo / storefront (manual)',
       description:
-        'When set, the dispensary scraper skips homepage image capture and only updates deal text.',
+        'When set, the dispensary scraper skips homepage image capture and will not overwrite it.',
       options: { hotspot: true },
     }),
     defineField({ name: 'isActive', type: 'boolean', initialValue: true }),
@@ -57,6 +57,13 @@ export default defineType({
       type: 'text',
       title: 'Scraped deals / specials text',
       rows: 12,
+    }),
+    defineField({
+      name: 'dealsUrl',
+      type: 'url',
+      title: 'Deals URL',
+      description:
+        'Detected deals/specials/promotions page URL from the dispensary website (scraper-managed).',
     }),
     defineField({
       name: 'dealsScrapedAt',
