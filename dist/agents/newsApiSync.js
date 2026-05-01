@@ -1,0 +1,748 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.syncNewsApiToSanity = syncNewsApiToSanity;
+const axios_1 = __importDefault(require("axios"));
+const fs_1 = require("fs");
+const path_1 = require("path");
+const config_1 = require("../config");
+const sanityPublisher_1 = require("./sanityPublisher");
+const validator_1 = require("../utils/validator");
+const slug_1 = require("../utils/slug");
+const imageAgent_1 = require("./imageAgent");
+const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
+/** SerpApi `num` — cap news results per query (default is much higher). */
+const SERP_NEWS_NUM = 10;
+/** After per-slot URL dedupe, keep at most this many candidates (newest first) before OpenAI scoring. */
+const SLOT_CANDIDATE_POOL_CAP = 10;
+const REWRITE_PROMPT_PATH = (0, path_1.join)(process.cwd(), 'prompts', 'googleNewsRewrite.prompt.txt');
+/** OpenAI model for SerpApi Google News candidate scoring + topic/exclude gate. */
+const OPENAI_MODEL_GOOGLE_NEWS_SCORE = 'gpt-5.4-mini';
+/** OpenAI model for SerpApi Google News article rewrite → HappyTimesAZ JSON. */
+const OPENAI_MODEL_GOOGLE_NEWS_REWRITE = 'gpt-5.4-mini';
+/** Slot 1 — Suns / NBA */
+const SLOT1_QUERIES = [
+    'Phoenix Suns news today',
+    'Suns game result today',
+    'Phoenix Suns playoffs 2026',
+];
+/** Slot 3 — Phoenix local */
+const SLOT3_QUERIES = [
+    'Phoenix Arizona local news today',
+    'Phoenix community news today',
+    'Arizona local development news',
+    'Phoenix city news today',
+];
+/** Slot 4 — lifestyle / food / entertainment (no sports, no hard news) */
+const SLOT4_QUERIES = [
+    'Phoenix restaurant news today',
+    'Scottsdale food entertainment news',
+    'Phoenix arts culture news today',
+    'Arizona lifestyle news today',
+];
+const HARD_LOCAL_NEWS_RE = /\b(city council|city of phoenix|city of scottsdale|city of tempe|mayor|maricopa county|board of supervisors|DPS|ADOT|flood warning|power outage|water main|school board|bond measure|ballot measure|prop\s*\d+|lane closure|road closure|brush fire|wildfire|red flag|heat warning|excessive heat|i-10|i-17|loop\s*101|sr\s*51|valley metro|light rail|transit delay|public safety|missing (child|person)|amber alert|evacuation|shooting|homicide|arrested|charged|sentenced)\b/i;
+/** Fast reject before AI — crime, tragedy, serious accidents, national partisan frame (headline-level). */
+const NEGATIVE_HEADLINE_RE = /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|deadly (crash|collision|wreck)|terror(ist|ism)?|suicide|sexual assault|kidnap|rape\b|school\s*shooting|armed robbery|stabbed|shot dead|police\s+shooting|charged with|sentenced to|arrested for|domestic violence|child abuse|overdose death|capitol\s*riot|january\s*6|impeachment|white\s*house|mar[- ]a[- ]lago|\bGOP\b|\bDNC\b|presidential\s*campaign|midterm\s*election|election\s*fraud|stop\s*the\s*steal|congressional\s*hearing|supreme\s*court\s*(rules?|decides)/i;
+/** Phoenix metro core sports — never exclude; floor score 7 (enforced after model scores). */
+const LOCAL_CORE_SPORTS_RE = /\bphoenix\s+suns\b|\barizona\s+cardinals\b|\barizona\s+diamondbacks\b|\barizona\s+coyotes\b|\basu\s+sun\s+devils\b|\bsun\s+devils\b/i;
+function isLocalCoreSportsItem(item) {
+    return LOCAL_CORE_SPORTS_RE.test(`${item.title}\n${item.snippet || ''}`);
+}
+function applyGoogleNewsScoringOverrides(item, gate) {
+    const blob = `${item.title}\n${item.snippet || ''}`;
+    if (LOCAL_CORE_SPORTS_RE.test(blob)) {
+        return {
+            relevanceScore: Math.max(7, gate.relevanceScore),
+            exclude: false,
+            excludeReason: undefined,
+        };
+    }
+    return { ...gate };
+}
+async function generateAndUploadHeroForGoogleNews(article, sectionSlug, filenameBase, label) {
+    const headline = article.title.trim();
+    const modelScene = typeof article.heroImagePrompt === 'string' && article.heroImagePrompt.trim().length >= 20
+        ? article.heroImagePrompt.trim()
+        : 'Photorealistic editorial photograph suited to the headline; Arizona / greater Phoenix context where appropriate.';
+    const basePrompt = `HappyTimesAZ ${sectionSlug} (greater Phoenix, Arizona metro): "${headline}".\n\nHero scene direction: ${modelScene}\n\nNo overlaid text, watermarks, third-party logos, or identifiable news outlet branding in the image.`;
+    console.log(`[google-news] ${label} AI hero (DALL·E, section=${sectionSlug}): generating image prompt…`);
+    const enhanced = await (0, imageAgent_1.generateImagePrompt)(basePrompt, article.visualStyle);
+    console.log(`[google-news] ${label} AI hero: generating image…`);
+    const imageUrl = await (0, imageAgent_1.generateImage)(enhanced);
+    if (!imageUrl) {
+        console.warn(`[google-news] ${label} AI hero: image generation failed; continuing without hero`);
+        return undefined;
+    }
+    console.log(`[google-news] ${label} AI hero: uploading to Sanity…`);
+    const heroId = await (0, sanityPublisher_1.uploadImageToSanity)(imageUrl, filenameBase);
+    console.log(`[google-news] ${label} AI hero asset=${heroId}`);
+    return heroId;
+}
+function parseRelativeNewsDate(s) {
+    const t = Date.now();
+    const m = s.match(/(\d+)\s*(minute|hour|day|week|month)s?\s+ago/i);
+    if (m) {
+        const n = parseInt(m[1], 10);
+        const u = m[2].toLowerCase();
+        const ms = u.startsWith('minute')
+            ? n * 60000
+            : u.startsWith('hour')
+                ? n * 3600000
+                : u.startsWith('day')
+                    ? n * 86400000
+                    : u.startsWith('week')
+                        ? n * 7 * 86400000
+                        : n * 30 * 86400000;
+        return new Date(t - ms);
+    }
+    return undefined;
+}
+function parseItemPublishedAt(src) {
+    const iso = src.iso_date;
+    if (typeof iso === 'string') {
+        const d = new Date(iso);
+        if (!Number.isNaN(d.getTime()))
+            return d;
+    }
+    const dStr = src.date;
+    if (typeof dStr === 'string') {
+        const rel = parseRelativeNewsDate(dStr);
+        if (rel)
+            return rel;
+        const d2 = new Date(dStr);
+        if (!Number.isNaN(d2.getTime()))
+            return d2;
+    }
+    return undefined;
+}
+function isStoryOlderThan7Days(item) {
+    const p = item.publishedAt;
+    if (!p)
+        return false;
+    return Date.now() - p.getTime() > 7 * 24 * 3600 * 1000;
+}
+function isStoryWithin48Hours(item) {
+    const p = item.publishedAt;
+    if (!p)
+        return false;
+    const age = Date.now() - p.getTime();
+    return age >= 0 && age <= 48 * 3600 * 1000;
+}
+function flattenGoogleNewsResults(raw) {
+    const out = [];
+    const seen = new Set();
+    const push = (title, link, thumbnail, snippet, dateSrc) => {
+        if (typeof title !== 'string' || typeof link !== 'string' || !link.startsWith('http'))
+            return;
+        if (seen.has(link))
+            return;
+        seen.add(link);
+        const publishedAt = dateSrc ? parseItemPublishedAt(dateSrc) : undefined;
+        out.push({
+            title,
+            link,
+            thumbnail: typeof thumbnail === 'string' ? thumbnail : null,
+            snippet: typeof snippet === 'string' ? snippet : undefined,
+            publishedAt,
+        });
+    };
+    for (const entry of raw || []) {
+        if (!entry || typeof entry !== 'object')
+            continue;
+        const e = entry;
+        if (e.highlight && typeof e.highlight === 'object') {
+            const h = e.highlight;
+            push(h.title, h.link, h.thumbnail, h.snippet, h);
+        }
+        if (Array.isArray(e.stories)) {
+            for (const st of e.stories) {
+                if (st && typeof st === 'object') {
+                    const s = st;
+                    const merged = { ...s };
+                    if (merged.iso_date == null && typeof e.iso_date === 'string')
+                        merged.iso_date = e.iso_date;
+                    if (merged.date == null && typeof e.date === 'string')
+                        merged.date = e.date;
+                    push(s.title, s.link, s.thumbnail, s.snippet, merged);
+                }
+            }
+        }
+        if (!Array.isArray(e.stories) && e.title && e.link) {
+            push(e.title, e.link, e.thumbnail, e.snippet, e);
+        }
+    }
+    return out;
+}
+async function openAiJson(system, user, model) {
+    const response = await axios_1.default.post('https://api.openai.com/v1/chat/completions', {
+        model,
+        messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+        ],
+        temperature: 0.3,
+        response_format: { type: 'json_object' },
+    }, {
+        headers: {
+            Authorization: `Bearer ${config_1.config.openai.apiKey}`,
+            'Content-Type': 'application/json',
+        },
+    });
+    const content = response.data.choices[0]?.message?.content;
+    if (!content)
+        throw new Error('OpenAI returned empty content');
+    const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    return JSON.parse(cleaned);
+}
+async function scoreAndGate(item, label, slotRules) {
+    const text = [item.title, item.snippet || ''].join('\n\n').slice(0, 12000);
+    console.log(`[google-news] ${label} → OpenAI (${OPENAI_MODEL_GOOGLE_NEWS_SCORE}): relevance scoring + topic/exclude gate…`);
+    const systemBase = `You are an editor for HappyTimesAZ, a Phoenix AZ local lifestyle site covering the **greater Phoenix metro** (e.g. Phoenix, Scottsdale, Tempe, Mesa, Glendale, Peoria, Chandler, Gilbert, Surprise, Goodyear, Sun City, Fountain Hills, Cave Creek, Paradise Valley).
+
+Score how relevant and valuable this story is for **local readers** (1–10). **Strongly prefer** when the angle fits: feel-good **community** stories; **local heroes** and **charity**; **food & dining** openings; **arts & culture**; **local business** and **entrepreneurs**; **health & wellness**; **real estate / development**; **tourism & attractions**; **parks & outdoor** activities; **local people** profiles; **Arizona / local policy** that affects daily life (**schools**, **city** decisions, **infrastructure**, **housing**, **local government** initiatives)—not national partisan noise.
+
+**LOCAL PRO & COLLEGE SPORTS (MANDATORY):** Coverage of **Phoenix Suns**, **Arizona Cardinals**, **Arizona Diamondbacks**, **Arizona Coyotes**, or **ASU Sun Devils** (games, trades, injuries, standings, arena/stadium, Valley fan angle) is **core HappyTimesAZ content**. For those teams you MUST set **exclude=false** and **relevanceScore ≥ 7** (use 7–10 when the story is genuinely about the team or game).
+
+**NATIONAL POLITICAL FIGURE — IN-PERSON VALLEY EVENT:** If a **national political figure** held or will hold a **rally, speech, fundraiser, or public event physically in the greater Phoenix metro** (not a generic national op-ed), treat it as **local news** because of **local impact** (traffic/road closures, venue, security, Valley attendance, local business, community reaction). Score **6–7** when that local-event frame is clear. Do **NOT** set **exclude=true** *only* because the story involves national politics if the **event happened or will happen in person in the Valley**.
+
+Set **exclude=true** if the story is mainly: **crime**, **violence**, **tragedy**, **serious accidents**; **pure national** partisan noise with **no** Phoenix-area hook; **war**; **celebrity gossip** with no Arizona tie; or **remote** national political commentary with **no** in-person Valley event angle.
+
+**topicDedupeKey** (required): a short stable identifier for the **one** main real-world story thread or event (use lowercase words separated by underscores, 2–8 segments, ≤80 chars). Every article about the **same** rally, game, press conference, or incident must reuse the **identical** key (e.g. three headlines about the same Trump rally in Phoenix → same key). Unrelated stories → different keys.
+
+Return JSON only:
+{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <short string or omit>, "topicDedupeKey": "<string>"}`;
+    const system = systemBase +
+        (slotRules && slotRules.trim()
+            ? `\n\n--- SLOT-SPECIFIC RULES (apply strictly) ---\n${slotRules.trim()}`
+            : '');
+    const user = `Headline & snippet:\n${text}\n\nSource URL: ${item.link}`;
+    const raw = await openAiJson(system, user, OPENAI_MODEL_GOOGLE_NEWS_SCORE);
+    const relevanceScore = Math.min(10, Math.max(1, Math.round(Number(raw.relevanceScore)) || 1));
+    let topicDedupeKey;
+    if (typeof raw.topicDedupeKey === 'string' && raw.topicDedupeKey.trim()) {
+        topicDedupeKey = raw.topicDedupeKey
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '_')
+            .replace(/[^a-z0-9_]/g, '')
+            .slice(0, 80);
+        if (!topicDedupeKey)
+            topicDedupeKey = undefined;
+    }
+    let category;
+    if (typeof raw.category === 'string' && raw.category.trim()) {
+        category = raw.category.trim().toLowerCase();
+    }
+    const result = {
+        relevanceScore,
+        exclude: Boolean(raw.exclude),
+        excludeReason: raw.excludeReason,
+        topicDedupeKey,
+        ...(category ? { category } : {}),
+    };
+    console.log(`[google-news] ${label} → score: relevanceScore=${result.relevanceScore}, exclude=${result.exclude}` +
+        (result.excludeReason ? `, excludeReason="${result.excludeReason}"` : '') +
+        (result.category ? `, category=${result.category}` : ''));
+    return result;
+}
+const SEO_TITLE_MAX = 70;
+function truncateSeoTitleIfNeeded(raw) {
+    if (!raw || typeof raw !== 'object')
+        return;
+    const o = raw;
+    const s = o.seoTitle;
+    if (typeof s !== 'string')
+        return;
+    if (s.length <= SEO_TITLE_MAX)
+        return;
+    const cut = s.slice(0, SEO_TITLE_MAX).trimEnd();
+    o.seoTitle = cut.length >= 10 ? cut : s.slice(0, SEO_TITLE_MAX);
+    console.log(`[google-news] seoTitle exceeded ${SEO_TITLE_MAX} chars; truncated before validation (${s.length} → ${o.seoTitle.length})`);
+}
+const BODY_MARKDOWN_SAFETY_MAX = 4800;
+const EXCERPT_SAFETY_MAX = 190;
+const BODY_MARKDOWN_SCHEMA_MIN = 500;
+/** Truncate at the last complete sentence ending at or before `maxLen` (., !, ? followed by space/end). */
+function truncateBodyMarkdownAtLastSentence(body, maxLen) {
+    if (body.length <= maxLen)
+        return body;
+    const window = body.slice(0, maxLen);
+    let bestCut = -1;
+    for (let i = 0; i < window.length; i++) {
+        const ch = window[i];
+        if ((ch === '.' || ch === '!' || ch === '?') &&
+            (i === window.length - 1 || /\s/.test(window[i + 1]))) {
+            bestCut = i + 1;
+        }
+    }
+    if (bestCut >= BODY_MARKDOWN_SCHEMA_MIN)
+        return window.slice(0, bestCut).trimEnd();
+    return window.trimEnd();
+}
+/** Truncate at the last word boundary at or before `maxLen`. */
+function truncateExcerptAtLastWord(excerpt, maxLen) {
+    if (excerpt.length <= maxLen)
+        return excerpt;
+    const slice = excerpt.slice(0, maxLen);
+    const lastSpace = slice.lastIndexOf(' ');
+    let out = lastSpace > 20 ? slice.slice(0, lastSpace).trimEnd() : slice.trimEnd();
+    if (out.length < 50 && excerpt.length >= 50) {
+        out = excerpt.slice(0, maxLen).trimEnd();
+    }
+    return out;
+}
+function truncateRewriteLengthsIfNeeded(raw, label) {
+    if (!raw || typeof raw !== 'object')
+        return;
+    const o = raw;
+    const body = o.bodyMarkdown;
+    if (typeof body === 'string' && body.length > BODY_MARKDOWN_SAFETY_MAX) {
+        const next = truncateBodyMarkdownAtLastSentence(body, BODY_MARKDOWN_SAFETY_MAX);
+        console.warn(`[google-news] ${label} bodyMarkdown safety truncate: ${body.length} → ${next.length} chars (cap ${BODY_MARKDOWN_SAFETY_MAX})`);
+        o.bodyMarkdown = next;
+    }
+    const ex = o.excerpt;
+    if (typeof ex === 'string' && ex.length > EXCERPT_SAFETY_MAX) {
+        const next = truncateExcerptAtLastWord(ex, EXCERPT_SAFETY_MAX);
+        console.warn(`[google-news] ${label} excerpt safety truncate: ${ex.length} → ${next.length} chars (cap ${EXCERPT_SAFETY_MAX})`);
+        o.excerpt = next;
+    }
+}
+async function rewriteArticle(item, label) {
+    console.log(`[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE})`);
+    const system = (0, fs_1.readFileSync)(REWRITE_PROMPT_PATH, 'utf-8');
+    const basis = [
+        `Title: ${item.title}`,
+        item.snippet ? `Snippet: ${item.snippet}` : '',
+        `Link: ${item.link}`,
+    ]
+        .filter(Boolean)
+        .join('\n\n');
+    const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
+    const parsed = await openAiJson(system, user, OPENAI_MODEL_GOOGLE_NEWS_REWRITE);
+    truncateSeoTitleIfNeeded(parsed);
+    truncateRewriteLengthsIfNeeded(parsed, label);
+    if (parsed && typeof parsed === 'object' && 'title' in parsed) {
+        const o = parsed;
+        if (!o.slug?.trim()) {
+            o.slug = (0, slug_1.generateSlug)(o.title);
+        }
+    }
+    const validation = (0, validator_1.validateArticle)(parsed);
+    if (!validation.success) {
+        throw new Error(`Rewrite validation failed: ${validation.errors?.join(', ')}`);
+    }
+    console.log(`[google-news] ${label} → AI rewrite done: slug=${validation.data.slug}`);
+    return validation.data;
+}
+function passesKeywordGate(item) {
+    const blob = `${item.title}\n${item.snippet || ''}`;
+    if (NEGATIVE_HEADLINE_RE.test(blob))
+        return false;
+    return true;
+}
+async function fetchSerpGoogleNews(q, label, usage) {
+    usage.apiCalls += 1;
+    console.log(`[google-news] ${label}: calling GET ${SERPAPI_SEARCH}`);
+    console.log(`[google-news] ${label}: params engine=google_news, gl=us, hl=en, num=${SERP_NEWS_NUM}`);
+    console.log(`[google-news] ${label}: q (exact)= ${q}`);
+    const { data, status } = await axios_1.default.get(SERPAPI_SEARCH, {
+        params: {
+            engine: 'google_news',
+            api_key: config_1.config.serpApi.apiKey,
+            q,
+            gl: 'us',
+            hl: 'en',
+            num: SERP_NEWS_NUM,
+        },
+        validateStatus: () => true,
+    });
+    const metaStatus = data.search_metadata?.status ?? 'n/a';
+    const n = data.news_results?.length ?? 0;
+    console.log(`[google-news] ${label}: httpStatus=${status}, search_metadata.status=${metaStatus}, news_results.length=${n}`);
+    if (data.error) {
+        console.warn(`[google-news] ${label}: SerpApi error field: ${data.error}`);
+    }
+    return { data, httpStatus: status };
+}
+function getPhoenixCalendarWeekday0Sun(now) {
+    const w = now.toLocaleString('en-US', { timeZone: 'America/Phoenix', weekday: 'short' });
+    const head = w.slice(0, 3).toLowerCase();
+    const map = {
+        sun: 0,
+        mon: 1,
+        tue: 2,
+        wed: 3,
+        thu: 4,
+        fri: 5,
+        sat: 6,
+    };
+    return map[head] ?? now.getDay();
+}
+function getPhoenixYmdMonthLongYear(now) {
+    const ymd = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Phoenix',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).format(now);
+    const monthLong = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Phoenix',
+        month: 'long',
+    }).format(now);
+    const year = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Phoenix', year: 'numeric' }).format(now), 10);
+    return { ymd, monthLong, year };
+}
+function getSlot2Mode(now) {
+    const d = getPhoenixCalendarWeekday0Sun(now);
+    if (d === 1 || d === 4)
+        return { mode: 'diamondbacks', teamLabel: 'Arizona Diamondbacks' };
+    if (d === 2 || d === 5)
+        return { mode: 'cardinals', teamLabel: 'Arizona Cardinals' };
+    if (d === 3 || d === 6)
+        return { mode: 'asu', teamLabel: 'ASU Sun Devils' };
+    return { mode: 'sunday_mix', teamLabel: 'Arizona sports' };
+}
+function buildSlot2Queries(mode, teamLabel, year) {
+    if (mode === 'sunday_mix') {
+        return [
+            'Arizona Coyotes news today',
+            'Arizona Diamondbacks news today',
+            'Phoenix Rising FC news today',
+            'Arizona Cardinals news today',
+            'ASU Sun Devils news today',
+        ];
+    }
+    return [`${teamLabel} news today`, `${teamLabel} latest update`, `${teamLabel} Arizona ${year}`];
+}
+function buildSlot5Queries(monthLong, year) {
+    return [
+        `Arizona festivals upcoming ${year}`,
+        'Phoenix concerts this week',
+        `Arizona events ${monthLong} ${year}`,
+    ];
+}
+function isSunsSlot1Candidate(item) {
+    const b = `${item.title}\n${item.snippet || ''}`.toLowerCase();
+    return (/\bphoenix\s+suns\b|\bphx\s+suns\b/.test(b) ||
+        (/\bsuns\b/.test(b) && /\b(nba|basketball|playoff|play-in|game|booker|durant|footprint)\b/.test(b)));
+}
+function slot2Prefilter(item, mode) {
+    const b = `${item.title}\n${item.snippet || ''}`;
+    if (/\bphoenix\s+suns\b|\bphx\s+suns\b/i.test(b))
+        return false;
+    if (/\bsuns\b/i.test(b) && /\bnba\b/i.test(b))
+        return false;
+    if (mode === 'sunday_mix') {
+        return /coyotes|diamondbacks|dbacks|cardinals|sun\s+devils|\basu\b|rising\s+fc|mercury|wnba/i.test(b);
+    }
+    if (mode === 'diamondbacks')
+        return /diamondbacks|dbacks|mlb|chase/i.test(b);
+    if (mode === 'cardinals')
+        return /cardinals|nfl|kyler|glendale/i.test(b);
+    if (mode === 'asu')
+        return /\basu\b|sun\s+devils/i.test(b);
+    return false;
+}
+/** Slot 3: strictly non-sports Phoenix local — drop obvious sports stories before scoring. */
+function slot3NonSportsPrefilter(item) {
+    const b = `${item.title}\n${item.snippet || ''}`;
+    if (LOCAL_CORE_SPORTS_RE.test(b))
+        return false;
+    if (/\b(nfl|nba|mlb|nhl|wnba|ncaa|mls|super bowl|world series|stanley cup|final four|march madness|playoff|playoffs|overtime|touchdown|quarterback|pitcher|home run|hat trick|starting lineup|injury report|trade deadline|nba draft|nfl draft|game recap|box score)\b/i.test(b)) {
+        return false;
+    }
+    return true;
+}
+function slot4Prefilter(item) {
+    const blob = `${item.title}\n${item.snippet || ''}`;
+    if (LOCAL_CORE_SPORTS_RE.test(blob))
+        return false;
+    if (HARD_LOCAL_NEWS_RE.test(blob))
+        return false;
+    return true;
+}
+/** Keep newest `max` items by `publishedAt`; undated items sort last. */
+function capSlotPoolByRecency(items, max) {
+    if (items.length <= max)
+        return items;
+    const tagged = items.map((it, idx) => ({ it, idx }));
+    tagged.sort((a, b) => {
+        const ta = a.it.publishedAt?.getTime();
+        const tb = b.it.publishedAt?.getTime();
+        if (ta != null && tb != null && tb !== ta)
+            return tb - ta;
+        if (ta != null && tb == null)
+            return -1;
+        if (ta == null && tb != null)
+            return 1;
+        return a.idx - b.idx;
+    });
+    return tagged.slice(0, max).map((x) => x.it);
+}
+async function fetchSlotCandidatePool(queries, slotTag, usage) {
+    const seen = new Set();
+    const out = [];
+    for (let i = 0; i < queries.length; i++) {
+        const q = queries[i];
+        const label = `${slotTag} serp ${i + 1}/${queries.length}`;
+        try {
+            const { data, httpStatus } = await fetchSerpGoogleNews(q, label, usage);
+            if (httpStatus !== 200 || data.error)
+                continue;
+            for (const it of flattenGoogleNewsResults(data.news_results)) {
+                if (seen.has(it.link))
+                    continue;
+                seen.add(it.link);
+                out.push(it);
+            }
+        }
+        catch (e) {
+            console.warn(`[google-news] ${label} ERROR:`, e instanceof Error ? e.message : e);
+        }
+    }
+    const capped = capSlotPoolByRecency(out, SLOT_CANDIDATE_POOL_CAP);
+    if (out.length > capped.length) {
+        console.log(`[google-news] ${slotTag} pool cap: ${out.length} unique → ${capped.length} newest (max ${SLOT_CANDIDATE_POOL_CAP}) before scoring`);
+    }
+    return capped;
+}
+function pickBestEligibleScored(scored, minScore) {
+    const ok = scored.filter((s) => !s.gate.exclude && s.gate.relevanceScore >= minScore);
+    ok.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+    return ok[0];
+}
+async function runSlotPick(params) {
+    const { slotLog, items, existingUrls, chosenThisRun, counters, require48h, preScoreFilter, slotScoreRules, applyOverrides, } = params;
+    const pool = [];
+    for (const it of items) {
+        if (existingUrls.has(it.link) || chosenThisRun.has(it.link))
+            continue;
+        if (!passesKeywordGate(it)) {
+            counters.skipped++;
+            continue;
+        }
+        if (isStoryOlderThan7Days(it)) {
+            counters.skipped++;
+            continue;
+        }
+        if (require48h && !isStoryWithin48Hours(it)) {
+            counters.skipped++;
+            continue;
+        }
+        if (!preScoreFilter(it)) {
+            counters.skipped++;
+            continue;
+        }
+        pool.push(it);
+    }
+    if (pool.length === 0) {
+        console.warn(`[google-news] ${slotLog} no candidates after filters; skipping slot.`);
+        return null;
+    }
+    const scored = [];
+    for (let i = 0; i < pool.length; i++) {
+        const item = pool[i];
+        const label = `${slotLog} score ${i + 1}/${pool.length}`;
+        try {
+            let gate = await scoreAndGate(item, label, slotScoreRules);
+            if (applyOverrides)
+                gate = applyGoogleNewsScoringOverrides(item, gate);
+            scored.push({ item, gate, label, slotLog });
+        }
+        catch (e) {
+            counters.errors++;
+            console.error(`[google-news] ${label} scoring ERROR:`, e instanceof Error ? e.message : e);
+        }
+    }
+    let pick = pickBestEligibleScored(scored, 6);
+    if (!pick) {
+        console.log(`[google-news] ${slotLog} no eligible score ≥6; trying threshold ≥4 for this slot only.`);
+        pick = pickBestEligibleScored(scored, 4);
+    }
+    if (!pick) {
+        console.warn(`[google-news] ${slotLog} no eligible story (≥4) after scoring; skipping slot.`);
+        return null;
+    }
+    return pick;
+}
+/**
+ * SerpApi Google News — five independent slots (Suns/NBA, rotating AZ sports, local, lifestyle, events).
+ * Each slot: own Serp queries → filter (incl. 7d recency, 48h for sports slots) → score (6+, else 4 for that slot) → publish at most one.
+ * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
+ */
+async function syncNewsApiToSanity() {
+    if (!config_1.config.serpApi.apiKey) {
+        throw new Error('SERPAPI_API_KEY is not set');
+    }
+    const maxPublish = Math.min(5, config_1.config.googleNews.maxPublishPerRun);
+    const now = new Date();
+    const { ymd: phoenixYmd, monthLong, year } = getPhoenixYmdMonthLongYear(now);
+    const { mode: slot2Mode, teamLabel: slot2Team } = getSlot2Mode(now);
+    const counters = { skipped: 0, errors: 0 };
+    const serpUsage = { apiCalls: 0 };
+    let fetched = 0;
+    console.log('[google-news] ========== syncNewsApiToSanity (5-slot) start ==========');
+    console.log(`[google-news] Config: maxPublishPerRun=${maxPublish} (one story per slot, max 5). Phoenix calendar date=${phoenixYmd}; slot-2 mode=${slot2Mode} (${slot2Team}).`);
+    const existingUrls = await (0, sanityPublisher_1.getExistingNewsSourceUrls)();
+    const existingSlugs = await (0, sanityPublisher_1.getExistingSlugs)();
+    console.log(`[google-news] Dedup: ${existingUrls.size} existing URL(s) in Sanity, ${existingSlugs.length} slug(s)`);
+    const chosenThisRun = new Set();
+    const picked = [];
+    const SLOT1_RULES = `This slot is ONLY for Phoenix Suns / NBA (games, results, playoffs, roster). exclude=true if the story is not primarily about the Phoenix Suns or NBA tied to the Suns.`;
+    const pool1 = await fetchSlotCandidatePool(SLOT1_QUERIES, '[slot-1-suns]', serpUsage);
+    fetched += pool1.length;
+    const s1 = await runSlotPick({
+        slotLog: '[slot-1-suns]',
+        items: pool1,
+        existingUrls,
+        chosenThisRun,
+        counters,
+        require48h: true,
+        preScoreFilter: isSunsSlot1Candidate,
+        slotScoreRules: SLOT1_RULES,
+        applyOverrides: true,
+    });
+    if (s1) {
+        picked.push(s1);
+        chosenThisRun.add(s1.item.link);
+        console.log(`[google-news] [slot-1-suns] winner score=${s1.gate.relevanceScore} — ${s1.item.title.slice(0, 100)}`);
+    }
+    const SLOT2_RULES = slot2Mode === 'sunday_mix'
+        ? `This slot is for Arizona pro/college sports other than the Phoenix Suns (e.g. Coyotes, Diamondbacks, Cardinals, ASU, Phoenix Rising). exclude=true for Suns/NBA-centric stories.`
+        : `This slot is ONLY for ${slot2Team} (not Phoenix Suns). exclude=true if the story is not primarily about ${slot2Team}.`;
+    const pool2 = await fetchSlotCandidatePool(buildSlot2Queries(slot2Mode, slot2Team, year), '[slot-2-sports]', serpUsage);
+    fetched += pool2.length;
+    const s2 = await runSlotPick({
+        slotLog: '[slot-2-sports]',
+        items: pool2,
+        existingUrls,
+        chosenThisRun,
+        counters,
+        require48h: true,
+        preScoreFilter: (it) => slot2Prefilter(it, slot2Mode),
+        slotScoreRules: SLOT2_RULES,
+        applyOverrides: true,
+    });
+    if (s2) {
+        picked.push(s2);
+        chosenThisRun.add(s2.item.link);
+        console.log(`[google-news] [slot-2-sports] winner score=${s2.gate.relevanceScore} — ${s2.item.title.slice(0, 100)}`);
+    }
+    const SLOT3_RULES = `This slot is for genuinely local greater-Phoenix metro news (city, neighborhoods, development, community, business, infrastructure, environment, civic life). exclude=true for pure national politics with no physical Phoenix/Valley hook.
+
+**MANDATORY — NO SPORTS IN SLOT 3:** Set **exclude=true** for any story that is **primarily** about a **sports team, game, player, coach, trade, injury, standings, draft, season, stadium/arena, league, or sporting event** (pro, college, or high school). Slot 3 is **strictly non-sports** local Phoenix news — even a high-scoring sports story must be excluded.`;
+    const pool3 = await fetchSlotCandidatePool(SLOT3_QUERIES, '[slot-3-local]', serpUsage);
+    fetched += pool3.length;
+    const s3 = await runSlotPick({
+        slotLog: '[slot-3-local]',
+        items: pool3,
+        existingUrls,
+        chosenThisRun,
+        counters,
+        require48h: false,
+        preScoreFilter: slot3NonSportsPrefilter,
+        slotScoreRules: SLOT3_RULES,
+        applyOverrides: true,
+    });
+    if (s3) {
+        picked.push(s3);
+        chosenThisRun.add(s3.item.link);
+        console.log(`[google-news] [slot-3-local] winner score=${s3.gate.relevanceScore} — ${s3.item.title.slice(0, 100)}`);
+    }
+    const SLOT4_RULES = `This slot is Phoenix metro lifestyle, food, arts, dining, and entertainment — NOT sports and NOT hard breaking news (crime, disasters, heavy politics). Set exclude=true for sports or hard-news-dominant pieces.
+
+**category (required in JSON):** Pick the single best Sanity category slug for this story — exactly one of: **food**, **nightlife**, **health-wellness**, **cannabis** (use these exact strings). Examples: restaurant opening or chef → food; bars, clubs, live music venue → nightlife; medical study, fitness, spa, mental health → health-wellness; dispensary, regulation, cannabis industry → cannabis.
+
+Return JSON including **category** (in addition to relevanceScore, exclude, topicDedupeKey, and excludeReason when applicable):
+{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"|"cannabis"}`;
+    const pool4 = await fetchSlotCandidatePool(SLOT4_QUERIES, '[slot-4-lifestyle]', serpUsage);
+    fetched += pool4.length;
+    const s4 = await runSlotPick({
+        slotLog: '[slot-4-lifestyle]',
+        items: pool4,
+        existingUrls,
+        chosenThisRun,
+        counters,
+        require48h: false,
+        preScoreFilter: slot4Prefilter,
+        slotScoreRules: SLOT4_RULES,
+        applyOverrides: false,
+    });
+    if (s4) {
+        picked.push(s4);
+        chosenThisRun.add(s4.item.link);
+        console.log(`[google-news] [slot-4-lifestyle] winner score=${s4.gate.relevanceScore} category=${s4.gate.category ?? 'n/a'} — ${s4.item.title.slice(0, 100)}`);
+    }
+    const SLOT5_RULES = `This slot is ONLY for upcoming Phoenix/Valley events (concerts, festivals, things to do) where the main event date is on or after ${phoenixYmd} (America/Phoenix). exclude=true if the event is clearly in the past or the piece is not event-focused.`;
+    const pool5 = await fetchSlotCandidatePool(buildSlot5Queries(monthLong, year), '[slot-5-events]', serpUsage);
+    fetched += pool5.length;
+    const s5 = await runSlotPick({
+        slotLog: '[slot-5-events]',
+        items: pool5,
+        existingUrls,
+        chosenThisRun,
+        counters,
+        require48h: false,
+        preScoreFilter: () => true,
+        slotScoreRules: SLOT5_RULES,
+        applyOverrides: false,
+    });
+    if (s5) {
+        picked.push(s5);
+        chosenThisRun.add(s5.item.link);
+        console.log(`[google-news] [slot-5-events] winner score=${s5.gate.relevanceScore} — ${s5.item.title.slice(0, 100)}`);
+    }
+    const toPublish = picked.slice(0, maxPublish);
+    console.log(`[google-news] Final publish queue: ${toPublish.length} (cap ${maxPublish}). Serp candidate rows merged this run ≈ ${fetched}.`);
+    toPublish.forEach((s, idx) => {
+        console.log(`[google-news]   ${s.slotLog} #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 90)}`);
+    });
+    let published = 0;
+    const publishedSlugsThisRun = new Set();
+    for (let p = 0; p < toPublish.length; p++) {
+        const row = toPublish[p];
+        const pubLabel = `${row.slotLog} publish ${p + 1}/${toPublish.length}`;
+        try {
+            const article = await rewriteArticle(row.item, `${row.label} / ${pubLabel}`);
+            article.slug = (0, slug_1.ensureUniqueSlug)(article.slug || (0, slug_1.generateSlug)(article.title), existingSlugs);
+            if (publishedSlugsThisRun.has(article.slug)) {
+                console.warn(`[google-news] ${pubLabel} SKIP: slug "${article.slug}" already published successfully this run (duplicate publish guard).`);
+                counters.skipped++;
+                continue;
+            }
+            existingSlugs.push(article.slug);
+            const filename = `google-news-${article.slug.slice(0, 24)}.jpg`;
+            const slot = (0, sanityPublisher_1.parseGoogleNewsSlotId)(row.slotLog);
+            const publishMeta = {
+                slot,
+                ...(slot === 'slot-4-lifestyle' ? { slot4LifestyleCategory: row.gate.category } : {}),
+            };
+            const sectionSlug = (0, sanityPublisher_1.resolveGoogleNewsPrimaryCategorySlug)(publishMeta);
+            const heroId = await generateAndUploadHeroForGoogleNews(article, sectionSlug, filename, pubLabel);
+            console.log(`[google-news] ${pubLabel} → Sanity publish… slug=${article.slug}`);
+            await (0, sanityPublisher_1.publishGoogleNewsArticleToSanity)(article, heroId, row.item.link, publishMeta);
+            publishedSlugsThisRun.add(article.slug);
+            existingUrls.add(row.item.link);
+            published++;
+            console.log(`[google-news] ${pubLabel} ✓ published: ${article.title}`);
+        }
+        catch (e) {
+            counters.errors++;
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[google-news] ${pubLabel} ERROR: ${msg}`);
+            if (e instanceof Error && e.stack)
+                console.error(e.stack);
+        }
+    }
+    console.log(`[google-news] ========== end: fetched=${fetched}, published=${published}, skipped=${counters.skipped}, errors=${counters.errors}, serpApiCalls=${serpUsage.apiCalls} ==========`);
+    return {
+        fetched,
+        published,
+        skipped: counters.skipped,
+        errors: counters.errors,
+    };
+}
+//# sourceMappingURL=newsApiSync.js.map

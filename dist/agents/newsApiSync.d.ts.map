@@ -1,0 +1,1 @@
+{"version":3,"file":"newsApiSync.d.ts","sourceRoot":"","sources":["../../agents/newsApiSync.ts"],"names":[],"mappings":"AAguBA;;;;GAIG;AACH,wBAAsB,mBAAmB,IAAI,OAAO,CAAC;IACnD,OAAO,EAAE,MAAM,CAAC;IAChB,SAAS,EAAE,MAAM,CAAC;IAClB,OAAO,EAAE,MAAM,CAAC;IAChB,MAAM,EAAE,MAAM,CAAC;CAChB,CAAC,CAiOD"}

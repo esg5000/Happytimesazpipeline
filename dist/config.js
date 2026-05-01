@@ -1,0 +1,111 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.config = void 0;
+exports.getTelegramWebhookFullUrl = getTelegramWebhookFullUrl;
+exports.validateConfig = validateConfig;
+exports.validateTelegramBaseConfig = validateTelegramBaseConfig;
+exports.validateTelegramConfig = validateTelegramConfig;
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config();
+exports.config = {
+    openai: {
+        apiKey: process.env.OPENAI_API_KEY || '',
+        model: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
+    },
+    /** Unsplash — Dig & Write hero on `POST /api/command/researchAndWrite` only. */
+    unsplash: {
+        accessKey: (process.env.UNSPLASH_ACCESS_KEY || '').trim(),
+    },
+    sanity: {
+        projectId: process.env.SANITY_PROJECT_ID || '',
+        dataset: process.env.SANITY_DATASET || 'production',
+        apiToken: process.env.SANITY_API_TOKEN || '',
+        apiVersion: process.env.SANITY_API_VERSION || '2024-01-01',
+    },
+    pipeline: {
+        articlesPerDay: parseInt(process.env.ARTICLES_PER_DAY || '1', 10),
+        defaultSection: process.env.DEFAULT_SECTION || 'cannabis',
+        /** node-cron expression for daemonServer only (default 14:00 daily, server timezone e.g. UTC on Render) */
+        cronSchedule: process.env.PIPELINE_CRON || '0 14 * * *',
+    },
+    serpApi: {
+        /** SerpApi key — https://serpapi.com/manage-api-key */
+        apiKey: (process.env.SERPAPI_API_KEY || '').trim(),
+        /**
+         * Weekly Monday 08:00 (server timezone). Override with SERPAPI_EVENTS_CRON.
+         */
+        cronSchedule: process.env.SERPAPI_EVENTS_CRON || '0 8 * * 1',
+    },
+    /** Deactivate past events in Sanity (isActive → false). Default daily 01:00. */
+    eventsCleanup: {
+        cronSchedule: process.env.EVENTS_CLEANUP_CRON || '0 1 * * *',
+    },
+    /**
+     * SerpApi Google News → Phoenix local rewrite. Uses SERPAPI_API_KEY (same as events).
+     * GOOGLE_NEWS_CRON / NEWS_API_CRON: default 10:00 daily.
+     */
+    googleNews: {
+        cronSchedule: process.env.GOOGLE_NEWS_CRON || process.env.NEWS_API_CRON || '0 10 * * *',
+        /** Stories to pull from SerpApi per run (max 20). */
+        maxFetch: Math.min(20, Math.max(1, parseInt(process.env.GOOGLE_NEWS_MAX_FETCH || '20', 10) || 20)),
+        /** After AI scoring (default ≥6; ≥4 if fewer than 3 remain after subject dedupe), publish at most this many per run (1–5). */
+        maxPublishPerRun: Math.min(5, Math.max(1, parseInt(process.env.GOOGLE_NEWS_MAX_PUBLISH || '5', 10) || 5)),
+    },
+    telegram: {
+        botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+        allowedUserId: parseInt(process.env.TELEGRAM_ALLOWED_USER_ID || '', 10),
+        /** No trailing slash — avoids https://host//telegram/... when building webhook URL */
+        webhookBaseUrl: (process.env.TELEGRAM_WEBHOOK_BASE_URL || '').replace(/\/+$/, ''),
+        webhookPathSecret: process.env.TELEGRAM_WEBHOOK_PATH_SECRET || '',
+        port: parseInt(process.env.PORT || '3000', 10),
+    },
+};
+/** Full HTTPS URL Telegram should POST updates to (matches Express route). */
+function getTelegramWebhookFullUrl() {
+    const base = exports.config.telegram.webhookBaseUrl;
+    const secret = exports.config.telegram.webhookPathSecret;
+    return `${base}/telegram/webhook/${secret}`;
+}
+// Validate required environment variables
+const requiredEnvVars = [
+    'OPENAI_API_KEY',
+    'SANITY_PROJECT_ID',
+    'SANITY_API_TOKEN',
+];
+function validateConfig() {
+    const missing = requiredEnvVars.filter((key) => !process.env[key]);
+    if (missing.length > 0) {
+        throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+    }
+}
+function validateTelegramBaseConfig() {
+    const requiredTelegramVars = [
+        'TELEGRAM_BOT_TOKEN',
+        'TELEGRAM_ALLOWED_USER_ID',
+    ];
+    const missing = requiredTelegramVars.filter((key) => !process.env[key]);
+    if (missing.length > 0) {
+        throw new Error(`Missing required Telegram environment variables: ${missing.join(', ')}`);
+    }
+    if (!Number.isFinite(exports.config.telegram.allowedUserId)) {
+        throw new Error('Invalid TELEGRAM_ALLOWED_USER_ID: must be a numeric Telegram user id');
+    }
+}
+function validateTelegramConfig() {
+    validateTelegramBaseConfig();
+    const requiredWebhookVars = [
+        'TELEGRAM_WEBHOOK_BASE_URL',
+        'TELEGRAM_WEBHOOK_PATH_SECRET',
+    ];
+    const missingWebhookVars = requiredWebhookVars.filter((key) => !process.env[key]);
+    if (missingWebhookVars.length > 0) {
+        throw new Error(`Missing required Telegram webhook environment variables: ${missingWebhookVars.join(', ')}`);
+    }
+    if (!exports.config.telegram.webhookBaseUrl.startsWith('https://')) {
+        throw new Error('Invalid TELEGRAM_WEBHOOK_BASE_URL: must start with https://');
+    }
+}
+//# sourceMappingURL=config.js.map
