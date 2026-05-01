@@ -14,6 +14,7 @@ exports.appendSourcesSectionMarkdown = appendSourcesSectionMarkdown;
  *
  * Requires `OPENAI_API_KEY` (same as the rest of the pipeline). Model: `gpt-5.4-mini`.
  */
+require("./playwrightBrowsersPath");
 const axios_1 = __importDefault(require("axios"));
 const playwright_1 = require("playwright");
 const config_1 = require("../../config");

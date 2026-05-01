@@ -1,3 +1,11 @@
+/**
+ * Research agent: expands editor notes with OpenAI Responses API + hosted `web_search`,
+ * at most three web-search turns (one targeted hint if present, plus two generic angles),
+ * merged sources, optional HTTP page text (capped per URL; Playwright fallback if thin), and enriched notes.
+ *
+ * Requires `OPENAI_API_KEY` (same as the rest of the pipeline). Model: `gpt-5.4-mini`.
+ */
+import './playwrightBrowsersPath';
 export type Source = {
     title: string;
     url: string;

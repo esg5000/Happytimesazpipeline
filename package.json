@@ -4,6 +4,7 @@
   "description": "AI publishing pipeline for HappyTimesAZ.com - generates and publishes articles to Sanity CMS",
   "main": "dist/orchestrator.js",
   "scripts": {
+    "postinstall": "node scripts/playwright-postinstall.cjs",
     "build": "tsc",
     "start": "node dist/orchestrator.js",
     "dev": "ts-node orchestrator.ts",

@@ -5,6 +5,7 @@
  *
  * Requires `OPENAI_API_KEY` (same as the rest of the pipeline). Model: `gpt-5.4-mini`.
  */
+import './playwrightBrowsersPath';
 import axios from 'axios';
 import { chromium } from 'playwright';
 

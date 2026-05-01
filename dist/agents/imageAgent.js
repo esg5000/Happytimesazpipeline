@@ -30,7 +30,8 @@ async function generateImagePrompt(basePrompt, visualStyle) {
             },
         ],
         temperature: 0.8,
-        max_tokens: 200,
+        // GPT-5 / o-series: `max_tokens` is rejected; use `max_completion_tokens`.
+        max_completion_tokens: 200,
     }, {
         headers: {
             'Authorization': `Bearer ${config_1.config.openai.apiKey}`,

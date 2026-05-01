@@ -14,6 +14,7 @@ exports.scrapeDispensaries = scrapeDispensaries;
  *
  * Requires: `playwright` (see package.json). First run on a machine: `npx playwright install chromium`
  */
+require("./playwrightBrowsersPath");
 const axios_1 = __importDefault(require("axios"));
 const playwright_1 = require("playwright");
 const sanityPublisher_1 = require("../../agents/sanityPublisher");

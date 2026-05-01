@@ -8,6 +8,7 @@
  *
  * Requires: `playwright` (see package.json). First run on a machine: `npx playwright install chromium`
  */
+import './playwrightBrowsersPath';
 import axios, { type AxiosResponse } from 'axios';
 import { chromium, type BrowserContext, type Page } from 'playwright';
 
