@@ -31,8 +31,6 @@ export async function generateImagePrompt(
         },
       ],
       temperature: 0.8,
-      top_p: 0.9,
-      presence_penalty: 0.8,
       max_tokens: 200,
     },
     {
