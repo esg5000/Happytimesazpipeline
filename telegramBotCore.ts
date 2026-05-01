@@ -284,7 +284,7 @@ async function publishFromSession(
   const existingSlugs = await getExistingSlugs();
   article = { ...article, slug: ensureUniqueSlug(article.slug, existingSlugs) };
 
-  let heroImageAssetId: string;
+  let heroImageAssetId: string | undefined;
   let additionalImageAssetIds: string[] | undefined;
   /** Session file asset from POST /api/upload-video — same publish path as hero/additional images. */
   const featuredVideoAssetId =
@@ -323,7 +323,11 @@ async function publishFromSession(
       article.visualStyle
     );
     const imageUrl = await generateImage(enhancedPrompt);
-    heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
+    if (imageUrl) {
+      heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
+    } else {
+      console.warn('[publish] DALL·E image generation failed; continuing without hero image');
+    }
   }
 
   if (featuredVideoAssetId) {

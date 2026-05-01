@@ -105,17 +105,24 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         // Step 4: Generate image
         console.log('   🖼️  Generating image...');
         const imageUrl = await generateImage(enhancedImagePrompt);
-        console.log('   ✅ Image generated');
+        if (imageUrl) {
+          console.log('   ✅ Image generated');
+        } else {
+          console.warn('   ⚠️  Image generation failed; continuing without hero image');
+        }
 
         let sanityId: string;
         try {
           // Step 5: Upload image to Sanity
-          console.log('   📤 Uploading image to Sanity...');
-          const imageAssetId = await uploadImageToSanity(
-            imageUrl,
-            `${article.slug}-hero.jpg`
-          );
-          console.log('   ✅ Image uploaded');
+          let imageAssetId: string | undefined;
+          if (imageUrl) {
+            console.log('   📤 Uploading image to Sanity...');
+            imageAssetId = await uploadImageToSanity(
+              imageUrl,
+              `${article.slug}-hero.jpg`
+            );
+            console.log('   ✅ Image uploaded');
+          }
 
           // Step 6: Publish article to Sanity (as draft)
           console.log('   📝 Publishing article to Sanity...');

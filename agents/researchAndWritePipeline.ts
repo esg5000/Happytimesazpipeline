@@ -46,7 +46,7 @@ export type ResearchAndWriteResult = {
   article: Article;
   sources: Source[];
   /** Sanity image asset `_id` for hero (Unsplash or DALL·E). */
-  heroImageAssetId: string;
+  heroImageAssetId?: string;
   heroImageSource: 'unsplash' | 'dall-e';
   /** Sanity draft post `_id` after `publishArticleToSanity`. */
   sanityDocumentId: string;
@@ -120,16 +120,17 @@ export async function runResearchAndWrite(
   if (!heroImageAssetId) {
     const enhanced = await generateImagePrompt(article.heroImagePrompt, article.visualStyle);
     const imageUrl = await generateImage(enhanced);
-    heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
-    heroImageSource = 'dall-e';
-    console.log('[researchAndWrite] hero from DALL·E → Sanity', heroImageAssetId);
+    if (imageUrl) {
+      heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
+      heroImageSource = 'dall-e';
+      console.log('[researchAndWrite] hero from DALL·E → Sanity', heroImageAssetId);
+    } else {
+      console.warn('[researchAndWrite] DALL·E image generation failed; continuing without hero image');
+    }
   }
 
   const finalHeroId = heroImageAssetId;
   const finalHeroSource = heroImageSource ?? 'dall-e';
-  if (!finalHeroId) {
-    throw new Error('researchAndWrite: hero image upload failed');
-  }
 
   console.log('[researchAndWrite] Hero image on Sanity; preparing article publish…', {
     heroImageAssetId: finalHeroId,

@@ -301,7 +301,7 @@ export function markdownToPortableText(markdown: string) {
 
 export async function publishArticleToSanity(
   article: Article,
-  heroImageAssetId: string,
+  heroImageAssetId: string | undefined,
   section: string,
   additionalImageAssetIds?: string[],
   opts?: { videoAssetId?: string; authorName?: string }
@@ -449,13 +449,17 @@ export async function publishArticleToSanity(
       _ref: categoryRef._ref
     } : undefined, // Single category reference, not array
     tags: article.tags,
-    heroImage: {
-      _type: 'image',
-      asset: {
-        _type: 'reference',
-        _ref: heroImageAssetId,
-      },
-    },
+    ...(heroImageAssetId
+      ? {
+          heroImage: {
+            _type: 'image',
+            asset: {
+              _type: 'reference',
+              _ref: heroImageAssetId,
+            },
+          },
+        }
+      : {}),
     ...(additionalImages ? { additionalImages } : {}),
     ...(videoAssetRef
       ? {

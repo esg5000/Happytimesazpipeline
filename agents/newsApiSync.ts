@@ -115,7 +115,7 @@ async function generateAndUploadHeroForGoogleNews(
   sectionSlug: string,
   filenameBase: string,
   label: string
-): Promise<string> {
+): Promise<string | undefined> {
   const headline = article.title.trim();
   const modelScene =
     typeof article.heroImagePrompt === 'string' && article.heroImagePrompt.trim().length >= 20
@@ -127,6 +127,12 @@ async function generateAndUploadHeroForGoogleNews(
   const enhanced = await generateImagePrompt(basePrompt, article.visualStyle);
   console.log(`[google-news] ${label} AI hero: generating image…`);
   const imageUrl = await generateImage(enhanced);
+  if (!imageUrl) {
+    console.warn(
+      `[google-news] ${label} AI hero: image generation failed; continuing without hero`
+    );
+    return undefined;
+  }
   console.log(`[google-news] ${label} AI hero: uploading to Sanity…`);
   const heroId = await uploadImageToSanity(imageUrl, filenameBase);
   console.log(`[google-news] ${label} AI hero asset=${heroId}`);

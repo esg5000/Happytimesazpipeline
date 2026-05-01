@@ -50,25 +50,35 @@ export async function generateImagePrompt(
 /**
  * Generates an image using DALL·E 2 (1024×1024; all pipeline heroes use this path).
  */
-export async function generateImage(prompt: string): Promise<string> {
-  const response = await axios.post(
-    'https://api.openai.com/v1/images/generations',
-    {
-      model: 'dall-e-2',
-      prompt: prompt,
-      size: '1024x1024',
-      n: 1,
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${config.openai.apiKey}`,
-        'Content-Type': 'application/json',
+export async function generateImage(prompt: string): Promise<string | null> {
+  try {
+    const response = await axios.post(
+      'https://api.openai.com/v1/images/generations',
+      {
+        model: 'dall-e-2',
+        prompt: prompt,
+        // DALL·E 2 supports only square sizes: 256x256, 512x512, 1024x1024
+        size: '1024x1024',
+        n: 1,
       },
-    }
-  );
+      {
+        headers: {
+          'Authorization': `Bearer ${config.openai.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
 
-  const imageUrl = response.data.data[0].url;
-  return imageUrl;
+    const imageUrl = response.data.data[0].url;
+    return typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl : null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[imageAgent] DALL·E image generation failed; continuing without image:', msg);
+    if (err instanceof Error && err.stack) {
+      console.warn('[imageAgent] stack:\n', err.stack);
+    }
+    return null;
+  }
 }
 
 /**
