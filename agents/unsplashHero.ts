@@ -90,11 +90,16 @@ export async function fetchUnsplashHeroImageBuffer(
 ): Promise<Buffer | null> {
   const key = config.unsplash.accessKey;
   if (!key) {
-    console.warn('[unsplash] UNSPLASH_ACCESS_KEY not set; skipping Unsplash hero');
+    console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — UNSPLASH_ACCESS_KEY not set');
     return null;
   }
 
   const query = buildUnsplashSearchQuery(title, notes);
+  console.log('[unsplash] fetchUnsplashHeroImageBuffer: start', {
+    titlePreview: title.slice(0, 80),
+    query,
+  });
+
   const { data, status } = await axios.get<UnsplashSearchResponse>(UNSPLASH_SEARCH, {
     params: {
       query,
@@ -106,15 +111,29 @@ export async function fetchUnsplashHeroImageBuffer(
     validateStatus: () => true,
   });
 
+  const resultCount = data?.results?.length ?? 0;
   if (status !== 200 || !data?.results?.length) {
-    console.warn(
-      `[unsplash] search failed or empty (status=${status}, query=${JSON.stringify(query.slice(0, 80))})`
-    );
+    console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — search failed or no results', {
+      httpStatus: status,
+      resultCount,
+      queryPreview: query.slice(0, 80),
+    });
     return null;
   }
 
+  console.log('[unsplash] Unsplash search response', {
+    httpStatus: status,
+    resultCount,
+    totalReported: typeof data.total === 'number' ? data.total : undefined,
+  });
+
   const photo = pickHighestResolutionPhoto(data.results);
-  if (!photo?.urls) return null;
+  if (!photo?.urls) {
+    console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — picked photo has no urls', {
+      photoId: photo?.id,
+    });
+    return null;
+  }
 
   const downloadLoc = photo.links?.download_location;
   if (downloadLoc) {
@@ -122,7 +141,22 @@ export async function fetchUnsplashHeroImageBuffer(
   }
 
   const imageUrl = photo.urls.raw || photo.urls.full || photo.urls.regular;
-  if (!imageUrl?.startsWith('http')) return null;
+  if (!imageUrl?.startsWith('http')) {
+    console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — no usable image URL on selected photo', {
+      photoId: photo.id,
+      hadRaw: Boolean(photo.urls.raw),
+      hadFull: Boolean(photo.urls.full),
+      hadRegular: Boolean(photo.urls.regular),
+    });
+    return null;
+  }
+
+  console.log('[unsplash] selected hero image URL', {
+    photoId: photo.id,
+    imageUrl,
+    width: photo.width,
+    height: photo.height,
+  });
 
   try {
     const img = await axios.get<ArrayBuffer>(imageUrl, {
@@ -131,12 +165,23 @@ export async function fetchUnsplashHeroImageBuffer(
       validateStatus: () => true,
     });
     if (img.status !== 200 || !img.data || img.data.byteLength < 500) {
-      console.warn(`[unsplash] image fetch failed status=${img.status} bytes=${img.data?.byteLength ?? 0}`);
+      console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — image bytes fetch failed or too small', {
+        httpStatus: img.status,
+        byteLength: img.data?.byteLength ?? 0,
+        imageUrl,
+      });
       return null;
     }
+    console.log('[unsplash] fetchUnsplashHeroImageBuffer: success', {
+      byteLength: img.data.byteLength,
+      photoId: photo.id,
+    });
     return Buffer.from(img.data);
   } catch (e) {
-    console.warn('[unsplash] image fetch error:', e instanceof Error ? e.message : e);
+    console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — image fetch threw', {
+      message: e instanceof Error ? e.message : String(e),
+      imageUrl,
+    });
     return null;
   }
 }
