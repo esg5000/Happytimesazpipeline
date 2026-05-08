@@ -36,6 +36,15 @@ const SLOT1_QUERIES = [
   'Phoenix Suns playoffs 2026',
 ] as const;
 
+/** Slot 1 — Health & wellness (Phoenix metro angle) */
+const SLOT1_HEALTH_QUERIES = [
+  'Phoenix health wellness news today',
+  'Arizona fitness wellness trends 2026',
+  'Phoenix metro health community news',
+  'health wellness trends 2026',
+  'fitness nutrition mental health news today',
+] as const;
+
 /** Slot 3 — Phoenix local */
 const SLOT3_QUERIES = [
   'Phoenix Arizona local news today',
@@ -407,7 +416,7 @@ async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<
   console.log(
     `[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE})`
   );
-  const system = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
+  const systemBase = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
   const basis = [
     `Title: ${item.title}`,
     item.snippet ? `Snippet: ${item.snippet}` : '',
@@ -416,6 +425,58 @@ async function rewriteArticle(item: SerpGoogleNewsItem, label: string): Promise<
     .filter(Boolean)
     .join('\n\n');
 
+  const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
+
+  const parsed = await openAiJson<Record<string, unknown>>(
+    systemBase,
+    user,
+    OPENAI_MODEL_GOOGLE_NEWS_REWRITE
+  );
+
+  truncateSeoTitleIfNeeded(parsed);
+  truncateRewriteLengthsIfNeeded(parsed, label);
+
+  if (parsed && typeof parsed === 'object' && 'title' in parsed) {
+    const o = parsed as { title: string; slug?: string };
+    if (!o.slug?.trim()) {
+      o.slug = generateSlug(o.title);
+    }
+  }
+
+  const validation = validateArticle(parsed);
+  if (!validation.success) {
+    throw new Error(`Rewrite validation failed: ${validation.errors?.join(', ')}`);
+  }
+
+  console.log(
+    `[google-news] ${label} → AI rewrite done: slug=${validation.data!.slug}`
+  );
+  return validation.data!;
+}
+
+async function rewriteArticleWithSlotRules(
+  item: SerpGoogleNewsItem,
+  label: string,
+  slotRewriteRules?: string
+): Promise<Article> {
+  if (!slotRewriteRules || !slotRewriteRules.trim()) {
+    return rewriteArticle(item, label);
+  }
+  const systemBase = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
+  const system =
+    systemBase +
+    `\n\n--- SLOT-SPECIFIC REWRITE RULES (apply strictly) ---\n${slotRewriteRules.trim()}\n`;
+
+  console.log(
+    `[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE}, slotRules=yes)`
+  );
+  const basis = [
+    `Title: ${item.title}`,
+    item.snippet ? `Snippet: ${item.snippet}` : '',
+    `Link: ${item.link}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
   const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
 
   const parsed = await openAiJson<Record<string, unknown>>(
@@ -660,6 +721,17 @@ function pickBestEligibleScored(
   return ok[0];
 }
 
+function pickTopEligibleScored(
+  scored: PickedSlotStory[],
+  minScore: number,
+  maxPicks: number
+): PickedSlotStory[] {
+  if (maxPicks <= 0) return [];
+  const ok = scored.filter((s) => !s.gate.exclude && s.gate.relevanceScore >= minScore);
+  ok.sort((a, b) => b.gate.relevanceScore - a.gate.relevanceScore);
+  return ok.slice(0, maxPicks);
+}
+
 async function runSlotPick(params: {
   slotLog: string;
   items: SerpGoogleNewsItem[];
@@ -722,16 +794,89 @@ async function runSlotPick(params: {
     }
   }
 
-  let pick = pickBestEligibleScored(scored, 6);
+  const pick = pickBestEligibleScored(scored, 5);
   if (!pick) {
-    console.log(`[google-news] ${slotLog} no eligible score ≥6; trying threshold ≥4 for this slot only.`);
-    pick = pickBestEligibleScored(scored, 4);
-  }
-  if (!pick) {
-    console.warn(`[google-news] ${slotLog} no eligible story (≥4) after scoring; skipping slot.`);
+    console.warn(`[google-news] ${slotLog} no eligible story (score ≥5) after scoring; skipping slot.`);
     return null;
   }
   return pick;
+}
+
+async function runSlotPickTopN(params: {
+  slotLog: string;
+  items: SerpGoogleNewsItem[];
+  existingUrls: Set<string>;
+  chosenThisRun: Set<string>;
+  counters: RunCounters;
+  require48h: boolean;
+  preScoreFilter: (it: SerpGoogleNewsItem) => boolean;
+  slotScoreRules?: string;
+  applyOverrides: boolean;
+  maxPicks: number;
+  minScore: number;
+}): Promise<PickedSlotStory[]> {
+  const {
+    slotLog,
+    items,
+    existingUrls,
+    chosenThisRun,
+    counters,
+    require48h,
+    preScoreFilter,
+    slotScoreRules,
+    applyOverrides,
+    maxPicks,
+    minScore,
+  } = params;
+
+  const pool: SerpGoogleNewsItem[] = [];
+  for (const it of items) {
+    if (existingUrls.has(it.link) || chosenThisRun.has(it.link)) continue;
+    if (!passesKeywordGate(it)) {
+      counters.skipped++;
+      continue;
+    }
+    if (isStoryOlderThan7Days(it)) {
+      counters.skipped++;
+      continue;
+    }
+    if (require48h && !isStoryWithin48Hours(it)) {
+      counters.skipped++;
+      continue;
+    }
+    if (!preScoreFilter(it)) {
+      counters.skipped++;
+      continue;
+    }
+    pool.push(it);
+  }
+  if (pool.length === 0) {
+    console.warn(`[google-news] ${slotLog} no candidates after filters; skipping slot.`);
+    return [];
+  }
+
+  const scored: PickedSlotStory[] = [];
+  for (let i = 0; i < pool.length; i++) {
+    const item = pool[i]!;
+    const label = `${slotLog} score ${i + 1}/${pool.length}`;
+    try {
+      let gate = await scoreAndGate(item, label, slotScoreRules);
+      if (applyOverrides) gate = applyGoogleNewsScoringOverrides(item, gate);
+      scored.push({ item, gate, label, slotLog });
+    } catch (e) {
+      counters.errors++;
+      console.error(`[google-news] ${label} scoring ERROR:`, e instanceof Error ? e.message : e);
+    }
+  }
+
+  const picks = pickTopEligibleScored(scored, minScore, maxPicks);
+  if (picks.length === 0) {
+    console.warn(
+      `[google-news] ${slotLog} no eligible stories (score ≥${minScore}) after scoring; skipping slot.`
+    );
+    return [];
+  }
+  return picks;
 }
 
 /**
@@ -749,7 +894,7 @@ export async function syncNewsApiToSanity(): Promise<{
     throw new Error('SERPAPI_API_KEY is not set');
   }
 
-  const maxPublish = Math.min(5, config.googleNews.maxPublishPerRun);
+  const maxPublish = Math.min(10, config.googleNews.maxPublishPerRun);
   const now = new Date();
   const { ymd: phoenixYmd, monthLong, year } = getPhoenixYmdMonthLongYear(now);
   const { mode: slot2Mode, teamLabel: slot2Team } = getSlot2Mode(now);
@@ -758,9 +903,9 @@ export async function syncNewsApiToSanity(): Promise<{
   const serpUsage: SerpRunUsage = { apiCalls: 0 };
   let fetched = 0;
 
-  console.log('[google-news] ========== syncNewsApiToSanity (5-slot) start ==========');
+  console.log('[google-news] ========== syncNewsApiToSanity start ==========');
   console.log(
-    `[google-news] Config: maxPublishPerRun=${maxPublish} (one story per slot, max 5). Phoenix calendar date=${phoenixYmd}; slot-2 mode=${slot2Mode} (${slot2Team}).`
+    `[google-news] Config: maxPublishPerRun=${maxPublish} (top 2 per slot, hard min score 5). Phoenix calendar date=${phoenixYmd}; slot-2 mode=${slot2Mode} (${slot2Team}).`
   );
 
   const existingUrls = await getExistingNewsSourceUrls();
@@ -772,10 +917,38 @@ export async function syncNewsApiToSanity(): Promise<{
   const chosenThisRun = new Set<string>();
   const picked: PickedSlotStory[] = [];
 
+  const SLOT1_HEALTH_RULES = `This slot is ONLY for health + wellness + fitness + nutrition + mental health stories with a reader-friendly, practical angle. Strongly prefer Phoenix metro / Arizona-specific angles. exclude=true for pure sports, hard breaking news, crime/tragedy, or partisan national politics.`;
+  const poolHealth = await fetchSlotCandidatePool(
+    SLOT1_HEALTH_QUERIES,
+    '[slot-1-health]',
+    serpUsage
+  );
+  fetched += poolHealth.length;
+  const sHealthPicks = await runSlotPickTopN({
+    slotLog: '[slot-1-health]',
+    items: poolHealth,
+    existingUrls,
+    chosenThisRun,
+    counters,
+    require48h: false,
+    preScoreFilter: slot4Prefilter,
+    slotScoreRules: SLOT1_HEALTH_RULES,
+    applyOverrides: false,
+    maxPicks: 2,
+    minScore: 5,
+  });
+  sHealthPicks.forEach((s, idx) => {
+    picked.push(s);
+    chosenThisRun.add(s.item.link);
+    console.log(
+      `[google-news] [slot-1-health] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
+    );
+  });
+
   const SLOT1_RULES = `This slot is ONLY for Phoenix Suns / NBA (games, results, playoffs, roster). exclude=true if the story is not primarily about the Phoenix Suns or NBA tied to the Suns.`;
   const pool1 = await fetchSlotCandidatePool(SLOT1_QUERIES, '[slot-1-suns]', serpUsage);
   fetched += pool1.length;
-  const s1 = await runSlotPick({
+  const s1Picks = await runSlotPickTopN({
     slotLog: '[slot-1-suns]',
     items: pool1,
     existingUrls,
@@ -785,14 +958,16 @@ export async function syncNewsApiToSanity(): Promise<{
     preScoreFilter: isSunsSlot1Candidate,
     slotScoreRules: SLOT1_RULES,
     applyOverrides: true,
+    maxPicks: 2,
+    minScore: 5,
   });
-  if (s1) {
-    picked.push(s1);
-    chosenThisRun.add(s1.item.link);
+  s1Picks.forEach((s, idx) => {
+    picked.push(s);
+    chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-1-suns] winner score=${s1.gate.relevanceScore} — ${s1.item.title.slice(0, 100)}`
+      `[google-news] [slot-1-suns] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
-  }
+  });
 
   const SLOT2_RULES =
     slot2Mode === 'sunday_mix'
@@ -804,7 +979,7 @@ export async function syncNewsApiToSanity(): Promise<{
     serpUsage
   );
   fetched += pool2.length;
-  const s2 = await runSlotPick({
+  const s2Picks = await runSlotPickTopN({
     slotLog: '[slot-2-sports]',
     items: pool2,
     existingUrls,
@@ -814,21 +989,23 @@ export async function syncNewsApiToSanity(): Promise<{
     preScoreFilter: (it) => slot2Prefilter(it, slot2Mode),
     slotScoreRules: SLOT2_RULES,
     applyOverrides: true,
+    maxPicks: 2,
+    minScore: 5,
   });
-  if (s2) {
-    picked.push(s2);
-    chosenThisRun.add(s2.item.link);
+  s2Picks.forEach((s, idx) => {
+    picked.push(s);
+    chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-2-sports] winner score=${s2.gate.relevanceScore} — ${s2.item.title.slice(0, 100)}`
+      `[google-news] [slot-2-sports] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
-  }
+  });
 
   const SLOT3_RULES = `This slot is for genuinely local greater-Phoenix metro news (city, neighborhoods, development, community, business, infrastructure, environment, civic life). exclude=true for pure national politics with no physical Phoenix/Valley hook.
 
 **MANDATORY — NO SPORTS IN SLOT 3:** Set **exclude=true** for any story that is **primarily** about a **sports team, game, player, coach, trade, injury, standings, draft, season, stadium/arena, league, or sporting event** (pro, college, or high school). Slot 3 is **strictly non-sports** local Phoenix news — even a high-scoring sports story must be excluded.`;
   const pool3 = await fetchSlotCandidatePool(SLOT3_QUERIES, '[slot-3-local]', serpUsage);
   fetched += pool3.length;
-  const s3 = await runSlotPick({
+  const s3Picks = await runSlotPickTopN({
     slotLog: '[slot-3-local]',
     items: pool3,
     existingUrls,
@@ -838,14 +1015,16 @@ export async function syncNewsApiToSanity(): Promise<{
     preScoreFilter: slot3NonSportsPrefilter,
     slotScoreRules: SLOT3_RULES,
     applyOverrides: true,
+    maxPicks: 2,
+    minScore: 5,
   });
-  if (s3) {
-    picked.push(s3);
-    chosenThisRun.add(s3.item.link);
+  s3Picks.forEach((s, idx) => {
+    picked.push(s);
+    chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-3-local] winner score=${s3.gate.relevanceScore} — ${s3.item.title.slice(0, 100)}`
+      `[google-news] [slot-3-local] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
-  }
+  });
 
   const SLOT4_RULES = `This slot is Phoenix metro lifestyle, food, arts, dining, and entertainment — NOT sports and NOT hard breaking news (crime, disasters, heavy politics). Set exclude=true for sports or hard-news-dominant pieces.
 
@@ -855,7 +1034,7 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
 {"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"|"cannabis"}`;
   const pool4 = await fetchSlotCandidatePool(SLOT4_QUERIES, '[slot-4-lifestyle]', serpUsage);
   fetched += pool4.length;
-  const s4 = await runSlotPick({
+  const s4Picks = await runSlotPickTopN({
     slotLog: '[slot-4-lifestyle]',
     items: pool4,
     existingUrls,
@@ -865,14 +1044,16 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
     preScoreFilter: slot4Prefilter,
     slotScoreRules: SLOT4_RULES,
     applyOverrides: false,
+    maxPicks: 2,
+    minScore: 5,
   });
-  if (s4) {
-    picked.push(s4);
-    chosenThisRun.add(s4.item.link);
+  s4Picks.forEach((s, idx) => {
+    picked.push(s);
+    chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-4-lifestyle] winner score=${s4.gate.relevanceScore} category=${s4.gate.category ?? 'n/a'} — ${s4.item.title.slice(0, 100)}`
+      `[google-news] [slot-4-lifestyle] pick #${idx + 1} score=${s.gate.relevanceScore} category=${s.gate.category ?? 'n/a'} — ${s.item.title.slice(0, 100)}`
     );
-  }
+  });
 
   const SLOT5_RULES = `This slot is ONLY for upcoming Phoenix/Valley events (concerts, festivals, things to do) where the main event date is on or after ${phoenixYmd} (America/Phoenix). exclude=true if the event is clearly in the past or the piece is not event-focused.`;
   const pool5 = await fetchSlotCandidatePool(
@@ -881,7 +1062,7 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
     serpUsage
   );
   fetched += pool5.length;
-  const s5 = await runSlotPick({
+  const s5Picks = await runSlotPickTopN({
     slotLog: '[slot-5-events]',
     items: pool5,
     existingUrls,
@@ -891,35 +1072,46 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
     preScoreFilter: () => true,
     slotScoreRules: SLOT5_RULES,
     applyOverrides: false,
+    maxPicks: 2,
+    minScore: 5,
   });
-  if (s5) {
-    picked.push(s5);
-    chosenThisRun.add(s5.item.link);
+  s5Picks.forEach((s, idx) => {
+    picked.push(s);
+    chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-5-events] winner score=${s5.gate.relevanceScore} — ${s5.item.title.slice(0, 100)}`
+      `[google-news] [slot-5-events] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
-  }
+  });
 
   const toPublish = picked.slice(0, maxPublish);
 
   console.log(
-    `[google-news] Final publish queue: ${toPublish.length} (cap ${maxPublish}). Serp candidate rows merged this run ≈ ${fetched}.`
+    `[google-news] Final publish queue: ${toPublish.length} total (cap ${maxPublish}). Serp candidate rows merged this run ≈ ${fetched}.`
   );
   toPublish.forEach((s, idx) => {
     console.log(
-      `[google-news]   ${s.slotLog} #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 90)}`
+      `[google-news]   #${idx + 1}/${toPublish.length} slot=${s.slotLog} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 90)}`
     );
   });
 
   let published = 0;
   const publishedSlugsThisRun = new Set<string>();
 
+  const SLOT1_HEALTH_REWRITE_RULES = `Localize the angle to the greater Phoenix metro (Phoenix, Scottsdale, Tempe, Mesa, Chandler, Gilbert, Glendale, Peoria, Surprise, Goodyear, etc.).
+If the source story is a national trend or broad research finding, you MUST add a Phoenix-metro “here’s how/where locals can experience or access this” angle (e.g. local gyms/studios, clinics, community programs, parks/trails, events, retailers, or resources) without inventing specific business names or addresses. Use safe, general local references (e.g. “Valley-area gyms,” “Phoenix-area clinics,” “Maricopa County programs,” “Valley hiking trails”) unless the source explicitly names local entities.`;
+
   for (let p = 0; p < toPublish.length; p++) {
     const row = toPublish[p]!;
     const pubLabel = `${row.slotLog} publish ${p + 1}/${toPublish.length}`;
 
     try {
-      const article = await rewriteArticle(row.item, `${row.label} / ${pubLabel}`);
+      const slotId = parseGoogleNewsSlotId(row.slotLog);
+      const rewriteRules = slotId === 'slot-1-health' ? SLOT1_HEALTH_REWRITE_RULES : undefined;
+      const article = await rewriteArticleWithSlotRules(
+        row.item,
+        `${row.label} / ${pubLabel}`,
+        rewriteRules
+      );
       article.slug = ensureUniqueSlug(article.slug || generateSlug(article.title), existingSlugs);
 
       if (publishedSlugsThisRun.has(article.slug)) {
@@ -933,7 +1125,7 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
       existingSlugs.push(article.slug);
 
       const filename = `google-news-${article.slug.slice(0, 24)}.jpg`;
-      const slot = parseGoogleNewsSlotId(row.slotLog);
+      const slot = slotId;
       const publishMeta = {
         slot,
         ...(slot === 'slot-4-lifestyle' ? { slot4LifestyleCategory: row.gate.category } : {}),
