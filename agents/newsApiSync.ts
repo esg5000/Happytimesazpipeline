@@ -459,51 +459,66 @@ async function rewriteArticleWithSlotRules(
   label: string,
   slotRewriteRules?: string
 ): Promise<Article> {
-  if (!slotRewriteRules || !slotRewriteRules.trim()) {
+  const hadSlotRules = Boolean(slotRewriteRules?.trim());
+  try {
+    if (!hadSlotRules) {
+      return await rewriteArticle(item, label);
+    }
+    const systemBase = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
+    const system =
+      systemBase +
+      `\n\n--- SLOT-SPECIFIC REWRITE RULES (apply strictly) ---\n${slotRewriteRules!.trim()}\n`;
+
+    console.log(
+      `[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE}, slotRules=yes)`
+    );
+    const basis = [
+      `Title: ${item.title}`,
+      item.snippet ? `Snippet: ${item.snippet}` : '',
+      `Link: ${item.link}`,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
+
+    const parsed = await openAiJson<Record<string, unknown>>(
+      system,
+      user,
+      OPENAI_MODEL_GOOGLE_NEWS_REWRITE
+    );
+
+    truncateSeoTitleIfNeeded(parsed);
+    truncateRewriteLengthsIfNeeded(parsed, label);
+
+    if (parsed && typeof parsed === 'object' && 'title' in parsed) {
+      const o = parsed as { title: string; slug?: string };
+      if (!o.slug?.trim()) {
+        o.slug = generateSlug(o.title);
+      }
+    }
+
+    const validation = validateArticle(parsed);
+    if (!validation.success) {
+      throw new Error(`Rewrite validation failed: ${validation.errors?.join(', ')}`);
+    }
+
+    console.log(
+      `[google-news] ${label} → AI rewrite done: slug=${validation.data!.slug}`
+    );
+    return validation.data!;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const stack = e instanceof Error && e.stack ? e.stack : '(no stack)';
+    console.error(`[google-news] ${label} rewriteArticleWithSlotRules failed: ${msg}`);
+    console.error(stack);
+    if (!hadSlotRules) {
+      throw e;
+    }
+    console.warn(
+      `[google-news] ${label} → falling back to base rewrite prompt (slot-specific rules skipped)`
+    );
     return rewriteArticle(item, label);
   }
-  const systemBase = readFileSync(REWRITE_PROMPT_PATH, 'utf-8');
-  const system =
-    systemBase +
-    `\n\n--- SLOT-SPECIFIC REWRITE RULES (apply strictly) ---\n${slotRewriteRules.trim()}\n`;
-
-  console.log(
-    `[google-news] ${label} → AI rewrite starting (model=${OPENAI_MODEL_GOOGLE_NEWS_REWRITE}, slotRules=yes)`
-  );
-  const basis = [
-    `Title: ${item.title}`,
-    item.snippet ? `Snippet: ${item.snippet}` : '',
-    `Link: ${item.link}`,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
-  const user = `Rewrite this into a full HappyTimesAZ article JSON.\n\n${basis}`;
-
-  const parsed = await openAiJson<Record<string, unknown>>(
-    system,
-    user,
-    OPENAI_MODEL_GOOGLE_NEWS_REWRITE
-  );
-
-  truncateSeoTitleIfNeeded(parsed);
-  truncateRewriteLengthsIfNeeded(parsed, label);
-
-  if (parsed && typeof parsed === 'object' && 'title' in parsed) {
-    const o = parsed as { title: string; slug?: string };
-    if (!o.slug?.trim()) {
-      o.slug = generateSlug(o.title);
-    }
-  }
-
-  const validation = validateArticle(parsed);
-  if (!validation.success) {
-    throw new Error(`Rewrite validation failed: ${validation.errors?.join(', ')}`);
-  }
-
-  console.log(
-    `[google-news] ${label} → AI rewrite done: slug=${validation.data!.slug}`
-  );
-  return validation.data!;
 }
 
 function passesKeywordGate(item: SerpGoogleNewsItem): boolean {
