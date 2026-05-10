@@ -7,10 +7,9 @@
 import crypto from 'crypto';
 
 import axios from 'axios';
-import type { SanityClient } from '@sanity/client';
 
 import { config } from '../../config';
-import { getSanityClient } from '../../agents/sanityPublisher';
+import { getSanityClient, uploadImageToSanity } from '../../agents/sanityPublisher';
 import { generateSlug } from '../../utils/slug';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
@@ -259,6 +258,22 @@ export async function syncNightlifeToSanity(): Promise<SyncNightlifeResult> {
     const priceLevel = priceToLevel(r.price);
     const imageUrl = resolveImageUrlString(r);
 
+    let imageRef: { _type: 'image'; asset: { _type: 'reference'; _ref: string } } | undefined;
+    if (imageUrl) {
+      try {
+        const assetId = await uploadImageToSanity(imageUrl, `nightlife-${_id.slice(0, 24)}.jpg`);
+        imageRef = {
+          _type: 'image',
+          asset: { _type: 'reference', _ref: assetId },
+        };
+      } catch (e) {
+        console.warn(
+          `[nightlife] Image upload failed "${title}":`,
+          e instanceof Error ? e.message : e
+        );
+      }
+    }
+
     const slugTail = _id.replace(/^nightlife-/, '').slice(0, 10);
     const slugCurrent = `${generateSlug(`${title} ${city}`)}-${slugTail}`.slice(0, 96);
 
@@ -278,7 +293,7 @@ export async function syncNightlifeToSanity(): Promise<SyncNightlifeResult> {
     if (priceLevel !== undefined) doc.priceLevel = priceLevel;
     const placeId = asNonEmptyString(r.place_id);
     if (placeId) doc.googlePlaceId = placeId;
-    if (imageUrl) doc.image = imageUrl;
+    if (imageRef) doc.image = imageRef;
 
     try {
       const before = await client.getDocument(_id);

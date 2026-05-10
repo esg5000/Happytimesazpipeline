@@ -30,9 +30,10 @@ export default defineType({
     }),
     defineField({
       name: 'image',
-      type: 'url',
+      type: 'image',
+      options: { hotspot: true },
       title: 'Image',
-      description: 'Preview image URL from SerpAPI / Google Maps.',
+      description: 'Uploaded from SerpAPI / Google Maps preview URL.',
     }),
     defineField({
       name: 'isActive',
