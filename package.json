@@ -16,6 +16,7 @@
     "audit-dispensaries": "ts-node src/agents/dispensaryUrlAudit.ts",
     "fetch-restaurants": "ts-node scripts/fetchRestaurants.ts",
     "fetch-restaurants:node": "node scripts/fetchRestaurants.js",
+    "sync-nightlife": "ts-node src/agents/syncNightlife.ts",
     "pipeline": "npm run build && node dist/orchestrator.js",
     "telegram": "npm run build && node dist/telegramServer.js",
     "telegram:dev": "ts-node telegramServer.ts",

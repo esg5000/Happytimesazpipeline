@@ -559,7 +559,6 @@ export async function publishArticleToSanity(
 /** SerpApi Google News sync slot ids (see agents/newsApiSync.ts). */
 export const GOOGLE_NEWS_SYNC_SLOT_IDS = [
   'slot-1-health',
-  'slot-1-suns',
   'slot-2-sports',
   'slot-3-local',
   'slot-4-lifestyle',
@@ -592,7 +591,6 @@ export function resolveGoogleNewsPrimaryCategorySlug(meta: GoogleNewsPublishMeta
   switch (meta.slot) {
     case 'slot-1-health':
       return 'health-wellness';
-    case 'slot-1-suns':
     case 'slot-2-sports':
       return 'sports';
     case 'slot-3-local':

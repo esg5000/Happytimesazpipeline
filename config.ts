@@ -47,12 +47,12 @@ export const config = {
       20,
       Math.max(1, parseInt(process.env.GOOGLE_NEWS_MAX_FETCH || '20', 10) || 20)
     ),
-    /** After AI scoring (default ≥6; ≥4 if fewer than 3 remain after subject dedupe), publish at most this many per run (1–5). */
+    /** After AI scoring, publish at most this many Google News rewrites per run (1–10). */
     maxPublishPerRun: Math.min(
-      5,
+      10,
       Math.max(
         1,
-        parseInt(process.env.GOOGLE_NEWS_MAX_PUBLISH || '5', 10) || 5
+        parseInt(process.env.GOOGLE_NEWS_MAX_PUBLISH || '10', 10) || 10
       )
     ),
   },

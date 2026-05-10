@@ -29,13 +29,6 @@ const OPENAI_MODEL_GOOGLE_NEWS_SCORE = 'gpt-5.4-mini';
 /** OpenAI model for SerpApi Google News article rewrite → HappyTimesAZ JSON. */
 const OPENAI_MODEL_GOOGLE_NEWS_REWRITE = 'gpt-5.4-mini';
 
-/** Slot 1 — Suns / NBA */
-const SLOT1_QUERIES = [
-  'Phoenix Suns news today',
-  'Suns game result today',
-  'Phoenix Suns playoffs 2026',
-] as const;
-
 /** Slot 1 — Health & wellness (Phoenix metro angle) */
 const SLOT1_HEALTH_QUERIES = [
   'Phoenix health wellness news today',
@@ -639,14 +632,6 @@ function buildSlot5Queries(monthLong: string, year: number): readonly string[] {
   ];
 }
 
-function isSunsSlot1Candidate(item: SerpGoogleNewsItem): boolean {
-  const b = `${item.title}\n${item.snippet || ''}`.toLowerCase();
-  return (
-    /\bphoenix\s+suns\b|\bphx\s+suns\b/.test(b) ||
-    (/\bsuns\b/.test(b) && /\b(nba|basketball|playoff|play-in|game|booker|durant|footprint)\b/.test(b))
-  );
-}
-
 function slot2Prefilter(item: SerpGoogleNewsItem, mode: Slot2Mode): boolean {
   const b = `${item.title}\n${item.snippet || ''}`;
   if (/\bphoenix\s+suns\b|\bphx\s+suns\b/i.test(b)) return false;
@@ -895,8 +880,8 @@ async function runSlotPickTopN(params: {
 }
 
 /**
- * SerpApi Google News — five independent slots (Suns/NBA, rotating AZ sports, local, lifestyle, events).
- * Each slot: own Serp queries → filter (incl. 7d recency, 48h for sports slots) → score (6+, else 4 for that slot) → publish at most one.
+ * SerpApi Google News — slots: health, rotating AZ sports, local, lifestyle, events.
+ * Each slot: own Serp queries → filter (incl. 7d recency, 48h for sports slots) → score → up to two picks per slot (min score threshold in code).
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
@@ -909,7 +894,7 @@ export async function syncNewsApiToSanity(): Promise<{
     throw new Error('SERPAPI_API_KEY is not set');
   }
 
-  const maxPublish = Math.min(10, config.googleNews.maxPublishPerRun);
+  const maxPublish = 10;
   const now = new Date();
   const { ymd: phoenixYmd, monthLong, year } = getPhoenixYmdMonthLongYear(now);
   const { mode: slot2Mode, teamLabel: slot2Team } = getSlot2Mode(now);
@@ -957,30 +942,6 @@ export async function syncNewsApiToSanity(): Promise<{
     chosenThisRun.add(s.item.link);
     console.log(
       `[google-news] [slot-1-health] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
-    );
-  });
-
-  const SLOT1_RULES = `This slot is ONLY for Phoenix Suns / NBA (games, results, playoffs, roster). exclude=true if the story is not primarily about the Phoenix Suns or NBA tied to the Suns.`;
-  const pool1 = await fetchSlotCandidatePool(SLOT1_QUERIES, '[slot-1-suns]', serpUsage);
-  fetched += pool1.length;
-  const s1Picks = await runSlotPickTopN({
-    slotLog: '[slot-1-suns]',
-    items: pool1,
-    existingUrls,
-    chosenThisRun,
-    counters,
-    require48h: true,
-    preScoreFilter: isSunsSlot1Candidate,
-    slotScoreRules: SLOT1_RULES,
-    applyOverrides: true,
-    maxPicks: 2,
-    minScore: 5,
-  });
-  s1Picks.forEach((s, idx) => {
-    picked.push(s);
-    chosenThisRun.add(s.item.link);
-    console.log(
-      `[google-news] [slot-1-suns] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
   });
 
