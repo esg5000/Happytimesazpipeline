@@ -13,6 +13,7 @@ import {
   uploadVideoBufferToSanity,
 } from './agents/sanityPublisher';
 import { appendActivityLog, getPipelineStatusSnapshot } from './pipelineStatus';
+import { syncNightlifeToSanity } from './agents/syncNightlife';
 import { runFetchRestaurants } from './scripts/fetchRestaurants';
 import { runPipelineJob } from './pipelineRunner';
 import {
@@ -554,7 +555,8 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       | 'syncEvents'
       | 'syncNews'
       | 'syncDispensaries'
-      | 'syncRestaurants' =>
+      | 'syncRestaurants'
+      | 'syncNightlife' =>
       s === '/publish' ||
       s === '/new' ||
       s === '/start' ||
@@ -562,11 +564,12 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       s === 'syncEvents' ||
       s === 'syncNews' ||
       s === 'syncDispensaries' ||
-      s === 'syncRestaurants';
+      s === 'syncRestaurants' ||
+      s === 'syncNightlife';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | runWriter | syncEvents | syncNews | syncDispensaries | syncRestaurants.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | runWriter | syncEvents | syncNews | syncDispensaries | syncRestaurants | syncNightlife.',
       });
       return;
     }
@@ -716,6 +719,47 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncRestaurants failed:', msg);
         appendActivityLog(`syncRestaurants: failed — ${msg}`, 'syncRestaurants');
+        res.status(500).json({ error: msg });
+      }
+      return;
+    }
+
+    if (command === 'syncNightlife') {
+      if (!config.serpApi.apiKey) {
+        res.status(503).json({
+          error: 'SERPAPI_API_KEY is not configured',
+        });
+        return;
+      }
+      if (!config.sanity.projectId || !config.sanity.apiToken) {
+        res.status(503).json({
+          error: 'SANITY_PROJECT_ID and SANITY_API_TOKEN are required for nightlife sync',
+        });
+        return;
+      }
+      try {
+        console.log(
+          '[api] /api/command syncNightlife → syncNightlifeToSanity (SerpApi Google Maps, Phoenix/Scottsdale bars & nightclubs)'
+        );
+        appendActivityLog(
+          'syncNightlife: started (top 25 metro-wide → Sanity `nightlife`)',
+          'syncNightlife'
+        );
+        const result = await syncNightlifeToSanity();
+        appendActivityLog(
+          `syncNightlife: complete — created=${result.created}, updated=${result.updated}, candidates=${result.candidates}`,
+          'syncNightlife'
+        );
+        res.json({
+          ok: true,
+          source: resolveApiClientSource(req),
+          command: 'syncNightlife',
+          ...result,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command syncNightlife failed:', msg);
+        appendActivityLog(`syncNightlife: failed — ${msg}`, 'syncNightlife');
         res.status(500).json({ error: msg });
       }
       return;
