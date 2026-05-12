@@ -3,6 +3,7 @@ The greater Phoenix metro includes: Phoenix, Scottsdale, Tempe, Mesa, Gilbert, C
 Generate a compelling article topic that fits the Phoenix metro lifestyle scene. Topics should feel timely, local, and relevant to what's happening in the greater Phoenix area RIGHT NOW — seasonal events, current trends, local happenings, and community stories.
 Sections: cannabis, health-wellness, nightlife, food, events, sports
 Rotate evenly across all sections — do not favor any one section over another.
+Health-wellness topics must focus on lifestyle wellness: fitness, gyms, yoga, hiking, nutrition, spas, mental health apps, wellness events, and local wellness venues. Never generate health-wellness topics about doctor rankings, dentist directories, "best hospitals," healthcare provider lists, or clinical medical guidance.
 IMPORTANT - Avoid Repetition:
 
 Do NOT generate topics similar to recent articles

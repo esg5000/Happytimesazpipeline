@@ -917,7 +917,10 @@ export async function syncNewsApiToSanity(): Promise<{
   const chosenThisRun = new Set<string>();
   const picked: PickedSlotStory[] = [];
 
-  const SLOT1_HEALTH_RULES = `This slot is ONLY for health + wellness + fitness + nutrition + mental health stories with a reader-friendly, practical angle. Strongly prefer Phoenix metro / Arizona-specific angles. exclude=true for pure sports, hard breaking news, crime/tragedy, or partisan national politics.`;
+  const SLOT1_HEALTH_RULES = `This slot is ONLY for health + wellness + fitness + nutrition + mental health stories with a reader-friendly, practical angle. Strongly prefer Phoenix metro / Arizona-specific angles. exclude=true for:
+- pure sports, hard breaking news, crime/tragedy, or partisan national politics
+- "best doctors," "top physicians," "best dentists," "best hospitals," "best surgeons," or any professional healthcare provider rankings/directories
+- clinical medical research with no practical lifestyle takeaway for Phoenix readers`;
   const poolHealth = await fetchSlotCandidatePool(
     SLOT1_HEALTH_QUERIES,
     '[slot-1-health]',
