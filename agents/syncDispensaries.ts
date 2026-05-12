@@ -150,8 +150,10 @@ function maxStartOffset(): number {
 type SyncDispensariesResult = {
   /** Unique dispensaries seen after dedupe (SerpApi + cross-city). */
   uniqueFound: number;
-  /** Successfully written to Sanity. */
+  /** Successfully patched in Sanity (existing records only). */
   saved: number;
+  /** Skipped because no matching record exists in Sanity. */
+  skipped: number;
   errors: number;
 };
 
@@ -169,8 +171,14 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
   const seen = new Set<string>();
   const maxStart = maxStartOffset();
 
+  // Pre-load all existing dispensary _ids so we never create new records.
+  const existingIds = await client.fetch<string[]>(`*[_type == "dispensary"]._id`);
+  const existingIdSet = new Set<string>(Array.isArray(existingIds) ? existingIds : []);
+  console.log(`[dispensaries] ${existingIdSet.size} existing dispensary record(s) loaded — patch-only mode`);
+
   let uniqueFound = 0;
   let saved = 0;
+  let skipped = 0;
   let errors = 0;
 
   console.log('[dispensaries] ========== syncDispensariesToSanity (SerpApi Google Maps) start ==========');
@@ -281,14 +289,31 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
         if (raw.place_id) doc.googlePlaceId = raw.place_id;
         if (imageRef) doc.image = imageRef;
 
+        if (!existingIdSet.has(_id)) {
+          skipped++;
+          console.log(`[dispensaries] SKIP (no existing record): "${title}" — ${city} [${_id}]`);
+          continue;
+        }
+
+        // Build patch payload — only fields that have values.
+        const patch: Record<string, unknown> = { source: doc.source };
+        if (doc.address) patch.address = doc.address;
+        if (doc.city) patch.city = doc.city;
+        if (doc.phone) patch.phone = doc.phone;
+        if (doc.website) patch.website = doc.website;
+        if (doc.hours) patch.hours = doc.hours;
+        if (doc.categories) patch.categories = doc.categories;
+        if (doc.googlePlaceId) patch.googlePlaceId = doc.googlePlaceId;
+        if (imageRef) patch.image = imageRef;
+
         try {
-          await client.createOrReplace(doc as Parameters<typeof client.createOrReplace>[0]);
+          await client.patch(_id).set(patch).commit();
           saved++;
-          console.log(`[dispensaries] Saved: "${title}" — ${city} [${_id}]`);
+          console.log(`[dispensaries] Patched: "${title}" — ${city} [${_id}]`);
         } catch (e) {
           errors++;
           console.error(
-            `[dispensaries] Sanity upsert failed "${title}":`,
+            `[dispensaries] Sanity patch failed "${title}":`,
             e instanceof Error ? e.message : e
           );
         }
@@ -299,7 +324,7 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
   }
 
   console.log(
-    `[dispensaries] ========== end: uniqueFound=${uniqueFound}, saved=${saved}, errors=${errors} ==========`
+    `[dispensaries] ========== end: uniqueFound=${uniqueFound}, saved=${saved}, skipped=${skipped}, errors=${errors} ==========`
   );
-  return { uniqueFound, saved, errors };
+  return { uniqueFound, saved, skipped, errors };
 }
