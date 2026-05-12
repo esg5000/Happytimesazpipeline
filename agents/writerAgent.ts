@@ -19,7 +19,7 @@ const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
 /** OpenAI model for Chat Completions article JSON (`writeArticle`). */
 const WRITER_OPENAI_MODEL = 'gpt-5.4-mini';
 
-const BODY_MARKDOWN_SAFETY_MAX = 4800;
+const BODY_MARKDOWN_SAFETY_MAX = 6800;
 const EXCERPT_SAFETY_MAX = 190;
 const BODY_MARKDOWN_SCHEMA_MIN = 500;
 
