@@ -1,8 +1,7 @@
 import express from 'express';
 import multer from 'multer';
-import { Bot, webhookCallback } from 'grammy';
 
-import { config, getTelegramWebhookFullUrl } from './config';
+import { config } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { syncDispensariesToSanity } from './agents/syncDispensaries';
@@ -16,11 +15,6 @@ import { appendActivityLog, getPipelineStatusSnapshot } from './pipelineStatus';
 import { syncNightlifeToSanity } from './agents/syncNightlife';
 import { runFetchRestaurants } from './scripts/fetchRestaurants';
 import { runPipelineJob } from './pipelineRunner';
-import {
-  executeTelegramDaemonCommand,
-  publishStoryFromSourceNotes,
-  registerTelegramHandlers,
-} from './telegramBotCore';
 import { getTelegramSession, persistTelegramSessions } from './telegramSessionStore';
 import { extractArticleStyleFromBody } from './utils/articleStyle';
 import { runResearchAndWrite } from './agents/researchAndWritePipeline';
@@ -229,7 +223,7 @@ function resolveSessionChatId(req: express.Request): number {
     const n = parseInt(raw, 10);
     if (Number.isSafeInteger(n)) return n;
   }
-  return config.telegram.allowedUserId;
+  return 0;
 }
 
 /** Set by dashboard (`X-Client-Source: dashboard`); echoed in JSON and used for publishMode labels. */
@@ -257,7 +251,7 @@ function writeSse(res: express.Response, event: string, data: unknown): void {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
+function registerDaemonApiRoutes(app: express.Application): void {
   app.use(corsMiddleware);
 
   /**
@@ -549,8 +543,6 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       s: string
     ): s is
       | '/publish'
-      | '/new'
-      | '/start'
       | 'runWriter'
       | 'syncEvents'
       | 'syncNews'
@@ -558,8 +550,6 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
       | 'syncRestaurants'
       | 'syncNightlife' =>
       s === '/publish' ||
-      s === '/new' ||
-      s === '/start' ||
       s === 'runWriter' ||
       s === 'syncEvents' ||
       s === 'syncNews' ||
@@ -569,7 +559,7 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | /new | /start | runWriter | syncEvents | syncNews | syncDispensaries | syncRestaurants | syncNightlife.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncDispensaries | syncRestaurants | syncNightlife.',
       });
       return;
     }
@@ -766,165 +756,32 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
     }
 
     if (command === '/publish') {
-      const isMultipart = (req.headers['content-type'] || '').includes(
-        'multipart/form-data'
-      );
       console.log(
-        `[api] /publish mode=${isMultipart ? 'multipart' : 'json'} body keys:`,
+        `[api] /publish body keys:`,
         req.body && typeof req.body === 'object' ? Object.keys(req.body as object) : []
       );
       const notesTrim = extractPublishNotesFromBody(req.body);
-      const chatId = resolveSessionChatId(req);
-      const sessionPreview = getTelegramSession(chatId);
-      const hasSessionDraft =
-        (sessionPreview.recentUploadAssetIds?.length ?? 0) > 0 ||
-        (sessionPreview.pendingImageAssetIds?.length ?? 0) > 0 ||
-        (sessionPreview.notes?.some(
-          (n) => typeof n === 'string' && n.trim().length > 0
-        ) ??
-          false) ||
-        !!sessionPreview.heroSanityAssetId ||
-        !!sessionPreview.draftVideoAssetId;
-
-      const jsonImageOpts = extractImagePublishOptionsFromBody(req.body);
-      const hasJsonBodyImages =
-        (jsonImageOpts?.imageAssetIds?.length ?? 0) > 0;
-
-      /** Multipart /publish is always dashboard ingest (notes and/or images in form, or relies on session). */
-      const useTelegramIngest =
-        notesTrim !== undefined ||
-        hasSessionDraft ||
-        isMultipart ||
-        hasJsonBodyImages;
-
       console.log(
-        '[api] /publish extracted notes:',
-        notesTrim === undefined
-          ? hasSessionDraft
-            ? '(none — ingest via session draft)'
-            : '(none — autonomous pipeline)'
-          : `${notesTrim.slice(0, 200)}${notesTrim.length > 200 ? '…' : ''}`
+        '[api] /publish notes:',
+        notesTrim ? `${notesTrim.slice(0, 200)}${notesTrim.length > 200 ? '…' : ''}` : '(none — autonomous pipeline)'
       );
-
-      if (useTelegramIngest) {
-        const effectiveNotes = notesTrim ?? '';
-        const clientSource = resolveApiClientSource(req);
-        const dashboardStyle = requestIsDashboardSource(req);
-        const articleStyle = dashboardStyle
-          ? extractArticleStyleFromBody(req.body)
-          : null;
-        const styleOpts = dashboardStyle
-          ? {
-              applyDashboardArticleStyle: true as const,
-              articleLength: articleStyle!.articleLength,
-              articleTone: articleStyle!.articleTone,
-            }
-          : { applyDashboardArticleStyle: false as const };
-        const publishAuthorName = extractAuthorNameFromBody(req.body);
-        const authorOpts =
-          publishAuthorName !== undefined ? { authorName: publishAuthorName } : {};
-        console.log(
-          `[api] /publish → ingest path (client=${clientSource}, dashboardStyle=${dashboardStyle}${
-            dashboardStyle
-              ? `, length=${articleStyle!.articleLength}, tone=${articleStyle!.articleTone}`
-              : ''
-          })`
-        );
-        try {
-          if (isMultipart) {
-            const files = (req as { files?: Express.Multer.File[] }).files;
-            const list = Array.isArray(files) ? files : [];
-            if (list.length > 5) {
-              res.status(400).json({ error: 'At most 5 images allowed per article' });
-              return;
-            }
-            if (list.length > 0) {
-              const imageAssetIds: string[] = [];
-              for (let i = 0; i < list.length; i++) {
-                const file = list[i]!;
-                const name =
-                  file.originalname?.replace(/[^a-zA-Z0-9._-]/g, '_') ||
-                  `dashboard-${i}.jpg`;
-                const assetId = await uploadImageBufferToSanity(file.buffer, name);
-                imageAssetIds.push(assetId);
-              }
-              console.log(
-                `[api] /publish multipart: ${imageAssetIds.length} file(s) (first = hero) — no DALL·E`
-              );
-              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
-                imageAssetIds,
-                ...styleOpts,
-                ...authorOpts,
-              });
-            } else {
-              console.log(
-                '[api] /publish multipart: no files — using session recentUploadAssetIds if any (else DALL·E)'
-              );
-              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
-                ...styleOpts,
-                ...authorOpts,
-              });
-            }
-          } else {
-            const imgOpts = extractImagePublishOptionsFromBody(req.body);
-            if (imgOpts && imgOpts.imageAssetIds.length > 0) {
-              console.log(
-                `[api] /publish JSON: imageAssetIds count=${imgOpts.imageAssetIds.length} (first = hero)`
-              );
-              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
-                imageAssetIds: imgOpts.imageAssetIds,
-                ...styleOpts,
-                ...authorOpts,
-              });
-            } else {
-              await publishStoryFromSourceNotes(bot, chatId, effectiveNotes, {
-                ...styleOpts,
-                ...authorOpts,
-              });
-            }
-          }
-          res.json({
-            ok: true,
-            source: clientSource,
-            command: '/publish',
-            publishMode:
-              clientSource === 'dashboard' ? 'dashboard_ingest' : 'telegram_ingest',
-            dashboardArticleStyle: dashboardStyle,
-            ...(dashboardStyle && articleStyle
-              ? {
-                  articleLength: articleStyle.articleLength,
-                  articleTone: articleStyle.articleTone,
-                }
-              : {}),
-          });
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error('[api] /api/command /publish (ingest) failed:', msg);
-          res.status(500).json({ error: msg });
-        }
-        return;
-      }
-
-      console.log('[api] /publish → autonomous pipeline (runPipelineJob)');
-      const dashboardPipelineStyle = requestIsDashboardSource(req);
-      const pipelineStyle = dashboardPipelineStyle
-        ? extractArticleStyleFromBody(req.body)
-        : null;
+      const dashboardStyle = requestIsDashboardSource(req);
+      const pipelineStyle = dashboardStyle ? extractArticleStyleFromBody(req.body) : null;
+      const publishAuthorName = extractAuthorNameFromBody(req.body);
       try {
-        const { skipped } = await runPipelineJob(
-          dashboardPipelineStyle && pipelineStyle
+        const { skipped } = await runPipelineJob({
+          notes: notesTrim,
+          ...(dashboardStyle && pipelineStyle
             ? {
-                notes: notesTrim,
                 applyDashboardArticleStyle: true,
                 articleLength: pipelineStyle.articleLength,
                 articleTone: pipelineStyle.articleTone,
               }
-            : { notes: notesTrim }
-        );
+            : {}),
+          ...(publishAuthorName ? { authorName: publishAuthorName } : {}),
+        });
         if (skipped) {
-          res.status(409).json({
-            error: 'Pipeline is already running',
-          });
+          res.status(409).json({ error: 'Pipeline is already running' });
           return;
         }
         res.json({
@@ -932,8 +789,8 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           source: resolveApiClientSource(req),
           command: '/publish',
           publishMode: 'autonomous_pipeline',
-          dashboardArticleStyle: dashboardPipelineStyle,
-          ...(dashboardPipelineStyle && pipelineStyle
+          dashboardArticleStyle: dashboardStyle,
+          ...(dashboardStyle && pipelineStyle
             ? {
                 articleLength: pipelineStyle.articleLength,
                 articleTone: pipelineStyle.articleTone,
@@ -942,103 +799,38 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error('[api] /api/command /publish (pipeline) failed:', msg);
+        console.error('[api] /api/command /publish failed:', msg);
         res.status(500).json({ error: msg });
       }
       return;
-    }
-
-    const chatId = resolveSessionChatId(req);
-    try {
-      await executeTelegramDaemonCommand(bot, chatId, command);
-      res.json({ ok: true, source: resolveApiClientSource(req), command });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[api] /api/command failed:', msg);
-      res.status(500).json({ error: msg });
     }
   }
   );
 }
 
-/**
- * Grammy's `webhookCallback` returns a Promise that rejects on middleware errors, timeouts,
- * or init failures. Express does not catch async route rejections, so Telegram sees 500 and
- * retries the update. We always respond 200 after logging so Telegram stops retrying.
- */
-function createSafeTelegramWebhookHandler(bot: Bot): express.RequestHandler {
-  const inner = webhookCallback(bot, 'express');
-  return (req, res) => {
-    void Promise.resolve(inner(req, res)).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      const stack = err instanceof Error ? err.stack : undefined;
-      console.error('[telegram] webhook error (ack 200 to Telegram):', message, stack ?? '');
-      if (!res.headersSent) {
-        res.status(200).end();
-      }
-    });
-  };
-}
 
 /**
- * Express app + Telegram webhook route, bound for cloud hosts (Render requires 0.0.0.0 + PORT).
- * Registers handlers, calls setWebhook with public URL, logs getWebhookInfo for debugging.
+ * Express API server for cloud hosts (Render requires 0.0.0.0 + PORT).
+ * Exposes /api/* routes used by the dashboard. No Telegram dependency.
  */
-export async function startTelegramWebhookExpress(bot: Bot): Promise<void> {
+export async function startApiServer(): Promise<void> {
   const app = express();
   app.use(express.json({ limit: '20mb' }));
 
-  registerTelegramHandlers(bot);
-
-  const webhookPath = `/telegram/webhook/${config.telegram.webhookPathSecret}`;
-  app.post(webhookPath, createSafeTelegramWebhookHandler(bot));
   app.get('/health', (_req, res) => res.status(200).send('ok'));
 
-  registerDaemonApiRoutes(app, bot);
+  registerDaemonApiRoutes(app);
 
-  const webhookUrl = getTelegramWebhookFullUrl();
+  const port = config.telegram.port;
 
   await new Promise<void>((resolve, reject) => {
-    const server = app.listen(
-      config.telegram.port,
-      RENDER_HOST,
-      async () => {
-        try {
-          console.log(
-            `[telegram] HTTP listening on http://${RENDER_HOST}:${config.telegram.port} (POST ${webhookPath})`
-          );
-          await bot.api.setWebhook(webhookUrl);
-          console.log(`[telegram] setWebhook registered: ${webhookUrl}`);
-
-          const info = await bot.api.getWebhookInfo();
-          const summary = {
-            url: info.url,
-            pending_update_count: info.pending_update_count,
-            last_error_message: info.last_error_message,
-            last_error_date: info.last_error_date,
-            max_connections: info.max_connections,
-          };
-          console.log('[telegram] getWebhookInfo:', JSON.stringify(summary));
-
-          if (info.url && info.url !== webhookUrl) {
-            console.warn(
-              `[telegram] URL mismatch: Telegram has "${info.url}" but this deploy set "${webhookUrl}". Update TELEGRAM_WEBHOOK_BASE_URL or deleteWebhook + redeploy.`
-            );
-          }
-          if (info.last_error_message) {
-            console.warn('[telegram] Telegram last_error_message:', info.last_error_message);
-          }
-
-          resolve();
-        } catch (err) {
-          console.error('[telegram] setWebhook / getWebhookInfo failed:', err);
-          reject(err);
-        }
-      }
-    );
+    const server = app.listen(port, RENDER_HOST, () => {
+      console.log(`[api] HTTP server listening on http://${RENDER_HOST}:${port}`);
+      resolve();
+    });
 
     server.on('error', (err) => {
-      console.error('[telegram] HTTP server error:', err);
+      console.error('[api] HTTP server error:', err);
       reject(err);
     });
   });

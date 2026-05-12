@@ -1,14 +1,9 @@
-import { Bot } from 'grammy';
-
-import { config, validateConfig, validateTelegramConfig } from './config';
-import { startTelegramWebhookExpress } from './telegramHttpServer';
+import { validateConfig } from './config';
+import { startApiServer } from './telegramHttpServer';
 
 async function main(): Promise<void> {
   validateConfig();
-  validateTelegramConfig();
-
-  const bot = new Bot(config.telegram.botToken);
-  await startTelegramWebhookExpress(bot);
+  await startApiServer();
 }
 
 if (require.main === module) {

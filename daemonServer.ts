@@ -1,12 +1,11 @@
 import cron from 'node-cron';
-import { Bot } from 'grammy';
 
-import { config, validateConfig, validateTelegramConfig } from './config';
+import { config, validateConfig } from './config';
 import { deactivatePastEvents } from './agents/eventCleanup';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { runPipelineJob } from './pipelineRunner';
-import { startTelegramWebhookExpress } from './telegramHttpServer';
+import { startApiServer } from './telegramHttpServer';
 
 let scheduledPipelineRunning = false;
 let serpApiEventsSyncRunning = false;
@@ -120,7 +119,6 @@ async function runScheduledPastEventsCleanup(): Promise<void> {
  */
 async function main(): Promise<void> {
   validateConfig();
-  validateTelegramConfig();
 
   const cronExpr = config.pipeline.cronSchedule;
   cron.schedule(cronExpr, () => {
@@ -154,8 +152,7 @@ async function main(): Promise<void> {
     `[scheduler] SerpApi Google News sync cron registered (${googleNewsCron}, default 10:00 daily; server local timezone)`
   );
 
-  const bot = new Bot(config.telegram.botToken);
-  await startTelegramWebhookExpress(bot);
+  await startApiServer();
 }
 
 if (require.main === module) {
