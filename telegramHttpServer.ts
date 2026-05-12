@@ -605,20 +605,18 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         });
         return;
       }
-      try {
-        console.log('[api] /api/command syncNews → syncNewsApiToSanity (SerpApi Google News)');
-        const result = await syncNewsApiToSanity();
-        res.json({
-          ok: true,
-          source: resolveApiClientSource(req),
-          command: 'syncNews',
-          ...result,
-        });
-      } catch (err: unknown) {
+      console.log('[api] /api/command syncNews → syncNewsApiToSanity [async]');
+      res.status(202).json({ ok: true, source: resolveApiClientSource(req), command: 'syncNews', message: 'Sync started' });
+      void syncNewsApiToSanity().then((result) => {
+        appendActivityLog(
+          `syncNews: complete — fetched=${result.fetched}, published=${result.published}, skipped=${result.skipped}, errors=${result.errors}`,
+          'syncNews'
+        );
+      }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncNews failed:', msg);
-        res.status(500).json({ error: msg });
-      }
+        appendActivityLog(`syncNews: failed — ${msg}`, 'syncNews');
+      });
       return;
     }
 
@@ -629,20 +627,18 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         });
         return;
       }
-      try {
-        console.log('[api] /api/command syncEvents → syncSerpApiEventsToSanity');
-        const result = await syncSerpApiEventsToSanity();
-        res.json({
-          ok: true,
-          source: resolveApiClientSource(req),
-          command: 'syncEvents',
-          ...result,
-        });
-      } catch (err: unknown) {
+      console.log('[api] /api/command syncEvents → syncSerpApiEventsToSanity [async]');
+      res.status(202).json({ ok: true, source: resolveApiClientSource(req), command: 'syncEvents', message: 'Sync started' });
+      void syncSerpApiEventsToSanity().then((result) => {
+        appendActivityLog(
+          `syncEvents: complete — synced=${result.synced}, skipped=${result.skipped}, errors=${result.errors}`,
+          'syncEvents'
+        );
+      }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncEvents failed:', msg);
-        res.status(500).json({ error: msg });
-      }
+        appendActivityLog(`syncEvents: failed — ${msg}`, 'syncEvents');
+      });
       return;
     }
 
@@ -653,20 +649,18 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         });
         return;
       }
-      try {
-        console.log('[api] /api/command syncDispensaries → syncDispensariesToSanity (SerpApi Google Maps)');
-        const result = await syncDispensariesToSanity();
-        res.json({
-          ok: true,
-          source: resolveApiClientSource(req),
-          command: 'syncDispensaries',
-          ...result,
-        });
-      } catch (err: unknown) {
+      console.log('[api] /api/command syncDispensaries → syncDispensariesToSanity [async]');
+      res.status(202).json({ ok: true, source: resolveApiClientSource(req), command: 'syncDispensaries', message: 'Sync started' });
+      void syncDispensariesToSanity().then((result) => {
+        appendActivityLog(
+          `syncDispensaries: complete — saved=${result.saved}, skipped=${result.skipped}, errors=${result.errors}`,
+          'syncDispensaries'
+        );
+      }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncDispensaries failed:', msg);
-        res.status(500).json({ error: msg });
-      }
+        appendActivityLog(`syncDispensaries: failed — ${msg}`, 'syncDispensaries');
+      });
       return;
     }
 
@@ -683,23 +677,20 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         });
         return;
       }
-      try {
-        console.log(
-          '[api] /api/command syncRestaurants → runFetchRestaurants (SerpApi Google Maps, 7 AZ cities)'
-        );
-        appendActivityLog(
-          'syncRestaurants: started (Phoenix, Scottsdale, Tempe, Mesa, Glendale, Chandler, Surprise AZ)',
-          'syncRestaurants'
-        );
-        const cities = await runFetchRestaurants({
-          onCityComplete: (r) => {
-            appendActivityLog(
-              `syncRestaurants: ${r.city}, AZ complete — created=${r.created}, updated=${r.updated}, candidates=${r.candidates}`,
-              'syncRestaurants'
-            );
-          },
-        });
-        appendActivityLog('syncRestaurants: all cities finished', 'syncRestaurants');
+      console.log('[api] /api/command syncRestaurants → runFetchRestaurants [async]');
+      appendActivityLog(
+        'syncRestaurants: started (Phoenix, Scottsdale, Tempe, Mesa, Glendale, Chandler, Surprise AZ)',
+        'syncRestaurants'
+      );
+      res.status(202).json({ ok: true, source: resolveApiClientSource(req), command: 'syncRestaurants', message: 'Sync started' });
+      void runFetchRestaurants({
+        onCityComplete: (r) => {
+          appendActivityLog(
+            `syncRestaurants: ${r.city}, AZ complete — created=${r.created}, updated=${r.updated}, candidates=${r.candidates}`,
+            'syncRestaurants'
+          );
+        },
+      }).then((cities) => {
         const totals = cities.reduce(
           (acc, c) => ({
             created: acc.created + c.created,
@@ -708,19 +699,15 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
           }),
           { created: 0, updated: 0, candidates: 0 }
         );
-        res.json({
-          ok: true,
-          source: resolveApiClientSource(req),
-          command: 'syncRestaurants',
-          cities,
-          ...totals,
-        });
-      } catch (err: unknown) {
+        appendActivityLog(
+          `syncRestaurants: all cities finished — created=${totals.created}, updated=${totals.updated}`,
+          'syncRestaurants'
+        );
+      }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncRestaurants failed:', msg);
         appendActivityLog(`syncRestaurants: failed — ${msg}`, 'syncRestaurants');
-        res.status(500).json({ error: msg });
-      }
+      });
       return;
     }
 
@@ -737,31 +724,19 @@ function registerDaemonApiRoutes(app: express.Application, bot: Bot): void {
         });
         return;
       }
-      try {
-        console.log(
-          '[api] /api/command syncNightlife → syncNightlifeToSanity (SerpApi Google Maps, Phoenix/Scottsdale bars & nightclubs)'
-        );
-        appendActivityLog(
-          'syncNightlife: started (top 25 metro-wide → Sanity `nightlife`)',
-          'syncNightlife'
-        );
-        const result = await syncNightlifeToSanity();
+      console.log('[api] /api/command syncNightlife → syncNightlifeToSanity [async]');
+      appendActivityLog('syncNightlife: started (top 25 metro-wide → Sanity `nightlife`)', 'syncNightlife');
+      res.status(202).json({ ok: true, source: resolveApiClientSource(req), command: 'syncNightlife', message: 'Sync started' });
+      void syncNightlifeToSanity().then((result) => {
         appendActivityLog(
           `syncNightlife: complete — created=${result.created}, updated=${result.updated}, candidates=${result.candidates}`,
           'syncNightlife'
         );
-        res.json({
-          ok: true,
-          source: resolveApiClientSource(req),
-          command: 'syncNightlife',
-          ...result,
-        });
-      } catch (err: unknown) {
+      }).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api] /api/command syncNightlife failed:', msg);
         appendActivityLog(`syncNightlife: failed — ${msg}`, 'syncNightlife');
-        res.status(500).json({ error: msg });
-      }
+      });
       return;
     }
 
