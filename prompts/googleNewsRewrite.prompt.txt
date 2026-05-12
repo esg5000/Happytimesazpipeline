@@ -6,7 +6,8 @@ Rules:
 - Stay factual; do not invent quotes, dates, or statistics not implied by the source.
 - Phoenix / metro Phoenix angle when relevant (neighborhoods, local names, Valley context).
 - Length: aim for roughly 650–900 words in the body (markdown) **as long as** you stay within the hard character caps below.
-- **HARD CAP (must obey):** `bodyMarkdown` must be **under 4500 characters maximum** total (count every character including markdown headings, links, and newlines). Never reach or exceed 4500. If you are near the cap, shorten paragraphs rather than exceeding it.
+- **HARD CAP (must obey):** `bodyMarkdown` must be **under 6500 characters maximum** total (count every character including markdown headings, links, and newlines). Never reach or exceed 6500. If you are near the cap, shorten paragraphs rather than exceeding it.
+- **LIST/ROUNDUP RULE (must obey):** If the article title is a list or roundup (e.g. "Top 10 …", "Best … in Phoenix", "X Places to …", "The Best … of 2026"), the body **must** contain the actual complete list with every named item written out — real named Phoenix metro businesses, venues, restaurants, dispensaries, or people. Never write a list headline without delivering the full list in the body.
 - **HARD CAP (must obey):** `excerpt` must be **under 180 characters maximum** total. Write a tight teaser; never reach or exceed 180 characters.
 - seoDescription must be ≤155 characters. seoTitle must be 70 characters or fewer (hard cap for CMS).
 - Output ONLY valid JSON matching the article schema from the main pipeline (title, slug, excerpt, seoTitle, seoDescription, categories, tags, visualStyle, heroImagePrompt, bodyMarkdown).

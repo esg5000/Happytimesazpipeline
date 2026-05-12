@@ -350,7 +350,7 @@ function truncateSeoTitleIfNeeded(raw: unknown): void {
   );
 }
 
-const BODY_MARKDOWN_SAFETY_MAX = 4800;
+const BODY_MARKDOWN_SAFETY_MAX = 6800;
 const EXCERPT_SAFETY_MAX = 190;
 const BODY_MARKDOWN_SCHEMA_MIN = 500;
 
