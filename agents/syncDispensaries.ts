@@ -8,49 +8,8 @@ import { generateSlug } from '../utils/slug';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
-/**
- * Arizona statewide + Phoenix metro — city label and Google Maps search origin (`ll`).
- * Order: greater Phoenix area first, then other AZ cities. One `seen` dedupe set covers all
- * searches (place_id, else normalized name + address).
- */
-const ARIZONA_SEARCH_LOCATIONS: readonly { name: string; ll: string }[] = [
-  // Phoenix metro
-  { name: 'Phoenix', ll: '@33.4484,-112.0740,12z' },
-  { name: 'Scottsdale', ll: '@33.4942,-111.9261,12z' },
-  { name: 'Tempe', ll: '@33.4255,-111.9400,12z' },
-  { name: 'Mesa', ll: '@33.4155,-111.8315,12z' },
-  { name: 'Glendale', ll: '@33.5387,-112.1860,12z' },
-  { name: 'Peoria', ll: '@33.5806,-112.2374,12z' },
-  { name: 'Chandler', ll: '@33.3062,-111.8413,12z' },
-  { name: 'Gilbert', ll: '@33.3528,-111.7890,12z' },
-  { name: 'Surprise', ll: '@33.6292,-112.3679,12z' },
-  { name: 'Goodyear', ll: '@33.4353,-112.3579,12z' },
-  { name: 'Sun City', ll: '@33.5979,-112.2719,12z' },
-  { name: 'Fountain Hills', ll: '@33.6117,-111.7167,12z' },
-  { name: 'Cave Creek', ll: '@33.8333,-111.9507,12z' },
-  { name: 'Paradise Valley', ll: '@33.5312,-111.9426,12z' },
-  // Rest of Arizona
-  { name: 'Tucson', ll: '@32.2226,-110.9747,12z' },
-  { name: 'Flagstaff', ll: '@35.1983,-111.6513,12z' },
-  { name: 'Sedona', ll: '@34.8697,-111.7610,12z' },
-  { name: 'Prescott', ll: '@34.5400,-112.4685,12z' },
-  { name: 'Yuma', ll: '@32.6927,-114.6277,12z' },
-  { name: 'Sierra Vista', ll: '@31.5545,-110.3037,12z' },
-  { name: 'Kingman', ll: '@35.1894,-114.0530,12z' },
-  { name: 'Safford', ll: '@32.8330,-109.7076,12z' },
-  { name: 'Show Low', ll: '@34.2542,-110.0298,12z' },
-  { name: 'Globe', ll: '@33.3942,-110.7865,12z' },
-  { name: 'Casa Grande', ll: '@32.8795,-111.7574,12z' },
-  { name: 'Bullhead City', ll: '@35.1478,-114.5683,12z' },
-  { name: 'Lake Havasu City', ll: '@34.4839,-114.3225,12z' },
-  { name: 'Cottonwood', ll: '@34.7392,-112.0099,12z' },
-  { name: 'Payson', ll: '@34.2309,-111.3281,12z' },
-  { name: 'Nogales', ll: '@31.3404,-110.9342,12z' },
-  { name: 'Douglas', ll: '@31.3445,-109.5467,12z' },
-  { name: 'Bisbee', ll: '@31.4481,-109.9284,12z' },
-  { name: 'Winslow', ll: '@35.0242,-110.6974,12z' },
-  { name: 'Williams', ll: '@35.2496,-112.1910,12z' },
-];
+const STATEWIDE_QUERIES = ['cannabis dispensary Arizona', 'marijuana dispensary Arizona'];
+const MAX_PAGES = 5;
 
 type SerpLocalResult = {
   title?: string;
@@ -139,14 +98,6 @@ function parseCityFromAddress(address: string | undefined, fallbackCity: string)
   return fallbackCity;
 }
 
-/** Max SerpApi `start` offset (Google Maps ~20 results per page; cap per SerpApi docs). */
-function maxStartOffset(): number {
-  const raw = process.env.DISPENSARY_SERP_MAX_START;
-  const n = raw ? parseInt(raw, 10) : 100;
-  if (!Number.isFinite(n) || n < 0) return 100;
-  return Math.min(100, n);
-}
-
 type SyncDispensariesResult = {
   /** Unique dispensaries seen after dedupe (SerpApi + cross-city). */
   uniqueFound: number;
@@ -159,8 +110,9 @@ type SyncDispensariesResult = {
 };
 
 /**
- * SerpApi Google Maps (`engine=google_maps`, `type=search`) per Arizona search location, then upsert `dispensary` docs.
- * Deduplicates across **all** cities in one pass: `place_id` when present, else normalized name + address.
+ * SerpApi Google Maps (`engine=google_maps`, `type=search`) — two statewide Arizona queries,
+ * 5 pages each (100 results per query, 200 total). Patch-only: never creates new Sanity records.
+ * Deduplicates across both queries: `place_id` when present, else normalized name + address.
  */
 export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult> {
   if (!config.serpApi.apiKey) {
@@ -168,9 +120,7 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
   }
 
   const client = getSanityClient();
-  /** Global dedupe across every city query (same shop appearing in Phoenix + Mesa appears once). */
   const seen = new Set<string>();
-  const maxStart = maxStartOffset();
 
   // Pre-load all existing dispensary _ids so we never create new records.
   const existingIds = await client.fetch<string[]>(`*[_type == "dispensary"]._id`);
@@ -184,15 +134,13 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
   let serpApiCalls = 0;
 
   console.log('[dispensaries] ========== syncDispensariesToSanity (SerpApi Google Maps) start ==========');
-  console.log(
-    `[dispensaries] ${ARIZONA_SEARCH_LOCATIONS.length} Arizona search locations (Phoenix metro + statewide); global dedupe by place_id or name+address`
-  );
+  console.log(`[dispensaries] ${STATEWIDE_QUERIES.length} statewide queries × ${MAX_PAGES} pages each; global dedupe by place_id or name+address`);
 
-  for (const { name: cityName, ll } of ARIZONA_SEARCH_LOCATIONS) {
-    const q = `cannabis dispensary ${cityName} Arizona`;
-    console.log(`[dispensaries] City="${cityName}" q="${q}" ll=${ll}`);
+  for (const q of STATEWIDE_QUERIES) {
+    console.log(`[dispensaries] Query="${q}"`);
 
-    for (let start = 0; start <= maxStart; start += 20) {
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const start = page * 20;
       let data: SerpMapsResponse;
       let status: number;
       try {
@@ -202,7 +150,6 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
             engine: 'google_maps',
             type: 'search',
             q,
-            ll,
             start,
             hl: 'en',
             gl: 'us',
@@ -216,7 +163,7 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
       } catch (e) {
         errors++;
         console.error(
-          `[dispensaries] HTTP error city=${cityName} start=${start}:`,
+          `[dispensaries] HTTP error q="${q}" start=${start}:`,
           e instanceof Error ? e.message : e
         );
         break;
@@ -224,15 +171,14 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
 
       if (status !== 200 || data.error) {
         console.warn(
-          `[dispensaries] city=${cityName} start=${start} http=${status} err=${data.error || 'n/a'}`
+          `[dispensaries] q="${q}" start=${start} http=${status} err=${data.error || 'n/a'}`
         );
-        if (start === 0) break;
         break;
       }
 
       const locals = data.local_results || [];
       if (locals.length === 0) {
-        console.log(`[dispensaries] city=${cityName} start=${start}: no local_results — end pagination`);
+        console.log(`[dispensaries] q="${q}" start=${start}: no local_results — end pagination`);
         break;
       }
 
@@ -249,7 +195,7 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
 
         const _id = documentIdFromKey(key);
         const address = raw.address?.trim() || '';
-        const city = parseCityFromAddress(raw.address, cityName);
+        const city = parseCityFromAddress(raw.address, 'Arizona');
         const phone = raw.phone?.trim() || '';
         const website = raw.website?.trim() || '';
         const hours = formatHours(raw);
@@ -324,6 +270,8 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
 
       await new Promise((r) => setTimeout(r, 250));
     }
+
+    await new Promise((r) => setTimeout(r, 500));
   }
 
   console.log(
