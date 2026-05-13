@@ -24,7 +24,7 @@ const CITIES: readonly { name: string; ll: string }[] = [
   { name: 'Surprise', ll: '@33.6292,-112.3679,12z' },
 ];
 
-const TARGET_TOP = 25;
+const TARGET_TOP = 20;
 const MAX_PAGES = 4;
 
 /** Local result shape from SerpAPI (fields may be absent or wrong type at runtime). */
