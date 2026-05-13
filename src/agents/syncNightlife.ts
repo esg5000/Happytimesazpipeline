@@ -193,6 +193,7 @@ export type SyncNightlifeResult = {
   created: number;
   updated: number;
   candidates: number;
+  serpApiCalls: number;
 };
 
 /**
@@ -209,11 +210,13 @@ export async function syncNightlifeToSanity(): Promise<SyncNightlifeResult> {
   );
 
   const mergedByPlaceId = new Map<string, SerpMapsLocal>();
+  let serpApiCalls = 0;
 
   for (const { q, ll } of NIGHTLIFE_QUERIES) {
     console.log(`[nightlife] Query: "${q}" ll=${ll}`);
     for (let page = 0; page < MAX_PAGES; page++) {
       const start = page * 20;
+      serpApiCalls++;
       const { ok, results, error } = await fetchMapsPage(q, ll, start);
       if (!ok) {
         console.warn(`[nightlife] page start=${start} failed: ${error || 'unknown'}`);
@@ -314,7 +317,7 @@ export async function syncNightlifeToSanity(): Promise<SyncNightlifeResult> {
     `\n[nightlife] Done — created=${created}, updated=${updated}, candidates=${ranked.length}`
   );
 
-  return { created, updated, candidates: ranked.length };
+  return { created, updated, candidates: ranked.length, serpApiCalls };
 }
 
 if (require.main === module) {

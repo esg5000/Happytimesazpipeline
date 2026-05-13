@@ -646,6 +646,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
       try {
         console.log('[api] /api/command syncDispensaries → syncDispensariesToSanity (SerpApi Google Maps)');
         const result = await syncDispensariesToSanity();
+        appendActivityLog(`syncDispensaries: SerpAPI calls used: ${result.serpApiCalls}`, 'syncDispensaries');
         res.json({
           ok: true,
           source: resolveApiClientSource(req),
@@ -689,15 +690,17 @@ function registerDaemonApiRoutes(app: express.Application): void {
             );
           },
         });
-        appendActivityLog('syncRestaurants: all cities finished', 'syncRestaurants');
         const totals = cities.reduce(
           (acc, c) => ({
             created: acc.created + c.created,
             updated: acc.updated + c.updated,
             candidates: acc.candidates + c.candidates,
+            serpApiCalls: acc.serpApiCalls + c.serpApiCalls,
           }),
-          { created: 0, updated: 0, candidates: 0 }
+          { created: 0, updated: 0, candidates: 0, serpApiCalls: 0 }
         );
+        appendActivityLog(`syncRestaurants: SerpAPI calls used: ${totals.serpApiCalls}`, 'syncRestaurants');
+        appendActivityLog('syncRestaurants: all cities finished', 'syncRestaurants');
         res.json({
           ok: true,
           source: resolveApiClientSource(req),
@@ -740,6 +743,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
           `syncNightlife: complete — created=${result.created}, updated=${result.updated}, candidates=${result.candidates}`,
           'syncNightlife'
         );
+        appendActivityLog(`syncNightlife: SerpAPI calls used: ${result.serpApiCalls}`, 'syncNightlife');
         res.json({
           ok: true,
           source: resolveApiClientSource(req),

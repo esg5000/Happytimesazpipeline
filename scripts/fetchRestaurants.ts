@@ -217,6 +217,7 @@ export type RestaurantCitySyncResult = {
   created: number;
   updated: number;
   candidates: number;
+  serpApiCalls: number;
 };
 
 export type RunFetchRestaurantsOptions = {
@@ -231,9 +232,11 @@ async function syncRestaurantsForCity(
 ): Promise<RestaurantCitySyncResult> {
   const q = `best restaurants ${searchCity} AZ`;
   const merged = new Map<string, SerpMapsLocal>();
+  let serpApiCalls = 0;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const start = page * 20;
+    serpApiCalls++;
     const { ok, results, error } = await fetchMapsPage(q, ll, start);
     if (!ok) {
       console.warn(`[restaurants] ${searchCity}: page start=${start} failed: ${error || 'unknown'}`);
@@ -343,7 +346,7 @@ async function syncRestaurantsForCity(
     `[restaurants] ${searchCity}: done — created=${created}, updated=${updated}, candidates=${ranked.length}`
   );
 
-  return { city: searchCity, created, updated, candidates: ranked.length };
+  return { city: searchCity, created, updated, candidates: ranked.length, serpApiCalls };
 }
 
 /**

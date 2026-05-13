@@ -155,6 +155,7 @@ type SyncDispensariesResult = {
   /** Skipped because no matching record exists in Sanity. */
   skipped: number;
   errors: number;
+  serpApiCalls: number;
 };
 
 /**
@@ -180,6 +181,7 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
   let saved = 0;
   let skipped = 0;
   let errors = 0;
+  let serpApiCalls = 0;
 
   console.log('[dispensaries] ========== syncDispensariesToSanity (SerpApi Google Maps) start ==========');
   console.log(
@@ -194,6 +196,7 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
       let data: SerpMapsResponse;
       let status: number;
       try {
+        serpApiCalls++;
         const res = await axios.get<SerpMapsResponse>(SERPAPI_SEARCH, {
           params: {
             engine: 'google_maps',
@@ -326,5 +329,5 @@ export async function syncDispensariesToSanity(): Promise<SyncDispensariesResult
   console.log(
     `[dispensaries] ========== end: uniqueFound=${uniqueFound}, saved=${saved}, skipped=${skipped}, errors=${errors} ==========`
   );
-  return { uniqueFound, saved, skipped, errors };
+  return { uniqueFound, saved, skipped, errors, serpApiCalls };
 }
