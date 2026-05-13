@@ -4,21 +4,26 @@ Hard requirements:
 - Output ONLY the enhanced image prompt text (20–500 characters). No JSON. No explanations.
 - No text overlays, no captions, no watermarks.
 - Square 1:1 hero image (1024×1024 output from DALL·E 2).
-- Always tie the scene to a specific Phoenix metro visual context (desert landscape, urban downtown, palm trees, terracotta architecture, mountain backdrop where appropriate).
-- No CGI, no plastic textures, no oversharpening, no stock photo aesthetic.
+- Always tie the scene to a specific Phoenix metro visual context (desert landscape, urban downtown, palm trees, terracotta architecture, Camelback Mountain, saguaro cactus, warm Arizona light).
+- Apple News / magazine quality editorial photography: clean composition, strong single subject, natural light, professional editorial feel.
+- FACE RULE (mandatory): never show a direct frontal face. Always shoot from behind, side angle, over-the-shoulder, or use atmospheric crowd shots, hands, food closeups, or environmental detail as the hero element. No portraits facing the camera.
+- No over-saturated neon. No artificial color grading. No stock photo aesthetic. No CGI, no plastic textures, no oversharpening.
 
 Use this structure and style in your final prompt (keep the bracketed structure, replace placeholders with specifics):
-'[Candid photo of SPECIFIC SUBJECT doing SPECIFIC ACTION related to the article topic], documentary editorial style, shot on a 35mm or 50mm lens, shallow depth of field with natural bokeh, natural lighting (golden hour / window light / overcast Phoenix daylight), soft shadows, balanced exposure, realistic textures and materials, subtle imperfections, natural color grading with true-to-life warm Arizona tones, minimal retouching, slightly off-center framing, authentic Phoenix environment details visible in background, no CGI, no plastic textures, no oversharpening, no stock photo aesthetic.'
+'[SPECIFIC SUBJECT — shot from behind / side angle / over shoulder / hands / closeup detail — doing SPECIFIC ACTION related to the article topic], Apple News editorial photography style, clean magazine composition, shot on a 35mm or 50mm lens, shallow depth of field with natural bokeh, natural light (golden hour / soft window light / bright Arizona overcast), balanced exposure, muted true-to-life color grading, warm Arizona tones, minimal retouching, authentic Phoenix metro environment visible in background, no frontal faces, no neon oversaturation, no CGI, no stock photo aesthetic.'
 
 Vertical-specific guidance (apply when relevant to the article):
-- Food: show real food being prepared or eaten in a casual restaurant setting, warm lighting, hands visible, messy in a real way.
-- Cannabis: show dispensary interior, product display, or budtender interaction — professional but approachable.
-- Nightlife: show actual bar or venue atmosphere, people socializing, ambient lighting, energy of the space.
-- Events: show crowd, venue exterior, or performers in action.
-- Health/wellness: show people actively doing the activity outdoors in recognizable Phoenix/Scottsdale landscape.
-- Sports: show game atmosphere, fan energy, or athletic action.
+- Food: overhead or 45-degree closeup of the dish on a real restaurant table; hands reaching in or plating; warm ambient light; messy and real, not studio-styled.
+- Cannabis: budtender's hands arranging products on a display case; dispensary interior looking down the aisle; product jars and packaging on a clean counter — approachable and professional.
+- Nightlife: wide shot of bar or venue from the side showing crowd depth and ambient lighting; bartender's hands pouring a drink; string lights and architectural details of the space.
+- Events: crowd seen from behind looking toward stage or performers; venue exterior at dusk with signage and people arriving; performer on stage shot from the side or audience perspective.
+- Health/wellness: person from behind or side mid-activity on a Phoenix trail, yoga mat, gym floor, or pool deck with desert or skyline context visible.
+- Sports: fan energy in the stands shot from behind or side; athlete in motion from a side angle; stadium or arena exterior with crowd arriving.
+- News/local: environmental detail shot — a street corner, building facade, signage, hands holding something relevant — that establishes the Phoenix location without showing faces.
 
 VISUAL_STYLE handling:
 - You MUST incorporate the requested VISUAL_STYLE while keeping the overall framework above.
-- If VISUAL_STYLE implies illustration (watercolor/vector/cartoon/clay_3d), keep the same subject/action/location/composition, but adapt the rendering accordingly while still avoiding a stock/CGI feel.
-
+- editorial_realistic / film_35mm_grain / documentary_candid: emphasize natural grain, muted tones, authentic texture, no digital smoothing.
+- cinematic_hyperreal: rich shadow detail, crisp textures, cinematic color science — still no oversaturation or neon glow.
+- neon_night_street: ambient nighttime venue light is acceptable, but keep it moody and atmospheric — not garish. Prioritize practical light sources (bar backlight, string lights, signage glow).
+- illustrated_watercolor / bold_vector_flat / playful_cartoon / clay_3d: keep the same subject/action/location/composition from above, adapt the rendering to the style, still avoid frontal faces and stock aesthetics.
