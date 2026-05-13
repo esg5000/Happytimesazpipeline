@@ -8,7 +8,7 @@ import axios from 'axios';
 import type { SanityClient } from '@sanity/client';
 
 import { config } from '../config';
-import { getSanityClient } from '../agents/sanityPublisher';
+import { getSanityClient, uploadImageToSanity } from '../agents/sanityPublisher';
 import { generateSlug } from '../utils/slug';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
@@ -306,7 +306,20 @@ async function syncRestaurantsForCity(
     if (priceLevel !== undefined) doc.priceLevel = priceLevel;
     const placeId = asNonEmptyString(r.place_id);
     if (placeId) doc.googlePlaceId = placeId;
-    if (thumbnailUrl) doc.thumbnail = thumbnailUrl;
+    if (thumbnailUrl) {
+      try {
+        const assetId = await uploadImageToSanity(thumbnailUrl, `restaurant-${_id.slice(0, 24)}.jpg`);
+        doc.thumbnail = {
+          _type: 'image',
+          asset: { _type: 'reference', _ref: assetId },
+        };
+      } catch (e) {
+        console.warn(
+          `[restaurants] Image upload failed "${title}":`,
+          e instanceof Error ? e.message : e
+        );
+      }
+    }
     if (typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)) {
       doc.location = { _type: 'geopoint', lat, lng };
     }
