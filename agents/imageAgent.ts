@@ -51,6 +51,7 @@ export async function generateImagePrompt(
  */
 export async function generateImage(prompt: string): Promise<string | null> {
   try {
+    console.log(`[imageAgent] DALL·E prompt: ${prompt}`);
     const response = await axios.post(
       'https://api.openai.com/v1/images/generations',
       {
