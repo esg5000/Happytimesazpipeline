@@ -55,7 +55,7 @@ export async function generateImage(prompt: string): Promise<string | null> {
     const response = await axios.post(
       'https://api.openai.com/v1/images/generations',
       {
-        model: 'dall-e-2',
+        model: 'gpt-image-2',
         prompt: prompt,
         // DALL·E 2 supports only square sizes: 256x256, 512x512, 1024x1024
         size: '1024x1024',
