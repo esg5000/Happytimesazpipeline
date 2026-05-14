@@ -3,7 +3,7 @@ import { generateTopics } from './agents/topicAgent';
 import { writeArticle } from './agents/writerAgent';
 import { generateImagePrompt, generateImage } from './agents/imageAgent';
 import {
-  uploadImageToSanity,
+  uploadImageBufferToSanity,
   publishArticleToSanity,
   getExistingSlugs,
 } from './agents/sanityPublisher';
@@ -104,8 +104,8 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
 
         // Step 4: Generate image
         console.log('   🖼️  Generating image...');
-        const imageUrl = await generateImage(enhancedImagePrompt);
-        if (imageUrl) {
+        const imageBuf = await generateImage(enhancedImagePrompt);
+        if (imageBuf) {
           console.log('   ✅ Image generated');
         } else {
           console.warn('   ⚠️  Image generation failed; continuing without hero image');
@@ -115,10 +115,10 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         try {
           // Step 5: Upload image to Sanity
           let imageAssetId: string | undefined;
-          if (imageUrl) {
+          if (imageBuf) {
             console.log('   📤 Uploading image to Sanity...');
-            imageAssetId = await uploadImageToSanity(
-              imageUrl,
+            imageAssetId = await uploadImageBufferToSanity(
+              imageBuf,
               `${article.slug}-hero.jpg`
             );
             console.log('   ✅ Image uploaded');

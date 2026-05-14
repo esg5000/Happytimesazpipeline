@@ -9,7 +9,7 @@ import {
   parseGoogleNewsSlotId,
   publishGoogleNewsArticleToSanity,
   resolveGoogleNewsPrimaryCategorySlug,
-  uploadImageToSanity,
+  uploadImageBufferToSanity,
 } from './sanityPublisher';
 import { Article, validateArticle } from '../utils/validator';
 import { ensureUniqueSlug, generateSlug } from '../utils/slug';
@@ -125,18 +125,18 @@ async function generateAndUploadHeroForGoogleNews(
       : 'Photorealistic editorial photograph suited to the headline; Arizona / greater Phoenix context where appropriate.';
   const basePrompt = `HappyTimesAZ ${sectionSlug} (greater Phoenix, Arizona metro): "${headline}".\n\nHero scene direction: ${modelScene}\n\nNo overlaid text, watermarks, third-party logos, or identifiable news outlet branding in the image.`;
 
-  console.log(`[google-news] ${label} AI hero (DALL·E, section=${sectionSlug}): generating image prompt…`);
+  console.log(`[google-news] ${label} AI hero (gpt-image-1, section=${sectionSlug}): generating image prompt…`);
   const enhanced = await generateImagePrompt(basePrompt, article.visualStyle);
   console.log(`[google-news] ${label} AI hero: generating image…`);
-  const imageUrl = await generateImage(enhanced);
-  if (!imageUrl) {
+  const imageBuf = await generateImage(enhanced);
+  if (!imageBuf) {
     console.warn(
       `[google-news] ${label} AI hero: image generation failed; continuing without hero`
     );
     return undefined;
   }
   console.log(`[google-news] ${label} AI hero: uploading to Sanity…`);
-  const heroId = await uploadImageToSanity(imageUrl, filenameBase);
+  const heroId = await uploadImageBufferToSanity(imageBuf, filenameBase);
   console.log(`[google-news] ${label} AI hero asset=${heroId}`);
   return heroId;
 }

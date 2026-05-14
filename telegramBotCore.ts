@@ -10,7 +10,6 @@ import {
   getExistingSlugs,
   publishArticleToSanity,
   uploadImageBufferToSanity,
-  uploadImageToSanity,
 } from './agents/sanityPublisher';
 import { ensureUniqueSlug } from './utils/slug';
 import type { SectionSlug } from './utils/validator';
@@ -322,11 +321,11 @@ async function publishFromSession(
       article.heroImagePrompt,
       article.visualStyle
     );
-    const imageUrl = await generateImage(enhancedPrompt);
-    if (imageUrl) {
-      heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
+    const imageBuf = await generateImage(enhancedPrompt);
+    if (imageBuf) {
+      heroImageAssetId = await uploadImageBufferToSanity(imageBuf, `${article.slug}-hero.jpg`);
     } else {
-      console.warn('[publish] DALL·E image generation failed; continuing without hero image');
+      console.warn('[publish] gpt-image-1 image generation failed; continuing without hero image');
     }
   }
 

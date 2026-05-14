@@ -4,7 +4,6 @@ import { generateImage, generateImagePrompt } from './imageAgent';
 import {
   publishArticleToSanity,
   uploadImageBufferToSanity,
-  uploadImageToSanity,
 } from './sanityPublisher';
 import { fetchUnsplashHeroImageBuffer } from './unsplashHero';
 import { Article } from '../utils/validator';
@@ -119,13 +118,13 @@ export async function runResearchAndWrite(
 
   if (!heroImageAssetId) {
     const enhanced = await generateImagePrompt(article.heroImagePrompt, article.visualStyle);
-    const imageUrl = await generateImage(enhanced);
-    if (imageUrl) {
-      heroImageAssetId = await uploadImageToSanity(imageUrl, `${article.slug}-hero.jpg`);
+    const imageBuf = await generateImage(enhanced);
+    if (imageBuf) {
+      heroImageAssetId = await uploadImageBufferToSanity(imageBuf, `${article.slug}-hero.jpg`);
       heroImageSource = 'dall-e';
-      console.log('[researchAndWrite] hero from DALL·E → Sanity', heroImageAssetId);
+      console.log('[researchAndWrite] hero from gpt-image-1 → Sanity', heroImageAssetId);
     } else {
-      console.warn('[researchAndWrite] DALL·E image generation failed; continuing without hero image');
+      console.warn('[researchAndWrite] gpt-image-1 image generation failed; continuing without hero image');
     }
   }
 

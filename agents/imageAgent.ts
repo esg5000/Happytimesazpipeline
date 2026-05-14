@@ -47,17 +47,17 @@ export async function generateImagePrompt(
 }
 
 /**
- * Generates an image using DALL·E 2 (1024×1024; all pipeline heroes use this path).
+ * Generates an image using gpt-image-1 (1024×1024; all pipeline heroes use this path).
+ * GPT image models return b64_json — not a URL. Returns a decoded Buffer, or null on failure.
  */
-export async function generateImage(prompt: string): Promise<string | null> {
+export async function generateImage(prompt: string): Promise<Buffer | null> {
   try {
-    console.log(`[imageAgent] DALL·E prompt: ${prompt}`);
+    console.log(`[imageAgent] gpt-image-1 prompt: ${prompt}`);
     const response = await axios.post(
       'https://api.openai.com/v1/images/generations',
       {
-        model: 'gpt-image-2',
+        model: 'gpt-image-1',
         prompt: prompt,
-        // DALL·E 2 supports only square sizes: 256x256, 512x512, 1024x1024
         size: '1024x1024',
         n: 1,
       },
@@ -69,11 +69,12 @@ export async function generateImage(prompt: string): Promise<string | null> {
       }
     );
 
-    const imageUrl = response.data.data[0].url;
-    return typeof imageUrl === 'string' && imageUrl.trim() ? imageUrl : null;
+    const b64 = response.data.data[0].b64_json;
+    if (typeof b64 !== 'string' || !b64) return null;
+    return Buffer.from(b64, 'base64');
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[imageAgent] DALL·E image generation failed; continuing without image:', msg);
+    console.warn('[imageAgent] gpt-image-1 image generation failed; continuing without image:', msg);
     if (err instanceof Error && err.stack) {
       console.warn('[imageAgent] stack:\n', err.stack);
     }
