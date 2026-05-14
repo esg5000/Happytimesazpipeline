@@ -41,7 +41,7 @@ export const ArticleSchema = z.object({
   tags: z.array(z.string()).min(1).max(10),
   visualStyle: VisualStyleSchema,
   heroImagePrompt: z.string().min(20).max(500),
-  bodyMarkdown: z.string().min(500).max(5000),
+  bodyMarkdown: z.string().min(500).max(6500),
   /** Byline for Sanity; set by the writer pipeline, not the model. */
   author: z.string().optional(),
 });
