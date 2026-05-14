@@ -32,7 +32,7 @@ export async function generateImagePrompt(
       ],
       temperature: 0.8,
       // GPT-5 / o-series: `max_tokens` is rejected; use `max_completion_tokens`.
-      max_completion_tokens: 200,
+      max_completion_tokens: 500,
     },
     {
       headers: {
