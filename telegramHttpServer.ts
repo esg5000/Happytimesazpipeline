@@ -8,9 +8,14 @@ import { syncDispensariesToSanity } from './agents/syncDispensaries';
 import { transcribeAudio } from './agents/transcribeAgent';
 import {
   countPostDocuments,
+  getExistingSlugs,
+  publishArticleToSanity,
   uploadImageBufferToSanity,
   uploadVideoBufferToSanity,
 } from './agents/sanityPublisher';
+import { ingestToTopic } from './agents/ingestAgent';
+import { writeArticle } from './agents/writerAgent';
+import { ensureUniqueSlug } from './utils/slug';
 import { appendActivityLog, getPipelineStatusSnapshot } from './pipelineStatus';
 import { syncNightlifeToSanity } from './agents/syncNightlife';
 import { runFetchRestaurants } from './scripts/fetchRestaurants';
@@ -249,6 +254,69 @@ function requestIsDashboardSource(req: express.Request): boolean {
 function writeSse(res: express.Response, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function extractVideoAssetIdFromBody(body: unknown): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const v = (body as Record<string, unknown>).sanityVideoAssetId;
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
+/**
+ * Ingest + write + publish path for dashboard /publish when imageAssetIds are present.
+ * No Telegram bot or session — operates purely on the provided notes and asset IDs.
+ */
+async function publishStoryWithImages(
+  notes: string,
+  imageAssetIds: string[],
+  options: {
+    applyDashboardArticleStyle?: boolean;
+    articleLength?: string;
+    articleTone?: string;
+    authorName?: string;
+    videoAssetId?: string;
+  }
+): Promise<{ sanityId: string; slug: string; title: string }> {
+  const applyStyle = options.applyDashboardArticleStyle === true;
+
+  const topic = await ingestToTopic({
+    notes,
+    applyDashboardArticleStyle: applyStyle,
+    ...(applyStyle && options.articleLength ? { articleLength: options.articleLength as never } : {}),
+    ...(applyStyle && options.articleTone ? { articleTone: options.articleTone as never } : {}),
+  });
+
+  let article = await writeArticle(topic, {
+    sourceNotes: notes || undefined,
+    userSuppliedImages: true,
+    applyDashboardArticleStyle: applyStyle,
+    ...(applyStyle && options.articleLength ? { articleLength: options.articleLength as never } : {}),
+    ...(applyStyle && options.articleTone ? { articleTone: options.articleTone as never } : {}),
+  });
+
+  if (options.authorName) {
+    article = { ...article, author: options.authorName };
+  }
+
+  const existingSlugs = await getExistingSlugs();
+  article = { ...article, slug: ensureUniqueSlug(article.slug, existingSlugs) };
+
+  const heroImageAssetId = imageAssetIds[0];
+  const additionalImageAssetIds = imageAssetIds.length > 1 ? imageAssetIds.slice(1) : undefined;
+
+  const publishOpts: Record<string, string> = {};
+  if (options.authorName) publishOpts.authorName = options.authorName;
+  if (options.videoAssetId) publishOpts.videoAssetId = options.videoAssetId;
+
+  const sanityId = await publishArticleToSanity(
+    article,
+    heroImageAssetId,
+    topic.section,
+    additionalImageAssetIds,
+    Object.keys(publishOpts).length > 0 ? publishOpts : undefined
+  );
+
+  return { sanityId, slug: article.slug, title: article.title };
 }
 
 function registerDaemonApiRoutes(app: express.Application): void {
@@ -760,6 +828,42 @@ function registerDaemonApiRoutes(app: express.Application): void {
       const dashboardStyle = requestIsDashboardSource(req);
       const pipelineStyle = dashboardStyle ? extractArticleStyleFromBody(req.body) : null;
       const publishAuthorName = extractAuthorNameFromBody(req.body);
+      const imgOpts = extractImagePublishOptionsFromBody(req.body);
+      const videoAssetId = extractVideoAssetIdFromBody(req.body);
+
+      if (imgOpts && imgOpts.imageAssetIds.length > 0) {
+        console.log(`[api] /publish image-upload path: imageAssetIds count=${imgOpts.imageAssetIds.length}${videoAssetId ? ', videoAssetId=' + videoAssetId : ''}`);
+        try {
+          const result = await publishStoryWithImages(
+            notesTrim || '',
+            imgOpts.imageAssetIds,
+            {
+              ...(dashboardStyle && pipelineStyle
+                ? {
+                    applyDashboardArticleStyle: true,
+                    articleLength: pipelineStyle.articleLength,
+                    articleTone: pipelineStyle.articleTone,
+                  }
+                : {}),
+              ...(publishAuthorName ? { authorName: publishAuthorName } : {}),
+              ...(videoAssetId ? { videoAssetId } : {}),
+            }
+          );
+          res.json({
+            ok: true,
+            source: resolveApiClientSource(req),
+            command: '/publish',
+            publishMode: 'image_upload',
+            ...result,
+          });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command /publish (image-upload) failed:', msg);
+          res.status(500).json({ error: msg });
+        }
+        return;
+      }
+
       try {
         const { skipped } = await runPipelineJob({
           notes: notesTrim,
