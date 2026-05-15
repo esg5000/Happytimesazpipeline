@@ -2,6 +2,7 @@ import { config, validateConfig } from './config';
 import { generateTopics } from './agents/topicAgent';
 import { writeArticle } from './agents/writerAgent';
 import { generateImagePrompt, generateImage } from './agents/imageAgent';
+import { fetchUnsplashHeroImageBuffer } from './agents/unsplashHero';
 import {
   uploadImageBufferToSanity,
   publishArticleToSanity,
@@ -94,21 +95,26 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         existingSlugs.push(article.slug);
         console.log(`   ✅ Article written: ${article.title}`);
 
-        // Step 3: Generate image prompt
-        console.log('   🎨 Generating image prompt...');
-        const enhancedImagePrompt = await generateImagePrompt(
-          article.heroImagePrompt,
-          article.visualStyle
-        );
-        console.log('   ✅ Image prompt generated');
+        // Step 3: Hero image — Unsplash first, gpt-image-1 fallback
+        let imageBuf: Buffer | null = null;
 
-        // Step 4: Generate image
-        console.log('   🖼️  Generating image...');
-        const imageBuf = await generateImage(enhancedImagePrompt);
-        if (imageBuf) {
-          console.log('   ✅ Image generated');
+        console.log('   🖼️  Trying Unsplash for hero image...');
+        const unsplashBuf = await fetchUnsplashHeroImageBuffer(article.title, topic.section);
+        if (unsplashBuf) {
+          console.log('   ✅ Hero image from Unsplash');
+          imageBuf = unsplashBuf;
         } else {
-          console.warn('   ⚠️  Image generation failed; continuing without hero image');
+          console.log('   ℹ️  Unsplash returned nothing; falling back to gpt-image-1...');
+          const enhancedImagePrompt = await generateImagePrompt(
+            article.heroImagePrompt,
+            article.visualStyle
+          );
+          imageBuf = await generateImage(enhancedImagePrompt);
+          if (imageBuf) {
+            console.log('   ✅ Hero image from gpt-image-1');
+          } else {
+            console.warn('   ⚠️  Both Unsplash and gpt-image-1 failed; continuing without hero image');
+          }
         }
 
         let sanityId: string;

@@ -14,6 +14,7 @@ import {
 import { Article, validateArticle } from '../utils/validator';
 import { ensureUniqueSlug, generateSlug } from '../utils/slug';
 import { generateImage, generateImagePrompt } from './imageAgent';
+import { fetchUnsplashHeroImageBuffer } from './unsplashHero';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
@@ -118,6 +119,19 @@ async function generateAndUploadHeroForGoogleNews(
   filenameBase: string,
   label: string
 ): Promise<string | undefined> {
+  // Try Unsplash first
+  const unsplashBuf = await fetchUnsplashHeroImageBuffer(article.title, sectionSlug);
+  if (unsplashBuf) {
+    console.log(`[google-news] ${label} hero from Unsplash → Sanity`);
+    const heroId = await uploadImageBufferToSanity(
+      unsplashBuf,
+      filenameBase.replace(/\.jpg$/, '-unsplash.jpg')
+    );
+    console.log(`[google-news] ${label} hero asset (Unsplash)=${heroId}`);
+    return heroId;
+  }
+
+  // Fall back to gpt-image-1
   const headline = article.title.trim();
   const modelScene =
     typeof article.heroImagePrompt === 'string' && article.heroImagePrompt.trim().length >= 20
@@ -125,19 +139,16 @@ async function generateAndUploadHeroForGoogleNews(
       : 'Photorealistic editorial photograph suited to the headline; Arizona / greater Phoenix context where appropriate.';
   const basePrompt = `HappyTimesAZ ${sectionSlug} (greater Phoenix, Arizona metro): "${headline}".\n\nHero scene direction: ${modelScene}\n\nNo overlaid text, watermarks, third-party logos, or identifiable news outlet branding in the image.`;
 
-  console.log(`[google-news] ${label} AI hero (gpt-image-1, section=${sectionSlug}): generating image prompt…`);
+  console.log(`[google-news] ${label} Unsplash returned nothing; falling back to gpt-image-1 (section=${sectionSlug})`);
   const enhanced = await generateImagePrompt(basePrompt, article.visualStyle);
-  console.log(`[google-news] ${label} AI hero: generating image…`);
   const imageBuf = await generateImage(enhanced);
   if (!imageBuf) {
-    console.warn(
-      `[google-news] ${label} AI hero: image generation failed; continuing without hero`
-    );
+    console.warn(`[google-news] ${label} gpt-image-1 also failed; continuing without hero`);
     return undefined;
   }
-  console.log(`[google-news] ${label} AI hero: uploading to Sanity…`);
+  console.log(`[google-news] ${label} hero from gpt-image-1 → Sanity`);
   const heroId = await uploadImageBufferToSanity(imageBuf, filenameBase);
-  console.log(`[google-news] ${label} AI hero asset=${heroId}`);
+  console.log(`[google-news] ${label} hero asset (gpt-image-1)=${heroId}`);
   return heroId;
 }
 
