@@ -32,6 +32,8 @@ export type ResearchAndWriteOptions = {
    * Just Write / autonomous orchestrator are unchanged.
    */
   digAndWrite?: boolean;
+  /** Dashboard-uploaded Sanity image asset IDs. When present, skips all image generation. First ID = hero. */
+  imageAssetIds?: string[];
   /** Fired whenever merged sources update (parallel search angles complete). */
   onSourceProgress?: (payload: { sources: Source[] }) => void;
   /**
@@ -44,9 +46,9 @@ export type ResearchAndWriteOptions = {
 export type ResearchAndWriteResult = {
   article: Article;
   sources: Source[];
-  /** Sanity image asset `_id` for hero (Unsplash or DALL·E). */
+  /** Sanity image asset `_id` for hero (Unsplash, DALL·E, or editor-supplied). */
   heroImageAssetId?: string;
-  heroImageSource: 'unsplash' | 'dall-e';
+  heroImageSource: 'unsplash' | 'dall-e' | 'editor';
   /** Sanity draft post `_id` after `publishArticleToSanity`. */
   sanityDocumentId: string;
 };
@@ -86,6 +88,9 @@ export async function runResearchAndWrite(
     sourceNotes: research.enrichedNotes,
     applyDashboardArticleStyle: applyStyle,
     ...(applyStyle ? { articleLength, articleTone } : {}),
+    ...(options.imageAssetIds && options.imageAssetIds.length > 0
+      ? { imageAssetIds: options.imageAssetIds }
+      : {}),
   });
 
   const author =
@@ -102,29 +107,41 @@ export async function runResearchAndWrite(
   article = { ...article, bodyMarkdown: body };
 
   let heroImageAssetId: string | undefined;
-  let heroImageSource: 'unsplash' | 'dall-e' | undefined;
+  let heroImageSource: 'unsplash' | 'dall-e' | 'editor' | undefined;
+  let editorAdditionalImageAssetIds: string[] | undefined;
 
-  if (options.digAndWrite === true) {
-    const unsplashBuf = await fetchUnsplashHeroImageBuffer(article.title, options.notes);
-    if (unsplashBuf) {
-      heroImageAssetId = await uploadImageBufferToSanity(
-        unsplashBuf,
-        `${article.slug}-unsplash-hero.jpg`
-      );
-      heroImageSource = 'unsplash';
-      console.log('[researchAndWrite] hero from Unsplash → Sanity', heroImageAssetId);
+  if (options.imageAssetIds && options.imageAssetIds.length > 0) {
+    heroImageAssetId = options.imageAssetIds[0];
+    heroImageSource = 'editor';
+    editorAdditionalImageAssetIds =
+      options.imageAssetIds.length > 1 ? options.imageAssetIds.slice(1) : undefined;
+    console.log(
+      '[researchAndWrite] using editor-supplied images; skipping image generation. hero=',
+      heroImageAssetId
+    );
+  } else {
+    if (options.digAndWrite === true) {
+      const unsplashBuf = await fetchUnsplashHeroImageBuffer(article.title, options.notes);
+      if (unsplashBuf) {
+        heroImageAssetId = await uploadImageBufferToSanity(
+          unsplashBuf,
+          `${article.slug}-unsplash-hero.jpg`
+        );
+        heroImageSource = 'unsplash';
+        console.log('[researchAndWrite] hero from Unsplash → Sanity', heroImageAssetId);
+      }
     }
-  }
 
-  if (!heroImageAssetId) {
-    const enhanced = await generateImagePrompt(article.heroImagePrompt, article.visualStyle);
-    const imageBuf = await generateImage(enhanced);
-    if (imageBuf) {
-      heroImageAssetId = await uploadImageBufferToSanity(imageBuf, `${article.slug}-hero.jpg`);
-      heroImageSource = 'dall-e';
-      console.log('[researchAndWrite] hero from gpt-image-1 → Sanity', heroImageAssetId);
-    } else {
-      console.warn('[researchAndWrite] gpt-image-1 image generation failed; continuing without hero image');
+    if (!heroImageAssetId) {
+      const enhanced = await generateImagePrompt(article.heroImagePrompt, article.visualStyle);
+      const imageBuf = await generateImage(enhanced);
+      if (imageBuf) {
+        heroImageAssetId = await uploadImageBufferToSanity(imageBuf, `${article.slug}-hero.jpg`);
+        heroImageSource = 'dall-e';
+        console.log('[researchAndWrite] hero from gpt-image-1 → Sanity', heroImageAssetId);
+      } else {
+        console.warn('[researchAndWrite] gpt-image-1 image generation failed; continuing without hero image');
+      }
     }
   }
 
@@ -163,7 +180,7 @@ export async function runResearchAndWrite(
       article,
       finalHeroId,
       topic.section,
-      undefined,
+      editorAdditionalImageAssetIds,
       publishAuthorOpts
     );
 

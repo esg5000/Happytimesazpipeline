@@ -92,6 +92,11 @@ export type WriteArticleOptions = {
    */
   userSuppliedImages?: boolean;
   /**
+   * Sanity asset IDs supplied by the editor. When present, treated as userSuppliedImages: true —
+   * the writer suppresses heroImagePrompt and focuses on source material.
+   */
+  imageAssetIds?: string[];
+  /**
    * When true (dashboard `source: 'dashboard'` or `X-Client-Source: dashboard`), append length/tone
    * and spin/ending rules. Autonomous and Telegram paths omit this — base writer prompt only.
    */
@@ -112,6 +117,9 @@ export async function writeArticle(
   const applyStyle = options?.applyDashboardArticleStyle === true;
   const length = options?.articleLength ?? DEFAULT_ARTICLE_LENGTH;
   const tone = options?.articleTone ?? DEFAULT_ARTICLE_TONE;
+  const effectiveUserSuppliedImages =
+    options?.userSuppliedImages === true ||
+    (Array.isArray(options?.imageAssetIds) && options.imageAssetIds.length > 0);
   const systemPrompt = applyStyle
     ? `${basePrompt.trim()}${buildWriterArticleStyleAppend(length, tone)}`
     : basePrompt.trim();
@@ -121,7 +129,7 @@ export async function writeArticle(
       ? `PRIMARY SOURCE MATERIAL (editor — the article must follow this substance, facts, and angle; do not pivot to an unrelated topic):\n---\n${options.sourceNotes.trim()}\n---\n\n`
       : '';
 
-  const imageNote = options?.userSuppliedImages
+  const imageNote = effectiveUserSuppliedImages
     ? 'Real photography from the editor is already attached (hero + any additional images). No AI-generated hero image will be produced — focus the article on the source material below.\n\n'
     : '';
 
@@ -193,7 +201,7 @@ Remember: seoDescription must be at most 155 characters (count spaces).`;
     ...validation.data!,
     author: HAPPYTIMESAZ_EDITORIAL_AUTHOR,
   };
-  if (options?.userSuppliedImages) {
+  if (effectiveUserSuppliedImages) {
     article = {
       ...article,
       heroImagePrompt: EDITOR_SUPPLIED_HERO_IMAGE_PROMPT,

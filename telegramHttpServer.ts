@@ -354,6 +354,9 @@ function registerDaemonApiRoutes(app: express.Application): void {
       const authorName = extractAuthorNameFromBody(req.body);
       const digAndWrite = extractDigAndWriteMode(req.body);
       const runFactCheck = extractRunFactCheckFromBody(req.body);
+      const imgOpts = extractImagePublishOptionsFromBody(req.body);
+      const uploadedImageAssetIds =
+        imgOpts && imgOpts.imageAssetIds.length > 0 ? imgOpts.imageAssetIds : undefined;
 
       try {
         const {
@@ -369,6 +372,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
             ? { articleLength: articleStyle.articleLength, articleTone: articleStyle.articleTone }
             : {}),
           ...(authorName ? { authorName } : {}),
+          ...(uploadedImageAssetIds ? { imageAssetIds: uploadedImageAssetIds } : {}),
           digAndWrite,
           runFactCheck,
           onSourceProgress: ({ sources: src }) => {
