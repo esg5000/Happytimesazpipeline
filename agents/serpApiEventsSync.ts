@@ -12,14 +12,9 @@ const MAX_EVENTS_PER_SYNC = 50;
 
 /** Cities to search (Google Events query + location). */
 const TARGET_CITIES = [
-  'Phoenix',
-  'Scottsdale',
-  'Tempe',
-  'Mesa',
-  'Glendale',
-  'Peoria',
-  'Chandler',
-  'Gilbert',
+  'Phoenix Metro Area',
+  'East Valley Arizona',
+  'West Valley Arizona',
 ] as const;
 
 type SerpDateBlock = {
@@ -194,7 +189,7 @@ async function fetchEventsForCity(city: string): Promise<SerpGoogleEvent[]> {
   const out: SerpGoogleEvent[] = [];
   let start = 0;
 
-  for (let page = 0; page < 8; page++) {
+  for (let page = 0; page < 3; page++) {
     const { status, data } = await axios.get<SerpApiResponse>(SERPAPI_SEARCH, {
       params: {
         engine: 'google_events',
