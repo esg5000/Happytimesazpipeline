@@ -15,6 +15,8 @@ const TARGET_CITIES = [
   'Phoenix Metro Area',
   'East Valley Arizona',
   'West Valley Arizona',
+  'Northern Arizona',
+  'Tucson Metro Area',
 ] as const;
 
 type SerpDateBlock = {
