@@ -16,6 +16,7 @@ const TARGET_CITIES = [
   'East Valley Arizona',
   'West Valley Arizona',
   'Northern Arizona',
+  'East Arizona',
   'Tucson Metro Area',
 ] as const;
 
