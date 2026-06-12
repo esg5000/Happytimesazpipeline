@@ -268,15 +268,18 @@ export async function syncSerpApiEventsToSanity(): Promise<{
   cityLoop: for (const city of TARGET_CITIES) {
     if (synced >= MAX_EVENTS_PER_SYNC) break;
 
+    console.log(`[serpapi] Fetching events for ${city}...`);
     let batch: SerpGoogleEvent[];
     try {
       batch = await fetchEventsForCity(city);
+      console.log(`[serpapi] ${city}: ${batch.length} raw results`);
     } catch (e) {
       console.error(`[serpapi] City "${city}" fetch failed:`, e);
       errors++;
       continue;
     }
 
+    const syncedBefore = synced;
     for (const raw of batch) {
       if (synced >= MAX_EVENTS_PER_SYNC) break cityLoop;
 
@@ -379,7 +382,9 @@ export async function syncSerpApiEventsToSanity(): Promise<{
         );
       }
     }
+    console.log(`[serpapi] ${city}: ${synced - syncedBefore} passed filter`);
   }
 
+  console.log(`[serpapi] Done — synced: ${synced}, skipped: ${skipped}, errors: ${errors}`);
   return { synced, skipped, errors };
 }
