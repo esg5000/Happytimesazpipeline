@@ -16,7 +16,7 @@ const articleStyle_1 = require("../utils/articleStyle");
 const WRITER_PROMPT_PATH = (0, path_1.join)(process.cwd(), 'prompts', 'writer.prompt.txt');
 /** OpenAI model for Chat Completions article JSON (`writeArticle`). */
 const WRITER_OPENAI_MODEL = 'gpt-5.4-mini';
-const BODY_MARKDOWN_SAFETY_MAX = 4800;
+const BODY_MARKDOWN_SAFETY_MAX = 6400;
 const EXCERPT_SAFETY_MAX = 190;
 const BODY_MARKDOWN_SCHEMA_MIN = 500;
 /** Truncate at the last complete sentence ending at or before `maxLen` (., !, ? followed by space/end). */
