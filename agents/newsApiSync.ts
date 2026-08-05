@@ -18,8 +18,8 @@ import { fetchUnsplashHeroImageBuffer } from './unsplashHero';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
-/** SerpApi `num` — cap news results per query (default is much higher). */
-const SERP_NEWS_NUM = 10;
+/** SerpApi `num` — cap news results per query (default is much higher). Wired to GOOGLE_NEWS_MAX_FETCH via config. */
+const SERP_NEWS_NUM = config.googleNews.maxFetch;
 /** After per-slot URL dedupe, keep at most this many candidates (newest first) before OpenAI scoring. */
 const SLOT_CANDIDATE_POOL_CAP = 10;
 
@@ -30,29 +30,38 @@ const OPENAI_MODEL_GOOGLE_NEWS_SCORE = 'gpt-5.4-mini';
 /** OpenAI model for SerpApi Google News article rewrite → HappyTimesAZ JSON. */
 const OPENAI_MODEL_GOOGLE_NEWS_REWRITE = 'gpt-5.4-mini';
 
-/** Slot 1 — Health & wellness (Phoenix metro angle) */
-const SLOT1_HEALTH_QUERIES = [
-  'Phoenix health wellness news today',
-  'Arizona fitness wellness trends 2026',
-  'Phoenix metro health community news',
-  'health wellness trends 2026',
-  'fitness nutrition mental health news today',
-] as const;
-
-/** Slot 3 — Phoenix local */
-const SLOT3_QUERIES = [
-  'Phoenix Arizona local news today',
-  'Phoenix community news today',
-  'Arizona local development news',
+/** Slot 1 — Arizona/Phoenix Local News */
+const SLOT1_LOCAL_QUERIES = [
+  'Phoenix local news today',
+  'Arizona community news today',
+  'Valley Arizona news today',
   'Phoenix city news today',
 ] as const;
 
-/** Slot 4 — lifestyle / food / entertainment (no sports, no hard news) */
-const SLOT4_QUERIES = [
-  'Phoenix restaurant news today',
-  'Scottsdale food entertainment news',
-  'Phoenix arts culture news today',
-  'Arizona lifestyle news today',
+/** Slot 3 — Food, Nightlife and Lifestyle */
+const SLOT3_LIFESTYLE_QUERIES = [
+  'Phoenix restaurants new openings today',
+  'Scottsdale nightlife bars Phoenix today',
+  'Phoenix things to do this week',
+  'Valley food drink events Arizona today',
+  'Phoenix wellness fitness lifestyle today',
+] as const;
+
+/** Slot 4 — Cannabis Arizona */
+const SLOT4_CANNABIS_AZ_QUERIES = [
+  'Arizona cannabis dispensary news today',
+  'Phoenix dispensary deals Arizona today',
+  'Arizona marijuana law today',
+  'cannabis Arizona local news today',
+] as const;
+
+/** Slot 5 — Cannabis National */
+const SLOT5_CANNABIS_NATIONAL_QUERIES = [
+  'cannabis federal law news today',
+  'marijuana legalization state law today',
+  'THC delta-9 legislation news today',
+  'cannabis industry trends today',
+  'marijuana policy news today',
 ] as const;
 
 const HARD_LOCAL_NEWS_RE =
@@ -84,8 +93,8 @@ type ScoreResult = {
   /** Same real-world event/thread → same key (max one article per run). */
   topicDedupeKey?: string;
   /**
-   * Slot 4 only: Sanity category slug chosen by scorer — exactly one of
-   * food | nightlife | health-wellness | cannabis.
+   * Slot 3 only: Sanity category slug chosen by scorer — exactly one of
+   * food | nightlife | health-wellness.
    */
   category?: string;
 };
@@ -635,14 +644,6 @@ function buildSlot2Queries(mode: Slot2Mode, teamLabel: string, year: number): re
   return [`${teamLabel} news today`, `${teamLabel} latest update`, `${teamLabel} Arizona ${year}`];
 }
 
-function buildSlot5Queries(monthLong: string, year: number): readonly string[] {
-  return [
-    `Arizona festivals upcoming ${year}`,
-    'Phoenix concerts this week',
-    `Arizona events ${monthLong} ${year}`,
-  ];
-}
-
 function slot2Prefilter(item: SerpGoogleNewsItem, mode: Slot2Mode): boolean {
   const b = `${item.title}\n${item.snippet || ''}`;
   if (/\bphoenix\s+suns\b|\bphx\s+suns\b/i.test(b)) return false;
@@ -656,8 +657,8 @@ function slot2Prefilter(item: SerpGoogleNewsItem, mode: Slot2Mode): boolean {
   return false;
 }
 
-/** Slot 3: strictly non-sports Phoenix local — drop obvious sports stories before scoring. */
-function slot3NonSportsPrefilter(item: SerpGoogleNewsItem): boolean {
+/** Slot 1 (local news): strictly non-sports Phoenix/Arizona local — drop obvious sports stories before scoring. */
+function nonSportsLocalPrefilter(item: SerpGoogleNewsItem): boolean {
   const b = `${item.title}\n${item.snippet || ''}`;
   if (LOCAL_CORE_SPORTS_RE.test(b)) return false;
   if (
@@ -670,7 +671,8 @@ function slot3NonSportsPrefilter(item: SerpGoogleNewsItem): boolean {
   return true;
 }
 
-function slot4Prefilter(item: SerpGoogleNewsItem): boolean {
+/** Slot 3 (lifestyle): drop core-sports and hard local-news stories before scoring. */
+function lifestylePrefilter(item: SerpGoogleNewsItem): boolean {
   const blob = `${item.title}\n${item.snippet || ''}`;
   if (LOCAL_CORE_SPORTS_RE.test(blob)) return false;
   if (HARD_LOCAL_NEWS_RE.test(blob)) return false;
@@ -891,8 +893,9 @@ async function runSlotPickTopN(params: {
 }
 
 /**
- * SerpApi Google News — slots: health, rotating AZ sports, local, lifestyle, events.
- * Each slot: own Serp queries → filter (incl. 7d recency, 48h for sports slots) → score → up to two picks per slot (min score threshold in code).
+ * SerpApi Google News — slots: Arizona/Phoenix local news, rotating AZ sports, food/nightlife/lifestyle,
+ * cannabis (Arizona), cannabis (national).
+ * Each slot: own Serp queries → filter (incl. 7d recency, 48h for sports slot) → score → up to two picks per slot (min score threshold in code).
  * Manual: POST /api/command { "command": "syncNews" }. Uses SERPAPI_API_KEY.
  */
 export async function syncNewsApiToSanity(): Promise<{
@@ -905,9 +908,9 @@ export async function syncNewsApiToSanity(): Promise<{
     throw new Error('SERPAPI_API_KEY is not set');
   }
 
-  const maxPublish = 10;
+  const maxPublish = config.googleNews.maxPublishPerRun;
   const now = new Date();
-  const { ymd: phoenixYmd, monthLong, year } = getPhoenixYmdMonthLongYear(now);
+  const { ymd: phoenixYmd, year } = getPhoenixYmdMonthLongYear(now);
   const { mode: slot2Mode, teamLabel: slot2Team } = getSlot2Mode(now);
 
   const counters: RunCounters = { skipped: 0, errors: 0 };
@@ -928,34 +931,31 @@ export async function syncNewsApiToSanity(): Promise<{
   const chosenThisRun = new Set<string>();
   const picked: PickedSlotStory[] = [];
 
-  const SLOT1_HEALTH_RULES = `This slot is ONLY for health + wellness + fitness + nutrition + mental health stories with a reader-friendly, practical angle. Strongly prefer Phoenix metro / Arizona-specific angles. exclude=true for:
-- pure sports, hard breaking news, crime/tragedy, or partisan national politics
-- "best doctors," "top physicians," "best dentists," "best hospitals," "best surgeons," or any professional healthcare provider rankings/directories
-- clinical medical research with no practical lifestyle takeaway for Phoenix readers`;
-  const poolHealth = await fetchSlotCandidatePool(
-    SLOT1_HEALTH_QUERIES,
-    '[slot-1-health]',
+  const SLOT1_LOCAL_RULES = `This slot is ONLY for genuinely local greater-Phoenix metro / Arizona news. No national partisan politics. No crime/violence. Must be relevant to Phoenix metro or Arizona residents.`;
+  const poolLocal = await fetchSlotCandidatePool(
+    SLOT1_LOCAL_QUERIES,
+    '[slot-1-local]',
     serpUsage
   );
-  fetched += poolHealth.length;
-  const sHealthPicks = await runSlotPickTopN({
-    slotLog: '[slot-1-health]',
-    items: poolHealth,
+  fetched += poolLocal.length;
+  const sLocalPicks = await runSlotPickTopN({
+    slotLog: '[slot-1-local]',
+    items: poolLocal,
     existingUrls,
     chosenThisRun,
     counters,
     require48h: false,
-    preScoreFilter: slot4Prefilter,
-    slotScoreRules: SLOT1_HEALTH_RULES,
+    preScoreFilter: nonSportsLocalPrefilter,
+    slotScoreRules: SLOT1_LOCAL_RULES,
     applyOverrides: false,
     maxPicks: 2,
     minScore: 5,
   });
-  sHealthPicks.forEach((s, idx) => {
+  sLocalPicks.forEach((s, idx) => {
     picked.push(s);
     chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-1-health] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
+      `[google-news] [slot-1-local] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
   });
 
@@ -990,21 +990,24 @@ export async function syncNewsApiToSanity(): Promise<{
     );
   });
 
-  const SLOT3_RULES = `This slot is for genuinely local greater-Phoenix metro news (city, neighborhoods, development, community, business, infrastructure, environment, civic life). exclude=true for pure national politics with no physical Phoenix/Valley hook.
+  const SLOT3_LIFESTYLE_RULES = `This slot is Phoenix metro food, nightlife, and lifestyle. Focus on Valley businesses, venues, and experiences. Lifestyle wellness is fine — fitness, spas, mental health — but no clinical medical news. Set exclude=true for sports or hard-news-dominant pieces.
 
-**MANDATORY — NO SPORTS IN SLOT 3:** Set **exclude=true** for any story that is **primarily** about a **sports team, game, player, coach, trade, injury, standings, draft, season, stadium/arena, league, or sporting event** (pro, college, or high school). Slot 3 is **strictly non-sports** local Phoenix news — even a high-scoring sports story must be excluded.`;
-  const pool3 = await fetchSlotCandidatePool(SLOT3_QUERIES, '[slot-3-local]', serpUsage);
-  fetched += pool3.length;
+**category (required in JSON):** Pick the single best Sanity category slug for this story — exactly one of: **food**, **nightlife**, **health-wellness** (use these exact strings). Examples: restaurant opening or chef → food; bars, clubs, live music venue → nightlife; fitness, spa, mental health, wellness → health-wellness.
+
+Return JSON including **category** (in addition to relevanceScore, exclude, topicDedupeKey, and excludeReason when applicable):
+{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"}`;
+  const poolLifestyle = await fetchSlotCandidatePool(SLOT3_LIFESTYLE_QUERIES, '[slot-3-lifestyle]', serpUsage);
+  fetched += poolLifestyle.length;
   const s3Picks = await runSlotPickTopN({
-    slotLog: '[slot-3-local]',
-    items: pool3,
+    slotLog: '[slot-3-lifestyle]',
+    items: poolLifestyle,
     existingUrls,
     chosenThisRun,
     counters,
     require48h: false,
-    preScoreFilter: slot3NonSportsPrefilter,
-    slotScoreRules: SLOT3_RULES,
-    applyOverrides: true,
+    preScoreFilter: lifestylePrefilter,
+    slotScoreRules: SLOT3_LIFESTYLE_RULES,
+    applyOverrides: false,
     maxPicks: 2,
     minScore: 5,
   });
@@ -1012,27 +1015,22 @@ export async function syncNewsApiToSanity(): Promise<{
     picked.push(s);
     chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-3-local] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
+      `[google-news] [slot-3-lifestyle] pick #${idx + 1} score=${s.gate.relevanceScore} category=${s.gate.category ?? 'n/a'} — ${s.item.title.slice(0, 100)}`
     );
   });
 
-  const SLOT4_RULES = `This slot is Phoenix metro lifestyle, food, arts, dining, and entertainment — NOT sports and NOT hard breaking news (crime, disasters, heavy politics). Set exclude=true for sports or hard-news-dominant pieces.
-
-**category (required in JSON):** Pick the single best Sanity category slug for this story — exactly one of: **food**, **nightlife**, **health-wellness**, **cannabis** (use these exact strings). Examples: restaurant opening or chef → food; bars, clubs, live music venue → nightlife; medical study, fitness, spa, mental health → health-wellness; dispensary, regulation, cannabis industry → cannabis.
-
-Return JSON including **category** (in addition to relevanceScore, exclude, topicDedupeKey, and excludeReason when applicable):
-{"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"|"cannabis"}`;
-  const pool4 = await fetchSlotCandidatePool(SLOT4_QUERIES, '[slot-4-lifestyle]', serpUsage);
-  fetched += pool4.length;
+  const SLOT4_CANNABIS_AZ_RULES = `This slot is ONLY for Arizona cannabis news. Must be relevant to Arizona cannabis consumers. Only mention brands and dispensaries available in Arizona. No out-of-state brand promotions.`;
+  const poolCannabisAz = await fetchSlotCandidatePool(SLOT4_CANNABIS_AZ_QUERIES, '[slot-4-cannabis-az]', serpUsage);
+  fetched += poolCannabisAz.length;
   const s4Picks = await runSlotPickTopN({
-    slotLog: '[slot-4-lifestyle]',
-    items: pool4,
+    slotLog: '[slot-4-cannabis-az]',
+    items: poolCannabisAz,
     existingUrls,
     chosenThisRun,
     counters,
     require48h: false,
-    preScoreFilter: slot4Prefilter,
-    slotScoreRules: SLOT4_RULES,
+    preScoreFilter: () => true,
+    slotScoreRules: SLOT4_CANNABIS_AZ_RULES,
     applyOverrides: false,
     maxPicks: 2,
     minScore: 5,
@@ -1041,26 +1039,26 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
     picked.push(s);
     chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-4-lifestyle] pick #${idx + 1} score=${s.gate.relevanceScore} category=${s.gate.category ?? 'n/a'} — ${s.item.title.slice(0, 100)}`
+      `[google-news] [slot-4-cannabis-az] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
   });
 
-  const SLOT5_RULES = `This slot is ONLY for upcoming Phoenix/Valley events (concerts, festivals, things to do) where the main event date is on or after ${phoenixYmd} (America/Phoenix). exclude=true if the event is clearly in the past or the piece is not event-focused.`;
-  const pool5 = await fetchSlotCandidatePool(
-    buildSlot5Queries(monthLong, year),
-    '[slot-5-events]',
+  const SLOT5_CANNABIS_NATIONAL_RULES = `This slot is for national cannabis policy, federal law changes, state legislation, and industry trends — all valid. When brands are mentioned, note they may not be available in Arizona — never frame out-of-state brands as something Arizona readers can go purchase.`;
+  const poolCannabisNational = await fetchSlotCandidatePool(
+    SLOT5_CANNABIS_NATIONAL_QUERIES,
+    '[slot-5-cannabis-national]',
     serpUsage
   );
-  fetched += pool5.length;
+  fetched += poolCannabisNational.length;
   const s5Picks = await runSlotPickTopN({
-    slotLog: '[slot-5-events]',
-    items: pool5,
+    slotLog: '[slot-5-cannabis-national]',
+    items: poolCannabisNational,
     existingUrls,
     chosenThisRun,
     counters,
     require48h: false,
     preScoreFilter: () => true,
-    slotScoreRules: SLOT5_RULES,
+    slotScoreRules: SLOT5_CANNABIS_NATIONAL_RULES,
     applyOverrides: false,
     maxPicks: 2,
     minScore: 5,
@@ -1069,7 +1067,7 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
     picked.push(s);
     chosenThisRun.add(s.item.link);
     console.log(
-      `[google-news] [slot-5-events] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
+      `[google-news] [slot-5-cannabis-national] pick #${idx + 1} score=${s.gate.relevanceScore} — ${s.item.title.slice(0, 100)}`
     );
   });
 
@@ -1087,8 +1085,9 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
   let published = 0;
   const publishedSlugsThisRun = new Set<string>();
 
-  const SLOT1_HEALTH_REWRITE_RULES = `Localize the angle to the greater Phoenix metro (Phoenix, Scottsdale, Tempe, Mesa, Chandler, Gilbert, Glendale, Peoria, Surprise, Goodyear, etc.).
-If the source story is a national trend or broad research finding, you MUST add a Phoenix-metro “here’s how/where locals can experience or access this” angle (e.g. local gyms/studios, clinics, community programs, parks/trails, events, retailers, or resources) without inventing specific business names or addresses. Use safe, general local references (e.g. “Valley-area gyms,” “Phoenix-area clinics,” “Maricopa County programs,” “Valley hiking trails”) unless the source explicitly names local entities.`;
+  const SLOT4_CANNABIS_AZ_REWRITE_RULES = `This article is for Arizona cannabis consumers. Only mention dispensaries, brands, and products available in Arizona. Never reference out-of-state dispensaries or brands as something readers can purchase. Always ground the story in Arizona — mention specific Valley dispensaries or AZ cannabis businesses where relevant. Do not use clinical or legal disclaimer language — write like a local cannabis insider, not a compliance officer.`;
+
+  const SLOT5_CANNABIS_NATIONAL_REWRITE_RULES = `This article covers national cannabis news for a Phoenix Arizona audience. Cover the policy, law, or trend factually and explain why it matters to Arizona consumers or the broader cannabis industry. If out-of-state or national brands are mentioned, treat them as industry news only — never suggest Arizona readers can go purchase them locally. Keep the tone informed and reader-friendly, not academic or clinical.`;
 
   for (let p = 0; p < toPublish.length; p++) {
     const row = toPublish[p]!;
@@ -1096,7 +1095,12 @@ If the source story is a national trend or broad research finding, you MUST add 
 
     try {
       const slotId = parseGoogleNewsSlotId(row.slotLog);
-      const rewriteRules = slotId === 'slot-1-health' ? SLOT1_HEALTH_REWRITE_RULES : undefined;
+      const rewriteRules =
+        slotId === 'slot-4-cannabis-az'
+          ? SLOT4_CANNABIS_AZ_REWRITE_RULES
+          : slotId === 'slot-5-cannabis-national'
+            ? SLOT5_CANNABIS_NATIONAL_REWRITE_RULES
+            : undefined;
       const article = await rewriteArticleWithSlotRules(
         row.item,
         `${row.label} / ${pubLabel}`,
@@ -1118,7 +1122,7 @@ If the source story is a national trend or broad research finding, you MUST add 
       const slot = slotId;
       const publishMeta = {
         slot,
-        ...(slot === 'slot-4-lifestyle' ? { slot4LifestyleCategory: row.gate.category } : {}),
+        ...(slot === 'slot-3-lifestyle' ? { lifestyleCategory: row.gate.category } : {}),
       };
       const sectionSlug = resolveGoogleNewsPrimaryCategorySlug(publishMeta);
       const heroId = await generateAndUploadHeroForGoogleNews(

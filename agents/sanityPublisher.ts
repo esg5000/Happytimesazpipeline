@@ -558,11 +558,11 @@ export async function publishArticleToSanity(
 
 /** SerpApi Google News sync slot ids (see agents/newsApiSync.ts). */
 export const GOOGLE_NEWS_SYNC_SLOT_IDS = [
-  'slot-1-health',
+  'slot-1-local',
   'slot-2-sports',
-  'slot-3-local',
-  'slot-4-lifestyle',
-  'slot-5-events',
+  'slot-3-lifestyle',
+  'slot-4-cannabis-az',
+  'slot-5-cannabis-national',
 ] as const;
 
 export type GoogleNewsSyncSlotId = (typeof GOOGLE_NEWS_SYNC_SLOT_IDS)[number];
@@ -573,37 +573,37 @@ export function parseGoogleNewsSlotId(slotLog: string): GoogleNewsSyncSlotId {
     return id as GoogleNewsSyncSlotId;
   }
   console.warn(
-    `[google-news][sanity] Unknown slotLog "${slotLog}"; using slot-3-local for category mapping.`
+    `[google-news][sanity] Unknown slotLog "${slotLog}"; using slot-1-local for category mapping.`
   );
-  return 'slot-3-local';
+  return 'slot-1-local';
 }
 
-const SLOT4_LIFESTYLE_CATEGORY_SLUGS = ['food', 'nightlife', 'health-wellness', 'cannabis'] as const;
-type Slot4LifestyleCategorySlug = (typeof SLOT4_LIFESTYLE_CATEGORY_SLUGS)[number];
+const LIFESTYLE_CATEGORY_SLUGS = ['food', 'nightlife', 'health-wellness'] as const;
+type LifestyleCategorySlug = (typeof LIFESTYLE_CATEGORY_SLUGS)[number];
 
 export type GoogleNewsPublishMeta = {
   slot: GoogleNewsSyncSlotId;
-  /** Required context for slot-4: scorer picks one of food | nightlife | health-wellness | cannabis */
-  slot4LifestyleCategory?: string;
+  /** Required context for slot-3 (lifestyle): scorer picks one of food | nightlife | health-wellness */
+  lifestyleCategory?: string;
 };
 
 export function resolveGoogleNewsPrimaryCategorySlug(meta: GoogleNewsPublishMeta): string {
   switch (meta.slot) {
-    case 'slot-1-health':
-      return 'health-wellness';
+    case 'slot-1-local':
+      return 'news';
     case 'slot-2-sports':
       return 'sports';
-    case 'slot-3-local':
-      return 'news';
-    case 'slot-5-events':
-      return 'events';
-    case 'slot-4-lifestyle': {
-      const raw = (meta.slot4LifestyleCategory || '').toLowerCase().trim();
-      if (SLOT4_LIFESTYLE_CATEGORY_SLUGS.includes(raw as Slot4LifestyleCategorySlug)) {
+    case 'slot-4-cannabis-az':
+      return 'cannabis';
+    case 'slot-5-cannabis-national':
+      return 'cannabis';
+    case 'slot-3-lifestyle': {
+      const raw = (meta.lifestyleCategory || '').toLowerCase().trim();
+      if (LIFESTYLE_CATEGORY_SLUGS.includes(raw as LifestyleCategorySlug)) {
         return raw;
       }
       console.warn(
-        `[google-news][sanity] slot-4 category invalid or missing (${JSON.stringify(meta.slot4LifestyleCategory)}); using "food".`
+        `[google-news][sanity] slot-3 category invalid or missing (${JSON.stringify(meta.lifestyleCategory)}); using "food".`
       );
       return 'food';
     }
