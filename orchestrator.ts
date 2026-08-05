@@ -68,6 +68,7 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
     const topics = await generateTopics(config.pipeline.articlesPerDay, {
       notes: options?.notes,
       applyDashboardArticleStyle: applyStyle,
+      autonomousMode: true,
       ...(applyStyle ? { articleLength, articleTone } : {}),
     });
     console.log(`✅ Generated ${topics.length} topics\n`);
