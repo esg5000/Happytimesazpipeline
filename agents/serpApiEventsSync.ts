@@ -155,7 +155,12 @@ function parseStartIso(dateBlock: SerpDateBlock | undefined): string | null {
   if (Number.isNaN(d.getTime())) return null;
   const now = new Date();
   if (d < now) {
-    d = new Date(`${sd}, ${y + 1}`);
+    const bumped = new Date(`${sd}, ${y + 1}`);
+    if (Number.isNaN(bumped.getTime())) return null;
+    const sixMonthsOut = new Date(now);
+    sixMonthsOut.setMonth(sixMonthsOut.getMonth() + 6);
+    if (bumped > sixMonthsOut) return null;
+    d = bumped;
   }
   return d.toISOString();
 }
