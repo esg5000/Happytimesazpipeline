@@ -142,7 +142,9 @@ function parseStartIso(dateBlock: SerpDateBlock | undefined): string | null {
   if (when) {
     const parsed = Date.parse(when);
     if (!Number.isNaN(parsed)) {
-      return new Date(parsed).toISOString();
+      const parsedDate = new Date(parsed);
+      if (parsedDate < new Date()) return null;
+      return parsedDate.toISOString();
     }
   }
   const sd = dateBlock.start_date?.trim();
@@ -219,7 +221,6 @@ async function fetchEventsForCity(city: string): Promise<SerpGoogleEvent[]> {
         location: `${city}, Arizona, United States`,
         hl: 'en',
         gl: 'us',
-        htichips: 'date:month,date:next_month',
         start,
       },
       validateStatus: () => true,
