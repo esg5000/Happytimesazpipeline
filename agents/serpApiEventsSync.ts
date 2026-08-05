@@ -8,7 +8,7 @@ import { getSanityClient, uploadImageToSanity } from './sanityPublisher';
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
 /** Max events written to Sanity per run (manual API and scheduled cron). */
-const MAX_EVENTS_PER_SYNC = 50;
+const MAX_EVENTS_PER_SYNC = 150;
 
 /** Cities to search (Google Events query + location). */
 const TARGET_CITIES = [
@@ -102,7 +102,6 @@ function isExcludedAudience(textLower: string): boolean {
   }
   if (/\bkids\b/.test(textLower)) return true;
   if (/\bchild\b/.test(textLower)) return true;
-  if (/\bschool\b/.test(textLower)) return true;
   return false;
 }
 
@@ -127,6 +126,8 @@ function matchesHappyTimesCategories(
     'comedy',
     'festival',
     'festivals',
+    'sports',
+    'tournament',
   ];
   for (const term of includeTerms) {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
