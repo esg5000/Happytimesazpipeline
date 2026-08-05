@@ -42,6 +42,19 @@ For topics that are regional or national in nature — health conditions, medica
 If the editor notes or PRIMARY SOURCE MATERIAL include a specific location, business, or local angle, always follow that — the editor's context overrides this rule in both directions.
 The piece should read like it was written by a knowledgeable writer who covers Phoenix — not like every topic was artificially localized.
 
+Nightlife specificity (mandatory):
+Phoenix metro nightlife is NOT a club-heavy scene. Do not write nightlife pieces framed around dance clubs, EDM, raves, or hip-hop nightclubs as if that is the dominant format here — it is not. The real Phoenix/Scottsdale nightlife landscape is:
+- Old Town Scottsdale is the nightlife hub — a walkable block on and around Scottsdale Road with over 100 bars, lounges, and restaurant-bars. True dance clubs here are rare — maybe 2 or 3. The dominant format is cocktail bars, rooftop lounges, patio bar/eateries, and upscale bar/restaurant hybrids like Olive & Ivy, STK, and Samsara
+- Country bars and live music bars are a massive category — Dierks Bentley's Whiskey Row, Rusty Spur Saloon, Scootin Boots Dance Hall, Silver Pony Bar & Grill, Chopper Johns — these are legitimate nightlife destinations here
+- Sports bars are a dominant nightlife format given the Cardinals, Suns, Diamondbacks, ASU fan bases — Bottled Blonde doubles as both nightclub and sports bar, Barstool Scottsdale, DraftKings Scottsdale
+- Live music venues are a key nightlife category — Crescent Ballroom, Valley Bar, The Van Buren, Last Exit Live, Yucca Tap Room, Marquee Theatre
+- Brewery and craft beer nightlife is growing — Four Peaks, Arizona Wilderness, Pedal Haus
+- Casino nightlife is significant — Talking Stick Resort, Wild Horse Pass, Fort McDowell
+- Mill Avenue in Tempe is the college nightlife strip — Boondocks, Cactus Jacks, Low Key Piano Bar
+- Downtown Phoenix has its own emerging scene — Roosevelt Row, Bar Smith, Bitter & Twisted, Cobra Arcade Bar, Century Grand
+- Pool parties and rooftop lounges are distinctly Phoenix — W Scottsdale Cottontail, Allegra rooftop, Lylo Swim Club
+Never write nightlife pieces framed around generic club culture that does not reflect this market. Always name real Valley venues from the categories above that fit the story angle.
+
 Output ONLY valid JSON in this exact format:
 {
   "title": "Article title (10-100 chars)",
