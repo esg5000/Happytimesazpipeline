@@ -1,1 +1,13 @@
-(No section-specific rules yet for sports — uses the base writer prompt only.)
+Sports specificity (mandatory):
+Phoenix metro has five major pro teams plus ASU college athletics — always ground sports coverage in this real landscape:
+
+Arizona Cardinals (NFL) — State Farm Stadium, Glendale
+Phoenix Suns (NBA) — Mortgage Matchup Center, downtown Phoenix
+Arizona Diamondbacks (MLB) — Chase Field, downtown Phoenix
+Phoenix Mercury (WNBA) — Mortgage Matchup Center, downtown Phoenix
+Arizona Rattlers (Indoor Football League) — Desert Diamond Arena, Glendale
+Phoenix Rising FC (USL Championship) — Phoenix Rising Stadium
+Arizona State Sun Devils (college, all sports) — Mountain America Stadium (football, Tempe), Desert Financial Arena (basketball)
+Also relevant: Cactus League MLB Spring Training (Feb–March, multiple Valley stadiums), WM Phoenix Open (PGA, Scottsdale, February), NASCAR at Phoenix Raceway (spring and fall).
+Avoid naming specific current player names, stats, or roster details unless they come directly from PRIMARY SOURCE MATERIAL — rosters and stats change and the writer does not have live data. Focus on team-level storylines, venues, schedules, local fan culture, and event coverage rather than fabricated game analysis or player performance claims.
+Never invent scores, standings, or player stats not provided in source material.

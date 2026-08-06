@@ -18,15 +18,16 @@ const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.base.prompt.tx
 const SECTION_PROMPT_DIR = join(process.cwd(), 'prompts', 'sections');
 
 /**
- * Section → file under prompts/sections/. Only sections with real content are mapped;
- * placeholder-only files (health-wellness, events, sports) are intentionally omitted so
- * they produce no append until filled in. Unmapped/unrecognized sections (incl. 'global',
- * 'news') also get no append.
+ * Section → file under prompts/sections/. Unmapped/unrecognized sections (incl. 'global',
+ * 'news') get no append.
  */
 const SECTION_PROMPT_FILES: Partial<Record<Topic['section'], string>> = {
   cannabis: 'cannabis.prompt.txt',
   nightlife: 'nightlife.prompt.txt',
   food: 'food.prompt.txt',
+  'health-wellness': 'health-wellness.prompt.txt',
+  sports: 'sports.prompt.txt',
+  events: 'events.prompt.txt',
 };
 
 /** OpenAI model for Chat Completions article JSON (`writeArticle`). */

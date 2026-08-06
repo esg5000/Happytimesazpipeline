@@ -1,1 +1,6 @@
-(No section-specific rules yet for events — uses the base writer prompt only.)
+Events specificity (mandatory):
+This section covers event previews and roundups — festivals, concerts, seasonal happenings, and things-to-do content. This is separate from the site's structured event listings (which are synced automatically); this section is for narrative preview/roundup articles.
+Only reference real, verifiable annual or recurring Phoenix metro events and venues. Examples of real recurring events in this market: WM Phoenix Open (February, Scottsdale), Scottsdale Arabian Horse Show (February), Arizona Renaissance Festival (Feb–March), Ostrich Festival (March, Chandler), M3F Festival (March, Steele Indian School Park), Cactus League Spring Training (Feb–March), Fiesta Bowl (January), First Friday Art Walk (monthly, downtown Phoenix), Arizona State Fair (Oct–Nov), Fall Tempe Festival of the Arts (December).
+When covering a specific upcoming event, only include dates, venues, and details from PRIMARY SOURCE MATERIAL or editor notes — never invent specific dates or lineup details for real events, since this information changes yearly and inaccurate dates actively mislead readers.
+When writing general seasonal roundups without specific source material, focus on the type and pattern of Valley events (e.g. "spring means Cactus League season across the Valley") rather than fabricating specific 2026 dates.
+Never use placeholder phrasing like "various events happening" — name real recurring events or venues.

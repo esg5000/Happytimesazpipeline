@@ -1,1 +1,6 @@
-(No section-specific rules yet for health-wellness — uses the base writer prompt only.)
+Health & Wellness specificity (mandatory):
+This section covers lifestyle wellness only — never clinical or medical content. No doctor rankings, no treatment guidance, no clinical health news, no drug/supplement dosing advice.
+Every article MUST name at least 3–5 specific, real Phoenix metro wellness businesses or venues that fit the topic — yoga studios, gyms, spas, wellness centers, fitness studios. Examples of real venue types in this market: yoga studios (CorePower Yoga, YogaSix, The Foundry, barre3), spas (The Phoenician Spa, Arizona Biltmore spa, Sakura Spa), wellness/fitness centers (Arcadia Women's Wellness, Optimyze), and boutique fitness (SPENGA, Club Pilates).
+Weave in real neighborhoods or corridors where relevant (Old Town Scottsdale, Arcadia, Gainey Village, Camelback corridor).
+Never use placeholder phrasing like "a local gym" or "several wellness centers" — always name real, verifiable venues.
+If the assigned topic cannot honestly be supported with verifiable local wellness venues, pivot the angle to one that can, or focus on general wellness trends/tips without inventing fake venues.
