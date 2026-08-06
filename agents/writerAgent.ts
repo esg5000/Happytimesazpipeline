@@ -16,6 +16,7 @@ import {
 // Resolve prompt path - works in both dev and compiled dist
 const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.base.prompt.txt');
 const SECTION_PROMPT_DIR = join(process.cwd(), 'prompts', 'sections');
+const PERSONALITY_PROMPT_DIR = join(process.cwd(), 'prompts', 'personalities');
 
 /**
  * Section → file under prompts/sections/. Unmapped/unrecognized sections (incl. 'global',
@@ -28,6 +29,16 @@ const SECTION_PROMPT_FILES: Partial<Record<Topic['section'], string>> = {
   'health-wellness': 'health-wellness.prompt.txt',
   sports: 'sports.prompt.txt',
   events: 'events.prompt.txt',
+};
+
+type WriterPersonality = { file: string; displayName: string };
+
+/** Section → auto-selected voice. Sections not listed (events, sports, news, global) get no personality. */
+const PERSONALITY_BY_SECTION: Partial<Record<Topic['section'], WriterPersonality>> = {
+  food: { file: 'fat-jimmy.prompt.txt', displayName: 'Fat Jimmy' },
+  nightlife: { file: 'fat-jimmy.prompt.txt', displayName: 'Fat Jimmy' },
+  cannabis: { file: 'sonny-blaze.prompt.txt', displayName: 'Sonny Blaze' },
+  'health-wellness': { file: 'health-nut.prompt.txt', displayName: 'The Health Nut' },
 };
 
 /** OpenAI model for Chat Completions article JSON (`writeArticle`). */
@@ -104,6 +115,19 @@ function buildSectionPromptAppend(section: Topic['section']): string {
   }
 }
 
+/** Loads the personality append for an auto-selected voice; '' if the file is missing/unreadable, same append shape as buildSectionPromptAppend(). */
+function buildPersonalityPromptAppend(personality: WriterPersonality): string {
+  try {
+    const content = readFileSync(join(PERSONALITY_PROMPT_DIR, personality.file), 'utf-8').trim();
+    return content ? `\n\n---\n${content}\n` : '';
+  } catch (e) {
+    console.warn(
+      `[writerAgent] Failed to load personality prompt "${personality.file}": ${e instanceof Error ? e.message : e}`
+    );
+    return '';
+  }
+}
+
 /** Byline stored on Sanity for pipeline-written posts (`publishArticleToSanity`). */
 export const HAPPYTIMESAZ_EDITORIAL_AUTHOR = 'HappyTimesAZ Editorial';
 
@@ -134,6 +158,10 @@ export type WriteArticleOptions = {
   /** Used only when `applyDashboardArticleStyle` is true. Defaults: medium, straight-news. */
   articleLength?: ArticleLength;
   articleTone?: ArticleTone;
+  /** Manual author override; when set, suppresses personality auto-select. */
+  authorName?: string;
+  /** Opt-in for section-based personality auto-select (autonomous path only). */
+  enablePersonality?: boolean;
 };
 
 /**
@@ -151,9 +179,20 @@ export async function writeArticle(
     options?.userSuppliedImages === true ||
     (Array.isArray(options?.imageAssetIds) && options.imageAssetIds.length > 0);
   const sectionAppend = buildSectionPromptAppend(topic.section);
+
+  const explicitAuthorName =
+    typeof options?.authorName === 'string' && options.authorName.trim().length > 0
+      ? options.authorName.trim()
+      : undefined;
+  const personality =
+    options?.enablePersonality === true && !explicitAuthorName
+      ? PERSONALITY_BY_SECTION[topic.section]
+      : undefined;
+  const personalityAppend = personality ? buildPersonalityPromptAppend(personality) : '';
+
   const systemPrompt = applyStyle
-    ? `${basePrompt.trim()}${sectionAppend}${buildWriterArticleStyleAppend(length, tone)}`
-    : `${basePrompt.trim()}${sectionAppend}`;
+    ? `${basePrompt.trim()}${sectionAppend}${personalityAppend}${buildWriterArticleStyleAppend(length, tone)}`
+    : `${basePrompt.trim()}${sectionAppend}${personalityAppend}`;
 
   const notesBlock =
     options?.sourceNotes && options.sourceNotes.trim().length > 0
@@ -230,7 +269,7 @@ Remember: seoDescription must be at most 155 characters (count spaces).`;
 
   let article: Article = {
     ...validation.data!,
-    author: HAPPYTIMESAZ_EDITORIAL_AUTHOR,
+    author: explicitAuthorName ?? personality?.displayName ?? HAPPYTIMESAZ_EDITORIAL_AUTHOR,
   };
   if (effectiveUserSuppliedImages) {
     article = {

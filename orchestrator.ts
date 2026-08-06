@@ -86,6 +86,7 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         console.log('   ✍️  Writing article...');
         let article = await writeArticle(topic, {
           applyDashboardArticleStyle: applyStyle,
+          enablePersonality: true,
           ...(applyStyle ? { articleLength, articleTone } : {}),
         });
 
