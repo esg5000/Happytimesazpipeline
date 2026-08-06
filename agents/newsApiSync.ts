@@ -15,6 +15,7 @@ import { Article, validateArticle } from '../utils/validator';
 import { ensureUniqueSlug, generateSlug } from '../utils/slug';
 import { generateImage, generateImagePrompt } from './imageAgent';
 import { fetchUnsplashHeroImageBuffer } from './unsplashHero';
+import { scoreArticleQuality } from './editorAgent';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 
@@ -1117,6 +1118,29 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
       }
 
       existingSlugs.push(article.slug);
+
+      // Editor quality gate
+      let editorScore: number | null = null;
+      let editorReason = '';
+      try {
+        const editorResult = await scoreArticleQuality(article);
+        editorScore = editorResult.score;
+        editorReason = editorResult.reason;
+      } catch (editorError) {
+        const editorMsg =
+          editorError instanceof Error ? editorError.message : String(editorError);
+        console.error(
+          `[google-news] ${pubLabel} editor quality check failed (publishing anyway): ${editorMsg}`
+        );
+      }
+
+      if (editorScore !== null && editorScore < 6) {
+        console.warn(
+          `[google-news] ${pubLabel} SKIP: "${article.title}" editor score ${editorScore}/10 — ${editorReason}`
+        );
+        counters.skipped++;
+        continue;
+      }
 
       const filename = `google-news-${article.slug.slice(0, 24)}.jpg`;
       const slot = slotId;

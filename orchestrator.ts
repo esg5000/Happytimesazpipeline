@@ -3,6 +3,7 @@ import { generateTopics } from './agents/topicAgent';
 import { writeArticle } from './agents/writerAgent';
 import { generateImagePrompt, generateImage } from './agents/imageAgent';
 import { fetchUnsplashHeroImageBuffer } from './agents/unsplashHero';
+import { scoreArticleQuality } from './agents/editorAgent';
 import {
   uploadImageBufferToSanity,
   publishArticleToSanity,
@@ -95,6 +96,30 @@ async function runPipeline(options?: RunPipelineOptions): Promise<void> {
         };
         existingSlugs.push(article.slug);
         console.log(`   ✅ Article written: ${article.title}`);
+
+        // Step 2.5: Editor quality gate
+        let editorScore: number | null = null;
+        let editorReason = '';
+        try {
+          const editorResult = await scoreArticleQuality(article);
+          editorScore = editorResult.score;
+          editorReason = editorResult.reason;
+        } catch (editorError) {
+          const editorMsg =
+            editorError instanceof Error ? editorError.message : String(editorError);
+          console.error(`   ⚠️  Editor quality check failed (publishing anyway): ${editorMsg}`);
+        }
+
+        if (editorScore !== null && editorScore < 6) {
+          console.warn(
+            `   ❌ Editor SKIP: "${article.title}" scored ${editorScore}/10 — ${editorReason}`
+          );
+          results.push({
+            success: false,
+            error: `Editor: score ${editorScore}/10 — ${editorReason}`,
+          });
+          continue;
+        }
 
         // Step 3: Hero image — Unsplash first, gpt-image-1 fallback
         let imageBuf: Buffer | null = null;
