@@ -14,7 +14,20 @@ import {
 } from '../utils/articleStyle';
 
 // Resolve prompt path - works in both dev and compiled dist
-const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.prompt.txt');
+const WRITER_PROMPT_PATH = join(process.cwd(), 'prompts', 'writer.base.prompt.txt');
+const SECTION_PROMPT_DIR = join(process.cwd(), 'prompts', 'sections');
+
+/**
+ * Section → file under prompts/sections/. Only sections with real content are mapped;
+ * placeholder-only files (health-wellness, events, sports) are intentionally omitted so
+ * they produce no append until filled in. Unmapped/unrecognized sections (incl. 'global',
+ * 'news') also get no append.
+ */
+const SECTION_PROMPT_FILES: Partial<Record<Topic['section'], string>> = {
+  cannabis: 'cannabis.prompt.txt',
+  nightlife: 'nightlife.prompt.txt',
+  food: 'food.prompt.txt',
+};
 
 /** OpenAI model for Chat Completions article JSON (`writeArticle`). */
 const WRITER_OPENAI_MODEL = 'gpt-5.4-mini';
@@ -74,6 +87,22 @@ function applyWriterArticleLengthSafetyTruncate(parsed: unknown): void {
   }
 }
 
+/** Loads the section-specific append for `topic.section`; '' if unmapped, same append shape as buildWriterArticleStyleAppend(). */
+function buildSectionPromptAppend(section: Topic['section']): string {
+  const filename = SECTION_PROMPT_FILES[section];
+  if (!filename) return '';
+  try {
+    const content = readFileSync(join(SECTION_PROMPT_DIR, filename), 'utf-8').trim();
+    if (!content) return '';
+    return `\n\n---\n${content}\n`;
+  } catch (e) {
+    console.warn(
+      `[writerAgent] Failed to load section prompt for "${section}": ${e instanceof Error ? e.message : e}`
+    );
+    return '';
+  }
+}
+
 /** Byline stored on Sanity for pipeline-written posts (`publishArticleToSanity`). */
 export const HAPPYTIMESAZ_EDITORIAL_AUTHOR = 'HappyTimesAZ Editorial';
 
@@ -120,9 +149,10 @@ export async function writeArticle(
   const effectiveUserSuppliedImages =
     options?.userSuppliedImages === true ||
     (Array.isArray(options?.imageAssetIds) && options.imageAssetIds.length > 0);
+  const sectionAppend = buildSectionPromptAppend(topic.section);
   const systemPrompt = applyStyle
-    ? `${basePrompt.trim()}${buildWriterArticleStyleAppend(length, tone)}`
-    : basePrompt.trim();
+    ? `${basePrompt.trim()}${sectionAppend}${buildWriterArticleStyleAppend(length, tone)}`
+    : `${basePrompt.trim()}${sectionAppend}`;
 
   const notesBlock =
     options?.sourceNotes && options.sourceNotes.trim().length > 0
