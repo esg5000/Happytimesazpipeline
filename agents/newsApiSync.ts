@@ -570,14 +570,33 @@ async function fetchSerpGoogleNews(
   console.log(
     `[google-news] ${label}: httpStatus=${status}, search_metadata.status=${metaStatus}, news_results.length=${n}`
   );
+
+  // Detection parity with agents/serpApiEventsSync.ts's fetchEventsForCity: a
+  // non-200 or an `error` field (SerpApi represents "no results for this
+  // query" via this same field, not just true failures) is a thrown
+  // exception, not a silently-swallowed warning. Caught per-query by
+  // fetchSlotCandidatePool below, which counts it distinctly from
+  // scoring/publish errors.
+  if (status !== 200) {
+    throw new Error(`SerpApi HTTP ${status}: ${data.error || 'request failed'}`);
+  }
   if (data.error) {
-    console.warn(`[google-news] ${label}: SerpApi error field: ${data.error}`);
+    throw new Error(data.error);
   }
 
   return { data, httpStatus: status };
 }
 
-type RunCounters = { skipped: number; errors: number };
+type RunCounters = {
+  skipped: number;
+  errors: number;
+  /** SerpApi fetch failures specifically (non-200 or an `error` field) — distinct from scoring/publish errors above, so a run where every query fails is visibly different from a run with a few unrelated publish errors. */
+  serpApiErrors: number;
+  /** A few example SerpApi error messages from this run, capped — not every failure, just enough to diagnose. */
+  serpApiErrorSample: string[];
+};
+
+const SERP_ERROR_SAMPLE_MAX = 5;
 
 /** Counts each HTTP request to SerpApi in this sync run (for usage tracking). */
 type SerpRunUsage = { apiCalls: number };
@@ -698,7 +717,8 @@ function capSlotPoolByRecency(items: SerpGoogleNewsItem[], max: number): SerpGoo
 async function fetchSlotCandidatePool(
   queries: readonly string[],
   slotTag: string,
-  usage: SerpRunUsage
+  usage: SerpRunUsage,
+  counters: RunCounters
 ): Promise<SerpGoogleNewsItem[]> {
   const seen = new Set<string>();
   const out: SerpGoogleNewsItem[] = [];
@@ -706,15 +726,19 @@ async function fetchSlotCandidatePool(
     const q = queries[i]!;
     const label = `${slotTag} serp ${i + 1}/${queries.length}`;
     try {
-      const { data, httpStatus } = await fetchSerpGoogleNews(q, label, usage);
-      if (httpStatus !== 200 || data.error) continue;
+      const { data } = await fetchSerpGoogleNews(q, label, usage);
       for (const it of flattenGoogleNewsResults(data.news_results)) {
         if (seen.has(it.link)) continue;
         seen.add(it.link);
         out.push(it);
       }
     } catch (e) {
-      console.warn(`[google-news] ${label} ERROR:`, e instanceof Error ? e.message : e);
+      const msg = e instanceof Error ? e.message : String(e);
+      counters.serpApiErrors++;
+      if (counters.serpApiErrorSample.length < SERP_ERROR_SAMPLE_MAX) {
+        counters.serpApiErrorSample.push(`${label}: ${msg}`);
+      }
+      console.warn(`[google-news] ${label} ERROR:`, msg);
     }
   }
   const capped = capSlotPoolByRecency(out, SLOT_CANDIDATE_POOL_CAP);
@@ -904,6 +928,9 @@ export async function syncNewsApiToSanity(): Promise<{
   published: number;
   skipped: number;
   errors: number;
+  /** SerpApi fetch failures specifically — see RunCounters.serpApiErrors. */
+  serpApiErrors: number;
+  serpApiErrorSample: string[];
 }> {
   if (!config.serpApi.apiKey) {
     throw new Error('SERPAPI_API_KEY is not set');
@@ -914,7 +941,7 @@ export async function syncNewsApiToSanity(): Promise<{
   const { ymd: phoenixYmd, year } = getPhoenixYmdMonthLongYear(now);
   const { mode: slot2Mode, teamLabel: slot2Team } = getSlot2Mode(now);
 
-  const counters: RunCounters = { skipped: 0, errors: 0 };
+  const counters: RunCounters = { skipped: 0, errors: 0, serpApiErrors: 0, serpApiErrorSample: [] };
   const serpUsage: SerpRunUsage = { apiCalls: 0 };
   let fetched = 0;
 
@@ -936,7 +963,8 @@ export async function syncNewsApiToSanity(): Promise<{
   const poolLocal = await fetchSlotCandidatePool(
     SLOT1_LOCAL_QUERIES,
     '[slot-1-local]',
-    serpUsage
+    serpUsage,
+    counters
   );
   fetched += poolLocal.length;
   const sLocalPicks = await runSlotPickTopN({
@@ -967,7 +995,8 @@ export async function syncNewsApiToSanity(): Promise<{
   const pool2 = await fetchSlotCandidatePool(
     buildSlot2Queries(slot2Mode, slot2Team, year),
     '[slot-2-sports]',
-    serpUsage
+    serpUsage,
+    counters
   );
   fetched += pool2.length;
   const s2Picks = await runSlotPickTopN({
@@ -997,7 +1026,7 @@ export async function syncNewsApiToSanity(): Promise<{
 
 Return JSON including **category** (in addition to relevanceScore, exclude, topicDedupeKey, and excludeReason when applicable):
 {"relevanceScore": <1-10 integer>, "exclude": <boolean>, "excludeReason": <string or omit>, "topicDedupeKey": "<string>", "category": "food"|"nightlife"|"health-wellness"}`;
-  const poolLifestyle = await fetchSlotCandidatePool(SLOT3_LIFESTYLE_QUERIES, '[slot-3-lifestyle]', serpUsage);
+  const poolLifestyle = await fetchSlotCandidatePool(SLOT3_LIFESTYLE_QUERIES, '[slot-3-lifestyle]', serpUsage, counters);
   fetched += poolLifestyle.length;
   const s3Picks = await runSlotPickTopN({
     slotLog: '[slot-3-lifestyle]',
@@ -1021,7 +1050,7 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
   });
 
   const SLOT4_CANNABIS_AZ_RULES = `This slot is ONLY for Arizona cannabis news. Must be relevant to Arizona cannabis consumers. Only mention brands and dispensaries available in Arizona. No out-of-state brand promotions.`;
-  const poolCannabisAz = await fetchSlotCandidatePool(SLOT4_CANNABIS_AZ_QUERIES, '[slot-4-cannabis-az]', serpUsage);
+  const poolCannabisAz = await fetchSlotCandidatePool(SLOT4_CANNABIS_AZ_QUERIES, '[slot-4-cannabis-az]', serpUsage, counters);
   fetched += poolCannabisAz.length;
   const s4Picks = await runSlotPickTopN({
     slotLog: '[slot-4-cannabis-az]',
@@ -1048,7 +1077,8 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
   const poolCannabisNational = await fetchSlotCandidatePool(
     SLOT5_CANNABIS_NATIONAL_QUERIES,
     '[slot-5-cannabis-national]',
-    serpUsage
+    serpUsage,
+    counters
   );
   fetched += poolCannabisNational.length;
   const s5Picks = await runSlotPickTopN({
@@ -1171,12 +1201,14 @@ Return JSON including **category** (in addition to relevanceScore, exclude, topi
   }
 
   console.log(
-    `[google-news] ========== end: fetched=${fetched}, published=${published}, skipped=${counters.skipped}, errors=${counters.errors}, serpApiCalls=${serpUsage.apiCalls} ==========`
+    `[google-news] ========== end: fetched=${fetched}, published=${published}, skipped=${counters.skipped}, errors=${counters.errors}, serpApiErrors=${counters.serpApiErrors}, serpApiCalls=${serpUsage.apiCalls} ==========`
   );
   return {
     fetched,
     published,
     skipped: counters.skipped,
     errors: counters.errors,
+    serpApiErrors: counters.serpApiErrors,
+    serpApiErrorSample: counters.serpApiErrorSample,
   };
 }

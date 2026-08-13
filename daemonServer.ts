@@ -5,6 +5,7 @@ import { deactivatePastEvents } from './agents/eventCleanup';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { runPipelineJob } from './pipelineRunner';
+import { recordSyncRun } from './syncRunLogger';
 import { startApiServer } from './telegramHttpServer';
 
 let scheduledPipelineRunning = false;
@@ -24,6 +25,7 @@ async function runScheduledPipeline(): Promise<void> {
     return;
   }
   scheduledPipelineRunning = true;
+  const startedAt = new Date().toISOString();
   try {
     console.log('[scheduler] Starting scheduled daily pipeline…');
     const { skipped } = await runPipelineJob();
@@ -31,9 +33,29 @@ async function runScheduledPipeline(): Promise<void> {
       console.log(
         '[scheduler] Skipping: a pipeline run is already in progress (e.g. API /publish)'
       );
+      // Not a real run (nothing executed) — no syncRun record for a skip.
+      return;
     }
+    // No item-level count is available here without changing orchestrator.ts's
+    // runPipeline() return shape, which is out of scope for this pass —
+    // itemsSynced is intentionally omitted rather than a misleading 0.
+    await recordSyncRun({
+      syncType: 'pipeline',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errors: 0,
+      triggeredBy: 'cron',
+    });
   } catch (err) {
     console.error('[scheduler] Scheduled pipeline failed:', err);
+    await recordSyncRun({
+      syncType: 'pipeline',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errors: 1,
+      errorSample: [err instanceof Error ? err.message : String(err)],
+      triggeredBy: 'cron',
+    });
   } finally {
     scheduledPipelineRunning = false;
   }
@@ -51,14 +73,32 @@ async function runScheduledSerpApiEventsSync(): Promise<void> {
     return;
   }
   serpApiEventsSyncRunning = true;
+  const startedAt = new Date().toISOString();
   try {
     console.log('[serpapi] Starting Google Events (SerpApi) → Sanity sync…');
-    const { synced, skipped, errors } = await syncSerpApiEventsToSanity();
+    const { synced, skipped, errors, errorSample } = await syncSerpApiEventsToSanity();
     console.log(
       `[serpapi] Sync done — synced: ${synced}, skipped: ${skipped}, errors: ${errors}`
     );
+    await recordSyncRun({
+      syncType: 'events',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      itemsSynced: synced,
+      errors,
+      errorSample,
+      triggeredBy: 'cron',
+    });
   } catch (err) {
     console.error('[serpapi] Sync failed:', err);
+    await recordSyncRun({
+      syncType: 'events',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errors: 1,
+      errorSample: [err instanceof Error ? err.message : String(err)],
+      triggeredBy: 'cron',
+    });
   } finally {
     serpApiEventsSyncRunning = false;
   }
@@ -76,14 +116,37 @@ async function runScheduledGoogleNewsSync(): Promise<void> {
     return;
   }
   googleNewsSyncRunning = true;
+  const startedAt = new Date().toISOString();
   try {
     console.log('[google-news] Starting SerpApi Google News → Sanity sync…');
-    const { fetched, published, skipped, errors } = await syncNewsApiToSanity();
+    const { fetched, published, skipped, errors, serpApiErrors, serpApiErrorSample } =
+      await syncNewsApiToSanity();
     console.log(
-      `[google-news] Done — fetched: ${fetched}, published: ${published}, skipped: ${skipped}, errors: ${errors}`
+      `[google-news] Done — fetched: ${fetched}, published: ${published}, skipped: ${skipped}, errors: ${errors}, serpApiErrors: ${serpApiErrors}`
     );
+    await recordSyncRun({
+      syncType: 'news',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      itemsSynced: published,
+      // Combined total per the syncRun schema's single `errors` field — the
+      // serpApi/publish distinction is preserved above in the console log
+      // and in syncNewsApiToSanity's own return shape, just not split across
+      // two Sanity fields here.
+      errors: errors + serpApiErrors,
+      errorSample: serpApiErrorSample,
+      triggeredBy: 'cron',
+    });
   } catch (err) {
     console.error('[google-news] Sync failed:', err);
+    await recordSyncRun({
+      syncType: 'news',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errors: 1,
+      errorSample: [err instanceof Error ? err.message : String(err)],
+      triggeredBy: 'cron',
+    });
   } finally {
     googleNewsSyncRunning = false;
   }
@@ -98,14 +161,32 @@ async function runScheduledPastEventsCleanup(): Promise<void> {
     return;
   }
   eventsCleanupRunning = true;
+  const startedAt = new Date().toISOString();
   try {
     console.log('[events-cleanup] Deactivating past events…');
-    const { deactivated, errors } = await deactivatePastEvents();
+    const { deactivated, errors, errorSample } = await deactivatePastEvents();
     console.log(
       `[events-cleanup] Done — deactivated: ${deactivated}, errors: ${errors}`
     );
+    await recordSyncRun({
+      syncType: 'eventsCleanup',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      itemsSynced: deactivated,
+      errors,
+      errorSample,
+      triggeredBy: 'cron',
+    });
   } catch (err) {
     console.error('[events-cleanup] Failed:', err);
+    await recordSyncRun({
+      syncType: 'eventsCleanup',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errors: 1,
+      errorSample: [err instanceof Error ? err.message : String(err)],
+      triggeredBy: 'cron',
+    });
   } finally {
     eventsCleanupRunning = false;
   }

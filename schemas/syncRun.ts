@@ -1,0 +1,45 @@
+import { defineField, defineType } from 'sanity';
+
+/**
+ * One document per completed scheduled sync run — durable, queryable record
+ * of whether a cron job actually did anything, surviving process
+ * restarts/redeploys (unlike the in-memory tracking in pipelineStatus.ts).
+ */
+export default defineType({
+  name: 'syncRun',
+  title: 'Sync Run',
+  type: 'document',
+  fields: [
+    defineField({
+      name: 'syncType',
+      type: 'string',
+      description: 'e.g. events, news, eventsCleanup, pipeline',
+      validation: (r) => r.required(),
+    }),
+    defineField({ name: 'startedAt', type: 'datetime', validation: (r) => r.required() }),
+    defineField({ name: 'finishedAt', type: 'datetime' }),
+    defineField({ name: 'itemsSynced', type: 'number' }),
+    defineField({ name: 'errors', type: 'number', initialValue: 0 }),
+    defineField({
+      name: 'errorSample',
+      type: 'array',
+      of: [{ type: 'string' }],
+      description: 'A few example error messages from this run, not all of them',
+    }),
+    defineField({
+      name: 'triggeredBy',
+      type: 'string',
+      options: { list: ['cron', 'manual'] },
+      validation: (r) => r.required(),
+    }),
+  ],
+  preview: {
+    select: { syncType: 'syncType', errors: 'errors', startedAt: 'startedAt' },
+    prepare({ syncType, errors, startedAt }) {
+      return {
+        title: `${syncType || 'sync'} — errors: ${errors ?? 0}`,
+        subtitle: startedAt,
+      };
+    },
+  },
+});

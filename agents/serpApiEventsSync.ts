@@ -251,10 +251,14 @@ async function fetchEventsForCity(city: string): Promise<SerpGoogleEvent[]> {
  * Fetches Google Events via SerpApi for Phoenix-area cities and upserts `event` documents in Sanity.
  * One document per normalized title (recurring dates deduped). HappyTimesAZ category + audience filters apply.
  */
+const ERROR_SAMPLE_MAX = 5;
+
 export async function syncSerpApiEventsToSanity(): Promise<{
   synced: number;
   skipped: number;
   errors: number;
+  /** A few example error messages from this run, capped — not every failure. Purely additive observability; does not change what gets fetched/synced. */
+  errorSample: string[];
 }> {
   if (!config.serpApi.apiKey) {
     throw new Error('SERPAPI_API_KEY is not set');
@@ -271,6 +275,10 @@ export async function syncSerpApiEventsToSanity(): Promise<{
   let skipped = 0;
   let errors = 0;
   let synced = 0;
+  const errorSample: string[] = [];
+  const pushErrorSample = (msg: string) => {
+    if (errorSample.length < ERROR_SAMPLE_MAX) errorSample.push(msg);
+  };
 
   cityLoop: for (const city of TARGET_CITIES) {
     if (synced >= MAX_EVENTS_PER_SYNC) break;
@@ -281,8 +289,10 @@ export async function syncSerpApiEventsToSanity(): Promise<{
       batch = await fetchEventsForCity(city);
       console.log(`[serpapi] ${city}: ${batch.length} raw results`);
     } catch (e) {
-      console.error(`[serpapi] City "${city}" fetch failed:`, e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[serpapi] City "${city}" fetch failed:`, msg);
       errors++;
+      pushErrorSample(`${city}: ${msg}`);
       continue;
     }
 
@@ -383,15 +393,19 @@ export async function syncSerpApiEventsToSanity(): Promise<{
         claimedTitles.add(normTitle);
       } catch (e) {
         errors++;
-        console.error(
-          `[serpapi] Failed to upsert event "${title}":`,
-          e instanceof Error ? e.message : e
-        );
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`[serpapi] Failed to upsert event "${title}":`, msg);
+        pushErrorSample(`upsert "${title}": ${msg}`);
       }
     }
     console.log(`[serpapi] ${city}: ${synced - syncedBefore} passed filter`);
   }
 
   console.log(`[serpapi] Done — synced: ${synced}, skipped: ${skipped}, errors: ${errors}`);
-  return { synced, skipped, errors };
+  if (errors > 0 && errors === TARGET_CITIES.length) {
+    console.warn(
+      `[serpapi] WARNING: every city fetch errored this run (${errors}/${TARGET_CITIES.length}) — likely an engine/account-level issue, not city-specific. Sample: ${errorSample.join(' | ')}`
+    );
+  }
+  return { synced, skipped, errors, errorSample };
 }
