@@ -107,6 +107,14 @@ export type WrittenArticle = {
   /** field::source labels, validated against the real input facts — see buildFactId. */
   factsUsed: string[];
   sourceCredits: SourceCredit[];
+  /** Count of factsUsed entries the model returned that didn't match any real input fact — already stripped from factsUsed above; this is visibility only. */
+  phantomFactCount: number;
+  /** The actual dropped factsUsed labels (field::source format), for debugging/visibility. */
+  phantomFacts: string[];
+  /** Count of sourceCredits entries the model returned with an unrecognized/hallucinated url — already stripped from sourceCredits above; this is visibility only. */
+  phantomSourceCount: number;
+  /** The actual dropped sourceCredits entries, for debugging/visibility. */
+  phantomSources: SourceCredit[];
 };
 
 // ---------------------------------------------------------------------------
@@ -277,7 +285,7 @@ export async function writeArticle(
   );
   const rawCredits = Array.isArray(raw.sourceCredits) ? raw.sourceCredits : [];
   let sourceCredits: SourceCredit[] = [];
-  let droppedCreditCount = 0;
+  const phantomSources: SourceCredit[] = [];
   for (const entry of rawCredits) {
     if (
       entry &&
@@ -291,9 +299,18 @@ export async function writeArticle(
         url: (entry as Record<string, unknown>).url as string,
       });
     } else {
-      droppedCreditCount++;
+      const outlet =
+        entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).outlet === 'string'
+          ? ((entry as Record<string, unknown>).outlet as string)
+          : '(missing/invalid outlet)';
+      const url =
+        entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).url === 'string'
+          ? ((entry as Record<string, unknown>).url as string)
+          : '(missing/invalid url)';
+      phantomSources.push({ outlet, url });
     }
   }
+  const droppedCreditCount = phantomSources.length;
   if (droppedCreditCount > 0) {
     console.warn(`[article-writer] Dropped ${droppedCreditCount} sourceCredits entr(y/ies) with unrecognized/hallucinated URLs.`);
   }
@@ -320,6 +337,10 @@ export async function writeArticle(
     bodyMarkdown: String(raw.bodyMarkdown ?? '').trim(),
     factsUsed,
     sourceCredits,
+    phantomFactCount: phantomFactsUsed.length,
+    phantomFacts: phantomFactsUsed,
+    phantomSourceCount: phantomSources.length,
+    phantomSources,
   };
 
   console.log(`[article-writer] Done — title="${article.title}" (${article.title.length} chars), body=${article.bodyMarkdown.split(/\s+/).filter(Boolean).length} words`);
