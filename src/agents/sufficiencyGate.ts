@@ -63,6 +63,34 @@ const WHAT_FIELDS = ['venueName'];
 /** "WHEN" core field candidates — either satisfies the WHEN requirement. */
 const WHEN_FIELDS = ['date', 'time'];
 
+/**
+ * ADDITIONAL full-article path, independent of the event-field
+ * (WHAT/WHEN) check above — for sourceGathering.ts's general-purpose
+ * default checker (gatherDefaultSources), whose output has no
+ * venueName/date/time at all, just a single long-form sourceArticleText
+ * fact. A substantial real source article is its own sufficient basis for
+ * a full-article decision; it doesn't need to look like an event.
+ *
+ * Not raw character count alone — a long block of short, punctuation-less
+ * nav-link fragments can be just as long as real prose (this file doesn't
+ * import sourceGathering.ts's fetchVenuePageText fix, but applies the same
+ * lesson: requires a minimum number of actual sentence-shaped chunks, not
+ * just total length).
+ */
+const SOURCE_ARTICLE_TEXT_FIELD = 'sourceArticleText';
+const MIN_SOURCE_ARTICLE_TEXT_CHARS = 800;
+const MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES = 5;
+const MIN_SUBSTANTIAL_SENTENCE_CHARS = 40;
+/** See sourceGathering.ts's identical constant/comment — a long run of nav-link labels with one incidental period can otherwise pass as one long "sentence." */
+const MAX_SUBSTANTIAL_SENTENCE_CHARS = 300;
+const MIN_PROSE_STOPWORD_RATIO = 0.2;
+const PROSE_STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'and', 'to', 'in', 'is', 'was', 'are', 'were', 'that', 'this', 'for',
+  'on', 'at', 'from', 'by', 'with', 'as', 'it', 'its', 'be', 'has', 'have', 'had', 'will',
+  'would', 'can', 'could', 'not', 'but', 'or', 'if', 'than', 'so', 'which', 'who', 'what',
+  'when', 'where', 'how', 'your', 'our', 'their', 'his', 'her',
+]);
+
 // ---------------------------------------------------------------------------
 // Output shape
 // ---------------------------------------------------------------------------
@@ -141,8 +169,39 @@ function detectConflicts(byField: Map<string, Fact[]>): FactConflict[] {
   return conflicts;
 }
 
-function decideFormat(qualifyingFactCount: number, hasCoreWhat: boolean, hasCoreWhen: boolean): FormatDecision {
+function looksLikeProseSentence(chunk: string): boolean {
+  const trimmed = chunk.trim();
+  if (trimmed.length < MIN_SUBSTANTIAL_SENTENCE_CHARS || trimmed.length > MAX_SUBSTANTIAL_SENTENCE_CHARS) {
+    return false;
+  }
+  const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length < 6) return false;
+  const stopwordCount = words.filter((w) => PROSE_STOPWORDS.has(w.replace(/[^a-z]/g, ''))).length;
+  return stopwordCount / words.length >= MIN_PROSE_STOPWORD_RATIO;
+}
+
+function countSubstantialSentences(text: string): number {
+  return text.split(/(?<=[.!?])\s+/).filter(looksLikeProseSentence).length;
+}
+
+/** True when a valid sourceArticleText fact exists with enough real length AND enough sentence-shaped content — see the constant block above for why length alone isn't used. */
+function hasSubstantialSourceArticleText(validFacts: Fact[]): boolean {
+  const fact = validFacts.find((f) => f.field === SOURCE_ARTICLE_TEXT_FIELD);
+  if (!fact) return false;
+  if (fact.value.length < MIN_SOURCE_ARTICLE_TEXT_CHARS) return false;
+  return countSubstantialSentences(fact.value) >= MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES;
+}
+
+function decideFormat(
+  qualifyingFactCount: number,
+  hasCoreWhat: boolean,
+  hasCoreWhen: boolean,
+  hasSubstantialSourceText: boolean
+): FormatDecision {
   if (qualifyingFactCount >= MIN_FACTS_FULL_ARTICLE && hasCoreWhat && hasCoreWhen) {
+    return 'full-article';
+  }
+  if (hasSubstantialSourceText) {
     return 'full-article';
   }
   if (qualifyingFactCount >= MIN_FACTS_BLURB) {
@@ -157,11 +216,12 @@ function buildReasoning(params: {
   qualifyingFields: string[];
   hasCoreWhat: boolean;
   hasCoreWhen: boolean;
+  hasSubstantialSourceText: boolean;
   conflicts: FactConflict[];
   disqualifiedFields: string[];
   primarySourceFound: boolean;
 }): string {
-  const { decision, qualifyingFactCount, qualifyingFields, hasCoreWhat, hasCoreWhen, conflicts, disqualifiedFields, primarySourceFound } = params;
+  const { decision, qualifyingFactCount, qualifyingFields, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, conflicts, disqualifiedFields, primarySourceFound } = params;
   const parts: string[] = [];
 
   parts.push(
@@ -169,6 +229,9 @@ function buildReasoning(params: {
   );
   parts.push(
     `Core WHAT (${WHAT_FIELDS.join('/')}): ${hasCoreWhat ? 'present' : 'MISSING'}. Core WHEN (${WHEN_FIELDS.join('/')}): ${hasCoreWhen ? 'present' : 'MISSING'}.`
+  );
+  parts.push(
+    `Substantial sourceArticleText (>=${MIN_SOURCE_ARTICLE_TEXT_CHARS} chars, >=${MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES} real sentences): ${hasSubstantialSourceText ? 'present' : 'absent'}.`
   );
   if (disqualifiedFields.length > 0) {
     parts.push(`${disqualifiedFields.length} raw fact(s) discarded as malformed (empty value or no source): ${disqualifiedFields.join(', ')} — not counted toward the total.`);
@@ -186,9 +249,15 @@ function buildReasoning(params: {
 
   switch (decision) {
     case 'full-article':
-      parts.push(
-        `→ full-article: meets MIN_FACTS_FULL_ARTICLE=${MIN_FACTS_FULL_ARTICLE} with both core fields present.`
-      );
+      if (qualifyingFactCount >= MIN_FACTS_FULL_ARTICLE && hasCoreWhat && hasCoreWhen) {
+        parts.push(
+          `→ full-article: meets MIN_FACTS_FULL_ARTICLE=${MIN_FACTS_FULL_ARTICLE} with both core fields present.`
+        );
+      } else {
+        parts.push(
+          `→ full-article: substantial sourceArticleText fact present — sufficient on its own, independent of the event WHAT/WHEN fields (which don't apply to this topic shape).`
+        );
+      }
       break;
     case 'blurb':
       if (qualifyingFactCount >= MIN_FACTS_FULL_ARTICLE) {
@@ -223,9 +292,10 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
 
   const hasCoreWhat = WHAT_FIELDS.some((f) => byField.has(f));
   const hasCoreWhen = WHEN_FIELDS.some((f) => byField.has(f));
+  const hasSubstantialSourceText = hasSubstantialSourceArticleText(validFacts);
   const conflicts = detectConflicts(byField);
 
-  const decision = decideFormat(qualifyingFactCount, hasCoreWhat, hasCoreWhen);
+  const decision = decideFormat(qualifyingFactCount, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText);
 
   const reasoning = buildReasoning({
     decision,
@@ -233,6 +303,7 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
     qualifyingFields,
     hasCoreWhat,
     hasCoreWhen,
+    hasSubstantialSourceText,
     conflicts,
     disqualifiedFields,
     primarySourceFound: result.primarySourceFound,

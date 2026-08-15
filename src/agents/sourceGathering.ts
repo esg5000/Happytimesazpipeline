@@ -145,6 +145,56 @@ function meaningfulPlainTextLength(text: string): number {
   return text.replace(/\s+/g, ' ').trim().length;
 }
 
+/** A nav-menu blob's "sentences" are short, punctuation-less fragments — this only counts chunks that actually look like written prose. */
+const MIN_SUBSTANTIAL_SENTENCE_CHARS = 40;
+/**
+ * Real sentences are rarely this long — a nav menu with dozens of short
+ * links strung together (no internal punctuation) but one incidental
+ * period at the end becomes a single very long "chunk" under a naive
+ * length-only check. Confirmed against a real page tonight: a 483-char
+ * run of nav links ("Things To Do in Phoenix AZ... Skip to main content
+ * Home Local Sports...AZ.") happened to end in a period and would
+ * otherwise pass as one long "substantial sentence."
+ */
+const MAX_SUBSTANTIAL_SENTENCE_CHARS = 300;
+/** Real prose runs roughly 30-50% common function words (the/a/of/and/for/...); nav-link chunks strung into Title Case phrases run much lower even when long enough to clear the length checks. */
+const MIN_PROSE_STOPWORD_RATIO = 0.2;
+const PROSE_STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'and', 'to', 'in', 'is', 'was', 'are', 'were', 'that', 'this', 'for',
+  'on', 'at', 'from', 'by', 'with', 'as', 'it', 'its', 'be', 'has', 'have', 'had', 'will',
+  'would', 'can', 'could', 'not', 'but', 'or', 'if', 'than', 'so', 'which', 'who', 'what',
+  'when', 'where', 'how', 'your', 'our', 'their', 'his', 'her',
+]);
+/** Confirmed tonight: a 767-char nav-boilerplate page ("Skip to main content Home Local Sports...") cleared PAGE_FETCH_MEANINGFUL_MIN_CHARS on raw length alone. Requiring a few real sentences catches that case without needing a sophisticated parser. */
+const MIN_SUBSTANTIAL_SENTENCES = 3;
+
+/** True for a chunk that's the right length AND has enough function-word density to look like real prose, not a run of nav-link labels. */
+function looksLikeProseSentence(chunk: string): boolean {
+  const trimmed = chunk.trim();
+  if (trimmed.length < MIN_SUBSTANTIAL_SENTENCE_CHARS || trimmed.length > MAX_SUBSTANTIAL_SENTENCE_CHARS) {
+    return false;
+  }
+  const words = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length < 6) return false;
+  const stopwordCount = words.filter((w) => PROSE_STOPWORDS.has(w.replace(/[^a-z]/g, ''))).length;
+  return stopwordCount / words.length >= MIN_PROSE_STOPWORD_RATIO;
+}
+
+function countSubstantialSentences(text: string): number {
+  return text.split(/(?<=[.!?])\s+/).filter(looksLikeProseSentence).length;
+}
+
+/**
+ * Raw character count alone can't distinguish real article prose from a
+ * long run of short nav-link-style fragments (no sentence-ending
+ * punctuation, no sentence of meaningful length). Requires both enough
+ * total length AND enough actual sentence-shaped content.
+ */
+function isMeaningfulProseText(text: string): boolean {
+  if (meaningfulPlainTextLength(text) < PAGE_FETCH_MEANINGFUL_MIN_CHARS) return false;
+  return countSubstantialSentences(text) >= MIN_SUBSTANTIAL_SENTENCES;
+}
+
 /** Headless Chromium: rendered DOM text when static HTTP fetch yields little content. Ported from researchAgent.ts's fetchPagePlainTextWithPlaywright. */
 async function fetchPagePlainTextWithPlaywright(url: string): Promise<string | null> {
   console.log(`[source-gathering] Playwright fallback triggered for ${url}`);
@@ -221,8 +271,7 @@ async function fetchVenuePageText(
     console.warn('[source-gathering] fetchVenuePageText (axios) failed:', href, msg);
   }
 
-  const axiosMeaningful =
-    axiosText !== null && meaningfulPlainTextLength(axiosText) >= PAGE_FETCH_MEANINGFUL_MIN_CHARS;
+  const axiosMeaningful = axiosText !== null && isMeaningfulProseText(axiosText);
   if (axiosMeaningful && axiosText !== null) {
     return { text: axiosText, method: 'http' };
   }
