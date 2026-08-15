@@ -7,10 +7,13 @@
  * that doesn't match a more specific one. The `events` checker remains
  * for event-shaped topics (subjectTag hints, or section=nightlife); the
  * default checker is now Stage 3's primary path for everything else —
- * it fetches the real source article from topic.link and returns its
- * text as a single long-form fact, rather than the old "no checker
- * implemented" stub. There is no more silent/unhandled category: every
- * topic gets either the events checker or the default checker.
+ * it fetches the real source article, preferring topic.link but falling
+ * back through topic.searchSummaries URLs in order when topic.link
+ * doesn't yield substantial content, and returns whichever succeeded as
+ * a single long-form fact tagged with its real URL/outlet — rather than
+ * the old "no checker implemented" stub. There is no more silent/
+ * unhandled category: every topic gets either the events checker or the
+ * default checker.
  *
  * STANDALONE. Does not import from or call newsApiSync.ts,
  * sanityPublisher.ts, editorAgent.ts, researchAgent.ts,
@@ -83,6 +86,14 @@ export type TopicInput = {
   verdict?: string;
   subjectTag?: string;
   location?: string;
+  /**
+   * Mirrors topicDiscovery.ts's Stage 1 SearchSummary[] shape (not
+   * imported — redefined locally, per this file's decoupling pattern).
+   * Alternate URLs the web_search step turned up while verifying the
+   * topic — sometimes a better primary source than topic.link (e.g. a
+   * client-rendered discovery-widget link vs. the actual event page).
+   */
+  searchSummaries?: { title?: string; url?: string; summary?: string }[];
   [key: string]: unknown;
 };
 
@@ -569,32 +580,84 @@ const WRITING_GUIDANCE_FACT: Fact = {
  * don't need this broken into individual fields the way event facts are —
  * one "sourced article text" fact is the whole point of this checker.
  */
+type FetchCandidate = { url: string; label: string };
+
+/**
+ * topic.link first, then topic.searchSummaries URLs in order — a
+ * fallback chain, not a fetch-everything sweep. topic.link is sometimes
+ * a client-rendered discovery/widget URL with no real content, while
+ * Stage 1's web_search already turned up better primary sources in
+ * searchSummaries (confirmed tonight: an azcentral.com "Things To Do"
+ * widget link vs. arizonarestaurantweek.com's own FAQ page with the
+ * real dates).
+ */
+function buildFetchCandidates(topic: TopicInput): FetchCandidate[] {
+  const candidates: FetchCandidate[] = [];
+  const seen = new Set<string>();
+
+  const add = (url: string | undefined, label: string) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    candidates.push({ url, label });
+  };
+
+  add(topic.link, 'topic.link (primary)');
+  for (const s of topic.searchSummaries || []) {
+    add(s?.url, 'searchSummaries fallback');
+  }
+
+  return candidates;
+}
+
 async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringResult> {
-  const link = topic.link;
-  if (!link) {
-    const checkerNote = 'No topic.link available — the default checker requires a source URL to fetch.';
+  const candidates = buildFetchCandidates(topic);
+  if (candidates.length === 0) {
+    const checkerNote = 'No topic.link or searchSummaries URLs available — the default checker requires at least one source URL to fetch.';
     console.warn(`[source-gathering] default: ${checkerNote}`);
     return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
   }
 
-  console.log(`[source-gathering] default: fetching source article — ${link}`);
-  const pageResult = await fetchVenuePageText(link);
-  if (!pageResult || pageResult.text.length <= 80) {
-    const checkerNote = `Fetched ${pageResult?.text.length ?? 0} usable char(s) from ${link} — below the meaningful-content threshold; nothing to write from.`;
+  let chosen: { url: string; pageResult: { text: string; method: 'http' | 'playwright' } } | null = null;
+  let fallbackChoice: { url: string; pageResult: { text: string; method: 'http' | 'playwright' } } | null = null;
+
+  for (const candidate of candidates) {
+    console.log(`[source-gathering] default: trying ${candidate.label} — ${candidate.url}`);
+    const pageResult = await fetchVenuePageText(candidate.url);
+    if (!pageResult || pageResult.text.length <= 80) {
+      console.log(`[source-gathering] default: nothing usable from ${candidate.url}`);
+      continue;
+    }
+    if (isMeaningfulProseText(pageResult.text)) {
+      console.log(`[source-gathering] default: substantial content found at ${candidate.url} — stopping fallback chain here.`);
+      chosen = { url: candidate.url, pageResult };
+      break;
+    }
+    // Not substantial, but keep the first non-empty fetch as a last-resort
+    // fallback in case every candidate (including searchSummaries) is thin —
+    // a thin fact is still better than nothing for a 'blurb'-level decision.
+    if (!fallbackChoice) {
+      fallbackChoice = { url: candidate.url, pageResult };
+    }
+    console.log(`[source-gathering] default: ${candidate.url} fetched but not substantial (${pageResult.text.length} chars) — trying next candidate if any.`);
+  }
+
+  const final = chosen ?? fallbackChoice;
+  if (!final) {
+    const checkerNote = `Fetched nothing usable from ${candidates.length} candidate URL(s) (topic.link + searchSummaries).`;
     console.warn(`[source-gathering] default: ${checkerNote}`);
     return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
   }
 
-  const outlet = deriveOutletName(link);
-  const source = `${outlet} — ${pageResult.method === 'playwright' ? 'Playwright render' : 'HTTP fetch'} (${link})`;
+  const outlet = deriveOutletName(final.url);
+  const source = `${outlet} — ${final.pageResult.method === 'playwright' ? 'Playwright render' : 'HTTP fetch'} (${final.url})`;
 
   const facts: Fact[] = [
-    { field: 'sourceArticleText', value: pageResult.text, source, sourceUrl: link },
+    { field: 'sourceArticleText', value: final.pageResult.text, source, sourceUrl: final.url },
     WRITING_GUIDANCE_FACT,
   ];
 
   console.log(
-    `[source-gathering] default: fetched via ${pageResult.method} (${pageResult.text.length} chars) from ${outlet} — ${link}`
+    `[source-gathering] default: fetched via ${final.pageResult.method} (${final.pageResult.text.length} chars) from ${outlet} — ${final.url}${chosen ? '' : ' (fallback: not substantial, used as best available)'}`
   );
   return { topic, facts, primarySourceFound: true, factCount: facts.length };
 }
