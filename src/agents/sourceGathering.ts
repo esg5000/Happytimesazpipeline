@@ -2,11 +2,15 @@
  * Stage 3 — Source Gathering (pipeline-redesign-architecture.md).
  *
  * Generic shell: gatherSources(topic) dispatches to a category-specific
- * checker based on the topic's subjectTag/section. Only the `events`
- * checker is implemented in this pass; every other category returns a
- * clear "no checker implemented" result (facts: [], primarySourceFound:
- * false, checkerNote set) rather than silently falling through or
- * throwing — see resolveCategoryForTopic / gatherSources.
+ * checker based on the topic's subjectTag/section, falling back to a
+ * general-purpose default checker (gatherDefaultSources) for anything
+ * that doesn't match a more specific one. The `events` checker remains
+ * for event-shaped topics (subjectTag hints, or section=nightlife); the
+ * default checker is now Stage 3's primary path for everything else —
+ * it fetches the real source article from topic.link and returns its
+ * text as a single long-form fact, rather than the old "no checker
+ * implemented" stub. There is no more silent/unhandled category: every
+ * topic gets either the events checker or the default checker.
  *
  * STANDALONE. Does not import from or call newsApiSync.ts,
  * sanityPublisher.ts, editorAgent.ts, researchAgent.ts,
@@ -26,11 +30,8 @@
  * (the bug in agents/serpApiEventsSync.ts that could silently exclude
  * real events before they ever reached Sanity). The dispatch heuristic
  * here only decides which *checker* to route a topic to for this shell
- * — an unmatched topic still gets a clear, visible result, not silent
- * exclusion, and (with only one checker implemented so far) dispatch
- * accuracy isn't the focus of this pass since the test harness calls
- * gatherSources() directly with hand-picked topics rather than through
- * live Stage 0-2 dispatch.
+ * — every topic gets a real attempt at gathering facts, never a silent
+ * exclusion.
  */
 import './playwrightBrowsersPath';
 import axios from 'axios';
@@ -481,49 +482,107 @@ async function gatherEventSources(topic: TopicInput): Promise<SourceGatheringRes
 }
 
 // ---------------------------------------------------------------------------
+// Default checker — general-purpose, not scoped to any single category.
+// Stage 3's primary path for any topic the events checker doesn't claim.
+// ---------------------------------------------------------------------------
+
+/** Real outlet name from a URL's hostname — same pattern used for attribution elsewhere in this pipeline. */
+function deriveOutletName(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return 'source';
+  }
+}
+
+/**
+ * A single fact carrying an explicit writing instruction, included
+ * alongside the fetched article text whenever the default checker
+ * succeeds. This is the only channel available to reach Stage 5 without
+ * modifying articleWriter.ts or its prompt file (out of scope for this
+ * build) — Stage 5 already reads every fact in AVAILABLE FACTS, so this
+ * rides the same path real content facts use. Not attributed to a real
+ * source (no sourceUrl) since it isn't sourced content — it's an
+ * editorial instruction about how to use the sourced content next to it.
+ */
+const WRITING_GUIDANCE_FACT: Fact = {
+  field: 'writingGuidance',
+  value:
+    'Write an original piece informed by this source material — do not closely paraphrase, closely follow, or mirror the structure of the sourced article text. Attribute claims to their source, same standard as every other checker.',
+  source: 'source-gathering (Stage 3 editorial instruction)',
+};
+
+/**
+ * General-purpose default checker: fetches the real source article from
+ * topic.link (same fetch-then-Playwright-fallback as fetchVenuePageText —
+ * reused directly, not duplicated) and returns its text as a single
+ * long-form fact, tagged with the real outlet name + URL. Stage 4/5/6
+ * don't need this broken into individual fields the way event facts are —
+ * one "sourced article text" fact is the whole point of this checker.
+ */
+async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringResult> {
+  const link = topic.link;
+  if (!link) {
+    const checkerNote = 'No topic.link available — the default checker requires a source URL to fetch.';
+    console.warn(`[source-gathering] default: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  console.log(`[source-gathering] default: fetching source article — ${link}`);
+  const pageResult = await fetchVenuePageText(link);
+  if (!pageResult || pageResult.text.length <= 80) {
+    const checkerNote = `Fetched ${pageResult?.text.length ?? 0} usable char(s) from ${link} — below the meaningful-content threshold; nothing to write from.`;
+    console.warn(`[source-gathering] default: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  const outlet = deriveOutletName(link);
+  const source = `${outlet} — ${pageResult.method === 'playwright' ? 'Playwright render' : 'HTTP fetch'} (${link})`;
+
+  const facts: Fact[] = [
+    { field: 'sourceArticleText', value: pageResult.text, source, sourceUrl: link },
+    WRITING_GUIDANCE_FACT,
+  ];
+
+  console.log(
+    `[source-gathering] default: fetched via ${pageResult.method} (${pageResult.text.length} chars) from ${outlet} — ${link}`
+  );
+  return { topic, facts, primarySourceFound: true, factCount: facts.length };
+}
+
+// ---------------------------------------------------------------------------
 // Generic shell — dispatch
 // ---------------------------------------------------------------------------
 
-/** Words/phrases in a freeform subjectTag that suggest event-shaped content. Routing heuristic only — does not exclude anything from being gathered, it only picks which checker (if any) to try. */
+/** Words/phrases in a freeform subjectTag that suggest event-shaped content. Routing heuristic only — does not exclude anything from being gathered, it only picks which checker to try; anything not matched here still gets a real attempt via the default checker. */
 const EVENT_SUBJECT_TAG_HINTS = [
   'event', 'concert', 'festival', 'show', 'yoga', 'trivia', 'class', 'workshop', 'conference',
   'tour', 'exhibit', 'screening', 'performance', 'meetup', 'gig', 'live music', 'market', 'expo',
   'game', 'tournament', 'film festival',
 ];
 
-function resolveCategoryForTopic(topic: TopicInput): 'events' | 'unimplemented' {
+function resolveCategoryForTopic(topic: TopicInput): 'events' | 'default' {
   const tag = (topic.subjectTag || '').toLowerCase();
   if (tag && EVENT_SUBJECT_TAG_HINTS.some((h) => tag.includes(h))) return 'events';
   if (topic.section === 'nightlife') return 'events';
-  return 'unimplemented';
+  return 'default';
 }
 
-const CATEGORY_CHECKERS: Partial<Record<'events', CategoryChecker>> = {
+const CATEGORY_CHECKERS: Record<'events' | 'default', CategoryChecker> = {
   events: gatherEventSources,
+  default: gatherDefaultSources,
 };
 
 /**
  * Generic Stage 3 entry point. Dispatches to a category-specific checker
  * based on the topic's subjectTag (preferred — more precise than section,
  * since Stage 0-2's section enum has no "events" value) or section as a
- * fallback. Categories with no implemented checker get a clear result
- * (facts: [], primarySourceFound: false, checkerNote set) instead of a
- * silent fallthrough or a thrown error.
+ * fallback; anything that isn't event-shaped goes to the general-purpose
+ * default checker. No topic falls through to an unhandled/silent path.
  */
 export async function gatherSources(topic: TopicInput): Promise<SourceGatheringResult> {
   const category = resolveCategoryForTopic(topic);
-  if (category === 'unimplemented') {
-    const checkerNote = `No checker implemented for this category (section="${topic.section ?? 'unknown'}", subjectTag="${topic.subjectTag ?? 'unknown'}").`;
-    console.warn(`[source-gathering] ${checkerNote}`);
-    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
-  }
-  const checker = CATEGORY_CHECKERS[category];
-  if (!checker) {
-    const checkerNote = `Category "${category}" resolved but has no registered checker (internal inconsistency).`;
-    console.warn(`[source-gathering] ${checkerNote}`);
-    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
-  }
-  return checker(topic);
+  return CATEGORY_CHECKERS[category](topic);
 }
 
 // ---------------------------------------------------------------------------
