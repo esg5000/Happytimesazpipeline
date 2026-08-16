@@ -10,8 +10,18 @@
  * getSanityClient for the shadow-mode comparison query), agents/editorAgent.ts,
  * or src/agents/researchAgent.ts. Runs alongside the existing 5-slot
  * pipeline, not in place of it. SHADOW MODE ONLY: fetches from SerpAPI,
- * classifies with OpenAI, logs to a file outside the repo. Never publishes
+ * classifies with Gemini, logs to a file outside the repo. Never publishes
  * to Sanity.
+ *
+ * Stage 1 classification runs on Gemini 3.7 Flash (generateContent +
+ * googleSearch grounding tool), not OpenAI — swapped from the original
+ * OpenAI Responses API + web_search implementation using the exact
+ * request pattern confirmed live in scripts/probe-gemini-grounding.ts
+ * earlier this session (same endpoint, same model, same tool key, no
+ * responseSchema/responseMimeType — freeform JSON via prompt instruction,
+ * same approach the OpenAI version used). Output parsing/shape
+ * (verdict/section/relevanceScore/subjectTag/excludeAsCrimeTragedy) is
+ * unchanged — this was a provider swap, not a logic change.
  *
  * `normalizeSourceRow` / `mergeSourcesByUrl` from src/agents/researchAgent.ts
  * were ported (copied, not imported — they are not exported there) and
@@ -27,8 +37,9 @@ import { config } from '../../config';
 import { getSanityClient } from '../../agents/sanityPublisher';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
-const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
-const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
+/** Gemini 3.7 Flash — confirmed reachable on this account/key (2.5-generation models are not; see scripts/probe-gemini-model-access.ts). */
+const STAGE1_GEMINI_MODEL = 'gemini-3.7-flash';
+const GEMINI_GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${STAGE1_GEMINI_MODEL}:generateContent`;
 
 /** After Stage 0 pool + dedupe, keep at most this many candidates (newest first) before Stage 1. */
 export const STAGE1_CANDIDATE_CAP = 20;
@@ -678,14 +689,14 @@ async function runStage0Discovery(): Promise<{
 // Stage 1 — Locality & Relevance Verdict (+ Stage 2 section, same call)
 // ---------------------------------------------------------------------------
 //
-// Stage 2 (section routing) is folded into the same OpenAI call as Stage 1
+// Stage 2 (section routing) is folded into the same Gemini call as Stage 1
 // rather than issued as a second call per candidate. The build spec asks
-// for "ONE OpenAI Responses API call" per topic for Stage 1 and scopes the
-// usage governor to that one-call-per-topic budget; a separate Stage-2 call
-// per topic would double real API cost against the exact bound the governor
-// exists to enforce. Section is still assigned "from topic content + the
-// Stage 1 search summaries, not from which query found it" — the model sees
-// only the story content and its own search evidence, never queryClass.
+// for "ONE call" per topic for Stage 1 and scopes the usage governor to
+// that one-call-per-topic budget; a separate Stage-2 call per topic would
+// double real API cost against the exact bound the governor exists to
+// enforce. Section is still assigned "from topic content + the Stage 1
+// search summaries, not from which query found it" — the model sees only
+// the story content and its own search evidence, never queryClass.
 
 const SECTION_VALUES = ['food', 'nightlife', 'cannabis', 'health-wellness', 'sports', 'news'] as const;
 export type SectionSlug = (typeof SECTION_VALUES)[number];
@@ -750,39 +761,29 @@ function clampScore(n: number): number {
   return Math.min(10, Math.max(1, Math.round(n)));
 }
 
-/** Minimal copy of researchAgent.ts's private openaiResponses — generic Responses API HTTP call, zero Dig & Write coupling. Not imported (private there); reimplemented so this module has no dependency on researchAgent.ts. */
-async function openaiResponsesCall(
-  params: {
-    instructions?: string;
-    input: string | unknown[];
-    tools?: unknown[];
-    max_output_tokens?: number;
-    temperature?: number;
-  },
-  timeoutMs = 180_000
-): Promise<unknown> {
-  const key = config.openai.apiKey;
+/**
+ * Gemini 3.7 Flash generateContent call with the googleSearch grounding
+ * tool — same request shape confirmed live in
+ * scripts/probe-gemini-grounding.ts (single combined prompt in
+ * contents[0].parts[0].text, tools: [{ googleSearch: {} }], no
+ * generationConfig.responseSchema/responseMimeType — freeform JSON via
+ * prompt instruction, same approach the OpenAI version used). Auth is a
+ * `key` query param (Gemini's own auth style), not a Bearer header.
+ */
+async function geminiGenerateContentCall(promptText: string, timeoutMs = 180_000): Promise<unknown> {
+  const key = config.gemini.apiKey;
   if (!key) {
-    throw new Error('OPENAI_API_KEY is not set (required for topicDiscovery Stage 1)');
+    throw new Error('GEMINI_API_KEY is not set (required for topicDiscovery Stage 1)');
   }
 
-  const body: Record<string, unknown> = {
-    model: STAGE1_OPENAI_MODEL,
-    input: params.input,
-    max_output_tokens: params.max_output_tokens ?? 8192,
+  const body = {
+    contents: [{ parts: [{ text: promptText }] }],
+    tools: [{ googleSearch: {} }],
   };
-  if (params.instructions) body.instructions = params.instructions;
-  if (params.tools && params.tools.length > 0) {
-    body.tools = params.tools;
-    body.tool_choice = 'auto';
-  }
-  if (typeof params.temperature === 'number') body.temperature = params.temperature;
 
-  const res = await axios.post(OPENAI_RESPONSES_URL, body, {
-    headers: {
-      Authorization: `Bearer ${key}`,
-      'Content-Type': 'application/json',
-    },
+  const res = await axios.post(GEMINI_GENERATE_CONTENT_URL, body, {
+    params: { key },
+    headers: { 'Content-Type': 'application/json' },
     timeout: timeoutMs,
     validateStatus: () => true,
   });
@@ -793,35 +794,23 @@ async function openaiResponsesCall(
       typeof data === 'object' && data && 'error' in (data as object)
         ? JSON.stringify((data as { error?: unknown }).error)
         : res.statusText || String(res.status);
-    throw new Error(`OpenAI Responses API HTTP ${res.status}: ${msg}`);
+    throw new Error(`Gemini generateContent HTTP ${res.status}: ${msg}`);
   }
   return res.data;
 }
 
-/** Copy of researchAgent.ts's private extractOutputTextFromResponse — generic Responses API envelope parsing. */
-function extractOutputTextFromResponse(data: unknown): string {
+/** Extracts the concatenated text of the first candidate — same envelope shape confirmed in scripts/probe-gemini-grounding.ts. */
+function extractGeminiText(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
-  const d = data as Record<string, unknown>;
-  if (typeof d.output_text === 'string' && d.output_text.trim()) {
-    return d.output_text.trim();
-  }
-  const output = d.output;
-  if (!Array.isArray(output)) return '';
-  const parts: string[] = [];
-  for (const item of output) {
-    if (!item || typeof item !== 'object') continue;
-    const o = item as Record<string, unknown>;
-    if (o.type === 'message' && Array.isArray(o.content)) {
-      for (const c of o.content as unknown[]) {
-        if (!c || typeof c !== 'object') continue;
-        const block = c as Record<string, unknown>;
-        if (block.type === 'output_text' && typeof block.text === 'string') {
-          parts.push(block.text);
-        }
-      }
-    }
-  }
-  return parts.join('\n').trim();
+  const d = data as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const parts = d.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .map((p) => p.text)
+    .filter((t): t is string => typeof t === 'string')
+    .join('')
+    .trim();
 }
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
@@ -841,11 +830,10 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
 }
 
 /**
- * Single OpenAI Responses API call with the hosted `web_search` tool — mirrors
- * the shape of researchAgent.ts's runWebResearchForQuery (one search call, same
- * model/max_output_tokens/temperature), but asks for a locality verdict + section
- * + 2-3 evidence summaries instead of up to 6 generic sources. No full-page fetch,
- * no Playwright — that belongs to a future Stage 3 (article-body sourcing).
+ * Single Gemini 3.7 Flash generateContent call with the googleSearch
+ * grounding tool — asks for a locality verdict + section + 2-3 evidence
+ * summaries. No full-page fetch, no Playwright — that belongs to a
+ * future Stage 3 (article-body sourcing).
  */
 async function runStage1VerdictForCandidate(item: RawNewsItem): Promise<Stage1VerdictResult> {
   const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
@@ -859,7 +847,7 @@ Source outlet: ${item.sourceOutlet || 'unknown'}
 Link: ${item.link}
 
 TASK
-1. Use the web_search tool to find 2-3 relevant, credible sources about this story. Prefer sources with concrete local Arizona/Phoenix-metro detail if the story could plausibly have one — dates, venues, addresses, named local businesses, official local statements.
+1. Use search to find 2-3 relevant, credible sources about this story. Prefer sources with concrete local Arizona/Phoenix-metro detail if the story could plausibly have one — dates, venues, addresses, named local businesses, official local statements.
 2. Classify this story into exactly one of:
    - "direct-local": the story is inherently, primarily about the greater Phoenix/Arizona metro area (a local event, local business, local government action, local sports team, local person). No uncertainty about whether it's local — it just is.
    - "national-reframe": the story is fundamentally national/global and does NOT occur locally, but there's a genuine, already-known "here's the Arizona angle or alternative" story to tell. Example: a meteor shower peaks tonight but forecasts show it won't be visible from Arizona due to clouds — the AZ story is "here's what you can see instead" or "here's when it's visible here next." The local angle is known and confirmed, just not the primary event itself.
@@ -877,15 +865,9 @@ TASK
 Return ONLY this JSON shape, no markdown fences, no prose before or after:
 {"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
 
-  const raw = await openaiResponsesCall({
-    instructions,
-    input: user,
-    tools: [{ type: 'web_search' }],
-    max_output_tokens: 8192,
-    temperature: 0.3,
-  });
+  const raw = await geminiGenerateContentCall(`${instructions}\n\n${user}`);
 
-  const text = extractOutputTextFromResponse(raw);
+  const text = extractGeminiText(raw);
   const obj = tryParseJsonObject(text);
   if (!obj) throw new Error('Stage 1: model did not return parseable JSON');
 
@@ -956,7 +938,7 @@ export type SkippedTopic = { title: string; link: string; reason: string };
  * pattern/intent of NEGATIVE_HEADLINE_RE in agents/newsApiSync.ts (read there,
  * not imported or modified: "Fast reject before AI — crime, tragedy, serious
  * accidents, national partisan frame (headline-level)"). Applied BEFORE Stage 1's
- * OpenAI web_search call purely to save a call on the most obvious keyword
+ * Gemini generateContent call purely to save a call on the most obvious keyword
  * matches (explicit "murder", "shooting", etc.) — it is NOT the authority on
  * crime/tragedy exclusion. It mirrors the existing pattern's exact keyword set,
  * so it will not catch every crime/tragedy headline on its own (e.g. a death
@@ -976,7 +958,7 @@ function passesEditorialAppropriatenessGate(item: RawNewsItem): boolean {
 /** Usage/concurrency governor for Stage 1 — mirrors newsApiSync.ts's SerpRunUsage pattern. */
 export type Stage1Usage = {
   apiCalls: number;
-  /** Dropped by the cheap NEGATIVE_HEADLINE_RE keyword pre-filter, before any OpenAI call. */
+  /** Dropped by the cheap NEGATIVE_HEADLINE_RE keyword pre-filter, before any Gemini call. */
   editorialGateDropped: number;
   proceededToStage1: number;
   /** Dropped by the Stage 1 model's excludeAsCrimeTragedy judgment (the actual authority), independent of locality verdict. */
@@ -988,12 +970,12 @@ export type Stage1Usage = {
 
 /**
  * Runs Stage 1 (+ Stage 2) for the capped candidate pool in batches of
- * STAGE1_BATCH_SIZE, never issuing more than STAGE1_CANDIDATE_CAP OpenAI
+ * STAGE1_BATCH_SIZE, never issuing more than STAGE1_CANDIDATE_CAP Gemini
  * calls total for the run. If the pool somehow exceeds the cap, remaining
  * candidates are marked skipped (not silently dropped) and the run
  * continues with whatever completed — it does not fail the whole run.
  *
- * Before any candidate reaches the OpenAI call, it must pass
+ * Before any candidate reaches the Gemini call, it must pass
  * passesEditorialAppropriatenessGate; failures are logged and skipped here
  * without spending an API call or counting against usage.apiCalls.
  */
@@ -1298,7 +1280,7 @@ function writeShadowLog(payload: unknown): string {
 }
 
 /**
- * Runs Stage 0 → Stage 1/2 against live SerpAPI + OpenAI, logs the full
+ * Runs Stage 0 → Stage 1/2 against live SerpAPI + Gemini, logs the full
  * result to a file outside the repo, and returns it. Never publishes to
  * Sanity, never calls syncNewsApiToSanity, never touches the existing
  * 5-slot pipeline.
@@ -1307,8 +1289,8 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
   if (!config.serpApi.apiKey) {
     throw new Error('SERPAPI_API_KEY is not set');
   }
-  if (!config.openai.apiKey) {
-    throw new Error('OPENAI_API_KEY is not set');
+  if (!config.gemini.apiKey) {
+    throw new Error('GEMINI_API_KEY is not set (required for Stage 1 — topicDiscovery.ts now uses Gemini, not OpenAI)');
   }
 
   const startedAt = Date.now();
@@ -1347,7 +1329,7 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     `[topic-discovery] Crime/tragedy exclusion (Stage 1 model judgment): ${stage1Usage.crimeTragedyDropped} dropped.`
   );
   console.log(
-    `[topic-discovery] Stage 1 done: ${stage1Usage.apiCalls} OpenAI calls, hardStopped=${stage1Usage.hardStopped}${
+    `[topic-discovery] Stage 1 done: ${stage1Usage.apiCalls} Gemini calls, hardStopped=${stage1Usage.hardStopped}${
       stage1Usage.hardStopReason ? ` (${stage1Usage.hardStopReason})` : ''
     }`
   );
@@ -1409,7 +1391,7 @@ if (require.main === module) {
         `Crime/tragedy exclusion (Stage 1 model judgment): ${result.stage1Usage.crimeTragedyDropped} dropped`
       );
       console.log(
-        `Stage 1 OpenAI calls: ${result.stage1Usage.apiCalls} (cap=${STAGE1_CANDIDATE_CAP}, hardStopped=${result.stage1Usage.hardStopped}${
+        `Stage 1 Gemini calls: ${result.stage1Usage.apiCalls} (cap=${STAGE1_CANDIDATE_CAP}, hardStopped=${result.stage1Usage.hardStopped}${
           result.stage1Usage.hardStopReason ? `, reason=${result.stage1Usage.hardStopReason}` : ''
         })`
       );
