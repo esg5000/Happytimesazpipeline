@@ -4,9 +4,12 @@
  * Generic shell: gatherSources(topic) dispatches to a category-specific
  * checker based on the topic's subjectTag/section, falling back to a
  * general-purpose default checker (gatherDefaultSources) for anything
- * that doesn't match a more specific one. The `events` checker remains
- * for event-shaped topics (subjectTag hints, or section=nightlife); the
- * default checker is now Stage 3's primary path for everything else —
+ * that doesn't match a more specific one. Event-shaped topics (subjectTag
+ * hints, or section=nightlife) go through gatherEventSourcesTiered:
+ * Ticketmaster's Discovery API first (clean structured JSON straight from
+ * the ticketing provider, no scraping), falling back to the SerpAPI-based
+ * gatherEventSources when Ticketmaster has no confident match. The
+ * default checker is Stage 3's primary path for everything else —
  * it fetches the real source article, preferring topic.link but falling
  * back through topic.searchSummaries URLs in order when topic.link
  * doesn't yield substantial content, and returns whichever succeeded as
@@ -542,6 +545,218 @@ async function gatherEventSources(topic: TopicInput): Promise<SourceGatheringRes
 }
 
 // ---------------------------------------------------------------------------
+// Ticketmaster Discovery API checker — TRY-FIRST layer for event-shaped
+// topics, ahead of gatherEventSources above. Returns clean structured JSON
+// directly from the ticketing provider itself, no HTML scraping needed.
+// ---------------------------------------------------------------------------
+
+const TICKETMASTER_DISCOVERY_URL = 'https://app.ticketmaster.com/discovery/v2/events.json';
+/**
+ * Downtown Phoenix — centers a radius search so metro-area venues (Tempe,
+ * Scottsdale, Glendale, Chandler, Mesa) are reached, not just events
+ * literally tagged city=Phoenix. Confirmed live: `city=Phoenix&stateCode=AZ`
+ * alone returns ~1,428 total events for the metro; a 30-mile radius search
+ * from this point returns ~2,318 and includes real Tempe (Marquee Theatre)
+ * and Scottsdale (ASU Kerr, Talking Stick Resort) venues the city-filtered
+ * query misses. Ticketmaster's dmas.json endpoint (the DMA-based
+ * alternative) returned a live 404 when checked, so radius/latlong is used
+ * instead of dmaId.
+ */
+const TICKETMASTER_PHOENIX_METRO_LATLONG = '33.4484,-112.0740';
+const TICKETMASTER_PHOENIX_METRO_RADIUS_MILES = 30;
+/**
+ * Below this token-overlap score, the "best" Ticketmaster result is treated
+ * as no real match rather than a wrong-event attachment. Needed because
+ * Ticketmaster's `keyword` param is a broad full-text search (unlike
+ * SerpAPI's events engine above, which is pre-scoped by query+location) —
+ * a mismatched topic can still return some loosely related result rather
+ * than an empty array, and attaching real Ticketmaster facts to the wrong
+ * event would be a factual-accuracy problem even though every individual
+ * fact is genuine data.
+ */
+const TICKETMASTER_MIN_MATCH_SCORE = 0.2;
+
+type TicketmasterVenue = {
+  name?: string;
+  address?: { line1?: string };
+  city?: { name?: string };
+  state?: { stateCode?: string };
+};
+
+type TicketmasterPriceRange = { type?: string; currency?: string; min?: number; max?: number };
+
+type TicketmasterEvent = {
+  name?: string;
+  url?: string;
+  dates?: { start?: { localDate?: string; localTime?: string } };
+  priceRanges?: TicketmasterPriceRange[];
+  _embedded?: { venues?: TicketmasterVenue[] };
+};
+
+type TicketmasterEventsResponse = {
+  _embedded?: { events?: TicketmasterEvent[] };
+  page?: { totalElements?: number };
+};
+
+/** Same token-overlap approach as simpleTitleSimilarity/pickBestMatch above (reused, not duplicated) — picks the closest-matching Ticketmaster result for this topic's title. */
+function pickBestTicketmasterMatch(
+  title: string,
+  events: TicketmasterEvent[]
+): { event: TicketmasterEvent; score: number } | undefined {
+  if (events.length === 0) return undefined;
+  let best = events[0];
+  let bestScore = -1;
+  for (const ev of events) {
+    const score = simpleTitleSimilarity(title, ev.name || '');
+    if (score > bestScore) {
+      bestScore = score;
+      best = ev;
+    }
+  }
+  return { event: best, score: bestScore };
+}
+
+/**
+ * Only the fields Ticketmaster's response actually contains become facts —
+ * confirmed live that `priceRanges` is frequently absent entirely (not
+ * present for either a major touring show or a WNBA game checked during
+ * testing), so price is only added when the API itself provides it. No
+ * synthesized/placeholder price, same discipline as buildSerpApiEventFacts
+ * above.
+ */
+function buildTicketmasterEventFacts(ev: TicketmasterEvent): Fact[] {
+  const facts: Fact[] = [];
+  const source = 'Ticketmaster Discovery API';
+  const sourceUrl = ev.url;
+
+  const venue = ev._embedded?.venues?.[0];
+  if (venue?.name) {
+    facts.push({ field: 'venueName', value: venue.name.trim(), source, sourceUrl });
+  }
+  const addressParts = [venue?.address?.line1, venue?.city?.name, venue?.state?.stateCode].filter(
+    (p): p is string => !!p && p.trim().length > 0
+  );
+  if (addressParts.length > 0) {
+    facts.push({ field: 'address', value: addressParts.join(', '), source, sourceUrl });
+  }
+
+  const start = ev.dates?.start;
+  if (start?.localDate) {
+    facts.push({ field: 'date', value: start.localDate, source, sourceUrl });
+  }
+  if (start?.localTime) {
+    facts.push({ field: 'time', value: start.localTime, source, sourceUrl });
+  }
+
+  const priceRange = (ev.priceRanges || []).find(
+    (p) => typeof p.min === 'number' || typeof p.max === 'number'
+  );
+  if (priceRange) {
+    const currency = priceRange.currency || 'USD';
+    const { min, max } = priceRange;
+    const value =
+      min != null && max != null && min !== max
+        ? `${currency} ${min}–${max}`
+        : `${currency} ${min ?? max}`;
+    facts.push({ field: 'price', value, source, sourceUrl });
+  }
+
+  if (ev.url) {
+    facts.push({ field: 'ticketUrl', value: ev.url, source, sourceUrl });
+  }
+
+  return facts;
+}
+
+/**
+ * 1. One targeted Ticketmaster Discovery API call: topic title as keyword,
+ *    scoped to the Phoenix metro via radius search (see constants above).
+ * 2. If the best match clears TICKETMASTER_MIN_MATCH_SCORE, its facts come
+ *    directly from the API response — no page fetch needed, Ticketmaster
+ *    is the primary source for its own ticketing/pricing data.
+ * 3. No match (empty results, or best result too dissimilar) returns the
+ *    same empty/no-results shape every other checker uses, so the caller
+ *    can fall back cleanly.
+ */
+async function gatherTicketmasterEventSources(topic: TopicInput): Promise<SourceGatheringResult> {
+  if (!config.ticketmaster.apiKey) {
+    const checkerNote = 'TICKETMASTER_API_KEY is not set.';
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  const keyword = topic.title.trim();
+  console.log(`[source-gathering] ticketmaster: keyword="${keyword}"`);
+
+  let events: TicketmasterEvent[] = [];
+  let totalElements: number | undefined;
+  try {
+    const res = await axios.get<TicketmasterEventsResponse>(TICKETMASTER_DISCOVERY_URL, {
+      params: {
+        apikey: config.ticketmaster.apiKey,
+        keyword,
+        latlong: TICKETMASTER_PHOENIX_METRO_LATLONG,
+        radius: TICKETMASTER_PHOENIX_METRO_RADIUS_MILES,
+        unit: 'miles',
+        size: 10,
+      },
+      validateStatus: () => true,
+    });
+    if (res.status === 200) {
+      events = res.data?._embedded?.events || [];
+      totalElements = res.data?.page?.totalElements;
+      console.log(
+        `[source-gathering] ticketmaster: returned ${events.length} result(s) (${totalElements ?? '?'} total)`
+      );
+    } else if (res.status === 404) {
+      // Ticketmaster returns 404 (not an empty 200) when a keyword search matches nothing.
+      console.log('[source-gathering] ticketmaster: HTTP 404 (no matches for this keyword).');
+    } else {
+      console.warn(`[source-gathering] ticketmaster: HTTP ${res.status}`);
+    }
+  } catch (err: unknown) {
+    console.warn('[source-gathering] ticketmaster: call failed:', err instanceof Error ? err.message : err);
+  }
+
+  const bestMatch = pickBestTicketmasterMatch(topic.title, events);
+  if (!bestMatch || bestMatch.score < TICKETMASTER_MIN_MATCH_SCORE) {
+    const checkerNote = bestMatch
+      ? `No Ticketmaster match found for "${keyword}" — closest candidate "${(bestMatch.event.name || '').trim()}" scored ${bestMatch.score.toFixed(2)}, below the ${TICKETMASTER_MIN_MATCH_SCORE} threshold.`
+      : `No Ticketmaster results for "${keyword}".`;
+    console.log(`[source-gathering] ticketmaster: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  console.log(
+    `[source-gathering] ticketmaster: best match = "${(bestMatch.event.name || '').trim()}" (score=${bestMatch.score.toFixed(2)})`
+  );
+  const facts = buildTicketmasterEventFacts(bestMatch.event);
+  return { topic, facts, primarySourceFound: facts.length > 0, factCount: facts.length };
+}
+
+/**
+ * Ticketmaster first (clean, free, structured, zero HTML scraping); if it
+ * has no confident match, fall back to the existing SerpAPI-based
+ * gatherEventSources unchanged above. Deliberately does NOT chain a third
+ * tier to gatherDefaultSources: this preserves the file's existing
+ * invariant (see header comment) that event-shaped topics are handled by
+ * "the events checker" as a single logical path — gatherEventSources is
+ * structurally suited to event facts (venue/date/ticket fields, SerpAPI
+ * events engine + venue-page fetch), whereas gatherDefaultSources returns
+ * one long-form article-text blob with no structured event fields, a worse
+ * last resort for an event topic than simply reporting no match found.
+ */
+async function gatherEventSourcesTiered(topic: TopicInput): Promise<SourceGatheringResult> {
+  const tm = await gatherTicketmasterEventSources(topic);
+  if (tm.factCount > 0) {
+    return tm;
+  }
+  console.log(
+    `[source-gathering] events: Ticketmaster had no usable match (${tm.checkerNote || 'no reason given'}) — falling back to SerpAPI events checker.`
+  );
+  return gatherEventSources(topic);
+}
+
+// ---------------------------------------------------------------------------
 // Default checker — general-purpose, not scoped to any single category.
 // Stage 3's primary path for any topic the events checker doesn't claim.
 // ---------------------------------------------------------------------------
@@ -681,7 +896,7 @@ function resolveCategoryForTopic(topic: TopicInput): 'events' | 'default' {
 }
 
 const CATEGORY_CHECKERS: Record<'events' | 'default', CategoryChecker> = {
-  events: gatherEventSources,
+  events: gatherEventSourcesTiered,
   default: gatherDefaultSources,
 };
 

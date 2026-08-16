@@ -27,6 +27,10 @@ export const config = {
     /** node-cron expression for daemonServer only (default 14:00 daily, server timezone e.g. UTC on Render) */
     cronSchedule: process.env.PIPELINE_CRON || '0 14 * * *',
   },
+  ticketmaster: {
+    /** Ticketmaster Discovery API consumer key — https://developer.ticketmaster.com */
+    apiKey: (process.env.TICKETMASTER_API_KEY || '').trim(),
+  },
   serpApi: {
     /** SerpApi key — https://serpapi.com/manage-api-key */
     apiKey: (process.env.SERPAPI_API_KEY || '').trim(),
