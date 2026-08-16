@@ -800,6 +800,27 @@ function clampScore(n: number): number {
   return Math.min(10, Math.max(1, Math.round(n)));
 }
 
+/** Retry-with-backoff tuning for Gemini's 503 "high demand" errors — confirmed via AI Studio's rate-limit dashboard to be genuine Google-side capacity issues, not quota exhaustion (12-20 RPM used of a 1,000 RPM limit). */
+const GEMINI_503_MAX_RETRIES = 2; // up to 2 retries (3 total attempts) before giving up on a candidate
+const GEMINI_503_RETRY_DELAY_MS = 2500;
+/** Minimum spacing enforced between the *start* of consecutive outbound Gemini calls, even when Stage 1 fires a batch of STAGE1_BATCH_SIZE concurrently — a burst/concurrent-request limit (a real 429 spike was seen alongside the 503s) can trip on near-simultaneous dispatch in a way a simple RPM average wouldn't show. */
+const GEMINI_CALL_STAGGER_MS = 400;
+
+let nextGeminiDispatchAt = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Reserves the next outbound-call slot at least GEMINI_CALL_STAGGER_MS after the previous one, then waits for it. */
+async function staggerGeminiDispatch(): Promise<void> {
+  const now = Date.now();
+  const dispatchAt = Math.max(now, nextGeminiDispatchAt);
+  nextGeminiDispatchAt = dispatchAt + GEMINI_CALL_STAGGER_MS;
+  const delay = dispatchAt - now;
+  if (delay > 0) await sleep(delay);
+}
+
 /**
  * Gemini 3.7 Flash generateContent call with the googleSearch grounding
  * tool — same request shape confirmed live in
@@ -808,6 +829,10 @@ function clampScore(n: number): number {
  * generationConfig.responseSchema/responseMimeType — freeform JSON via
  * prompt instruction, same approach the OpenAI version used). Auth is a
  * `key` query param (Gemini's own auth style), not a Bearer header.
+ *
+ * Retries specifically on HTTP 503 (transient "high demand") with a
+ * fixed delay; any other error status throws immediately, same as
+ * before.
  */
 async function geminiGenerateContentCall(promptText: string, timeoutMs = 180_000): Promise<unknown> {
   const key = config.gemini.apiKey;
@@ -820,22 +845,36 @@ async function geminiGenerateContentCall(promptText: string, timeoutMs = 180_000
     tools: [{ googleSearch: {} }],
   };
 
-  const res = await axios.post(GEMINI_GENERATE_CONTENT_URL, body, {
-    params: { key },
-    headers: { 'Content-Type': 'application/json' },
-    timeout: timeoutMs,
-    validateStatus: () => true,
-  });
+  for (let attempt = 0; ; attempt++) {
+    await staggerGeminiDispatch();
 
-  if (res.status >= 400) {
-    const data = res.data;
-    const msg =
-      typeof data === 'object' && data && 'error' in (data as object)
-        ? JSON.stringify((data as { error?: unknown }).error)
-        : res.statusText || String(res.status);
-    throw new Error(`Gemini generateContent HTTP ${res.status}: ${msg}`);
+    const res = await axios.post(GEMINI_GENERATE_CONTENT_URL, body, {
+      params: { key },
+      headers: { 'Content-Type': 'application/json' },
+      timeout: timeoutMs,
+      validateStatus: () => true,
+    });
+
+    if (res.status === 503 && attempt < GEMINI_503_MAX_RETRIES) {
+      console.warn(
+        `[topic-discovery] Gemini 503 (high demand) — retrying in ${GEMINI_503_RETRY_DELAY_MS}ms (attempt ${
+          attempt + 1
+        }/${GEMINI_503_MAX_RETRIES})`
+      );
+      await sleep(GEMINI_503_RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (res.status >= 400) {
+      const data = res.data;
+      const msg =
+        typeof data === 'object' && data && 'error' in (data as object)
+          ? JSON.stringify((data as { error?: unknown }).error)
+          : res.statusText || String(res.status);
+      throw new Error(`Gemini generateContent HTTP ${res.status}: ${msg}`);
+    }
+    return res.data;
   }
-  return res.data;
 }
 
 /** Extracts the concatenated text of the first candidate — same envelope shape confirmed in scripts/probe-gemini-grounding.ts. */
