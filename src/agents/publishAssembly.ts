@@ -63,8 +63,13 @@ export type VerificationInput = {
 
 export type ImageResultInput = {
   query: string;
+  /** Which provider actually produced this image — mirrors imageSourcing.ts's ImageSourcingResult.source. */
+  source: 'unsplash' | 'gpt-image-1';
   photoId: string;
+  /** Real hosted URL for the unsplash path; empty string for gpt-image-1 (see imageBase64 instead). */
   imageUrl: string;
+  /** Raw generated image bytes, base64-encoded — present only for the gpt-image-1 path (that provider returns no URL). */
+  imageBase64?: string;
   photographerName: string;
   photographerProfileUrl: string;
   altText: string;
@@ -136,9 +141,12 @@ function buildDisclaimer(article: WrittenArticleInput, image: ImageResultInput):
     article.sourceCredits.length > 0
       ? `Sourced from: ${article.sourceCredits.map((c) => `${c.outlet} (${c.url})`).join('; ')}.`
       : 'Sourced from HappyTimesAZ reporting.';
-  const photoLine = image
-    ? ` Hero photo by ${image.photographerName} on Unsplash (${image.photographerProfileUrl || 'https://unsplash.com'}).`
-    : '';
+  let photoLine = '';
+  if (image?.source === 'unsplash') {
+    photoLine = ` Hero photo by ${image.photographerName} on Unsplash (${image.photographerProfileUrl || 'https://unsplash.com'}).`;
+  } else if (image?.source === 'gpt-image-1') {
+    photoLine = ' Hero image is AI-generated (gpt-image-1).';
+  }
   return `${sourceLine}${photoLine}`;
 }
 
@@ -223,9 +231,10 @@ export function assemblePublishDocument(
     // image and attach heroImage (with alt, once the schema supports it).
     heroImageSource: image
       ? {
-          provider: 'unsplash',
+          provider: image.source,
           photoId: image.photoId,
           imageUrl: image.imageUrl,
+          ...(image.imageBase64 ? { imageBase64: image.imageBase64 } : {}),
           photographerName: image.photographerName,
           photographerProfileUrl: image.photographerProfileUrl,
           altText: image.altText,
@@ -308,17 +317,29 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
     }
 
     let heroImage: Record<string, unknown> | undefined;
-    const heroSource = doc.heroImageSource as { imageUrl?: string; altText?: string } | null | undefined;
-    if (heroSource?.imageUrl) {
+    const heroSource = doc.heroImageSource as
+      | { provider?: string; imageUrl?: string; imageBase64?: string; altText?: string }
+      | null
+      | undefined;
+    if (heroSource?.imageUrl || heroSource?.imageBase64) {
       try {
-        const buf = await downloadImage(heroSource.imageUrl);
-        const assetId = await uploadImageBufferToSanity(buf, `hero-${uniqueSlug}.jpg`);
+        // imageUrl (unsplash) is fetched; imageBase64 (gpt-image-1 — that
+        // provider returns no URL, only raw bytes) is decoded directly. A
+        // real imageUrl always wins if somehow both were present, since
+        // that's the cheaper/simpler path and matches which field each
+        // provider actually populates in practice — they're never both
+        // populated for the same result.
+        const buf = heroSource.imageUrl
+          ? await downloadImage(heroSource.imageUrl)
+          : Buffer.from(heroSource.imageBase64!, 'base64');
+        const ext = heroSource.imageUrl ? 'jpg' : 'png';
+        const assetId = await uploadImageBufferToSanity(buf, `hero-${uniqueSlug}.${ext}`);
         heroImage = {
           _type: 'image',
           asset: { _type: 'reference', _ref: assetId },
           ...(heroSource.altText ? { alt: heroSource.altText } : {}),
         };
-        console.log(`[publish-assembly] "${title}" → hero image uploaded, assetId=${assetId}`);
+        console.log(`[publish-assembly] "${title}" → hero image uploaded (source=${heroSource.provider ?? 'unknown'}), assetId=${assetId}`);
       } catch (imgErr: unknown) {
         console.warn(
           `[publish-assembly] "${title}" → hero image upload failed, publishing without one:`,
@@ -557,6 +578,81 @@ async function runTestHarness(): Promise<void> {
     const invalidSectionResult = assemblePublishDocument(lastGoodArticle, passedVerification, lastGoodImage, invalidSectionTopic);
     summary.push({ label: 'SYNTHETIC: invalid section ("lifestyle")', result: invalidSectionResult });
     console.log(JSON.stringify(invalidSectionResult, null, 2));
+  }
+
+  // --- REAL PUBLISH TEST: forced gpt-image-1 fallback, end to end ---
+  // Same forced-exhaustion approach as imageSourcing.ts's own test (nonsense
+  // query terms alone don't reliably force zero Unsplash results — Unsplash
+  // degrades gracefully instead of returning a hard empty set — so this
+  // deterministically intercepts the Unsplash HTTP call for one sourceImage()
+  // call instead). Reuses the last real, Stage-6-passed article/topic as a
+  // realistic base (same pattern as the SYNTHETIC tests above), paired with
+  // a freshly forced gpt-image-1 image result. This is a REAL Sanity write
+  // via publishAssembledDocument() — confirms the fix actually attaches the
+  // image, not just that assembly carries the right metadata.
+  if (lastGoodArticle && lastGoodTopic) {
+    console.log('\n\n=== REAL PUBLISH TEST: forced gpt-image-1 fallback, attached end to end ===');
+    const axiosMod = await import('axios');
+    const axios = axiosMod.default;
+    const realAxiosGet = axios.get;
+    const UNSPLASH_SEARCH = 'https://api.unsplash.com/search/photos';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (axios as any).get = async (url: string, opts: unknown) => {
+      if (typeof url === 'string' && url.startsWith(UNSPLASH_SEARCH)) {
+        return { status: 200, data: { results: [] }, headers: {} };
+      }
+      return realAxiosGet(url, opts as never);
+    };
+    let forcedImageOutcome;
+    try {
+      forcedImageOutcome = await sourceImage({
+        tags: ['forced fallback test tag'],
+        section: lastGoodTopic.section,
+        entity: 'Forced Fallback Test Entity',
+        title: 'Forced gpt-image-1 fallback test (publishAssembly real-write confirmation)',
+      });
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (axios as any).get = realAxiosGet;
+    }
+
+    if (forcedImageOutcome.status !== 'ok' || forcedImageOutcome.result.source !== 'gpt-image-1') {
+      console.error(`UNEXPECTED — forced test did not produce a gpt-image-1 result: ${JSON.stringify({ status: forcedImageOutcome.status })}`);
+    } else {
+      console.log(`Stage 7 forced result: source=${forcedImageOutcome.result.source}, imageUrl="${forcedImageOutcome.result.imageUrl}" (empty expected), imageBase64 present=${Boolean(forcedImageOutcome.result.imageBase64)}`);
+
+      const forcedAssembly = assemblePublishDocument(
+        lastGoodArticle,
+        { passed: true, mechanicalCheck: { phantomFactCount: 0, phantomSourceCount: 0 }, proseCheck: { score: 9, reason: 'Fine.' }, overallReason: 'PASSED' },
+        forcedImageOutcome.result,
+        lastGoodTopic
+      );
+
+      if (!forcedAssembly.publishReady) {
+        console.error(`UNEXPECTED — assembly refused: ${forcedAssembly.reason}`);
+      } else {
+        const assembledHeroSource = (forcedAssembly.document as Record<string, unknown>).heroImageSource as Record<string, unknown> | null;
+        console.log(`Assembled heroImageSource.provider=${assembledHeroSource?.provider} (expect "gpt-image-1")`);
+
+        const publishOutcome = await publishAssembledDocument(forcedAssembly);
+        console.log('Real publish outcome:', JSON.stringify(publishOutcome, null, 2));
+
+        if (publishOutcome.status === 'published') {
+          const { getSanityClient } = await import('../../agents/sanityPublisher');
+          const client = getSanityClient();
+          const verifyDoc = await client.fetch<{ heroImageAssetId?: string; heroImageAssetDims?: unknown } | null>(
+            `*[_id == $id][0]{ "heroImageAssetId": heroImage.asset._ref, "heroImageAssetDims": heroImage.asset->metadata.dimensions }`,
+            { id: publishOutcome.id }
+          );
+          console.log(`Read-only verification of the real published doc: ${JSON.stringify(verifyDoc)}`);
+          console.log(
+            verifyDoc?.heroImageAssetId
+              ? `CONFIRMED — real gpt-image-1 image actually attached to the real published document (asset=${verifyDoc.heroImageAssetId}).`
+              : 'FAILED — published document has no heroImage.asset attached; the fix did not work.'
+          );
+        }
+      }
+    }
   }
 
   console.log('\n\n########## PUBLISH ASSEMBLY TEST HARNESS SUMMARY ##########');
