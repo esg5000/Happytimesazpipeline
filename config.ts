@@ -7,6 +7,10 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY || '',
     model: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
   },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || '',
+    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  },
   /** Unsplash — Dig & Write hero on `POST /api/command/researchAndWrite` only. */
   unsplash: {
     accessKey: (process.env.UNSPLASH_ACCESS_KEY || '').trim(),
