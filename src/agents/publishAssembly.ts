@@ -1,12 +1,15 @@
 /**
  * Stage 8 — Sanity Publish Assembly (pipeline-redesign-architecture.md).
  *
- * ASSEMBLY ONLY. This module never calls sanityClient.create(), .patch(),
- * or any other write method — not here, not in its test harness. It
- * builds and returns the document object that WOULD be created; actually
- * writing it to Sanity is a separate, deliberate manual step performed
- * later, after human review, not something this stage or its tests do.
+ * assemblePublishDocument() remains assembly-only — no write, same as
+ * before. publishAssembledDocument() (added below, explicitly requested)
+ * is the new real-write path: it takes an already-assembled, publishReady
+ * document and actually calls sanityClient.create(), publishing directly
+ * — matching the existing production pipeline's own behavior (immediate
+ * publish, no draft step; review happens after via manual delete if
+ * needed). Only call it when a real write is actually intended.
  *
+
  * Fixes a confirmed production bug in agents/sanityPublisher.ts's
  * publishGoogleNewsArticleToSanity (read read-only for reference, not
  * modified): `section`, `categories[]`, and the `category` reference are
@@ -250,6 +253,111 @@ export function assemblePublishDocument(
   console.log(`[publish-assembly] "${article.title}" → assembled (section=${section}, categories=${JSON.stringify(categories)}, category ref=${category ? 'yes' : 'NO (no categoryDocId supplied)'}, heroImage=${image ? 'yes' : 'NO'})`);
 
   return { publishReady: true, document };
+}
+
+// ---------------------------------------------------------------------------
+// REAL WRITE — publishAssembledDocument(). Explicitly requested: publish
+// directly, matching the existing production pipeline's behavior (no
+// draft step, review happens after via manual delete if needed). This is
+// the ONLY function in this file that calls sanityClient.create(). It
+// does the work assemblePublishDocument()'s preview object deliberately
+// left undone (documented in assemblePublishDocument's own field
+// comments): converts bodyMarkdown to real Portable Text, uploads the
+// chosen hero image as a real Sanity asset, and ensures slug uniqueness
+// against real existing posts — all via existing, unmodified production
+// helpers (agents/sanityPublisher.ts, agents/imageAgent.ts, utils/slug.ts)
+// reused read/write as they already exist, not duplicated.
+// ---------------------------------------------------------------------------
+
+export type PublishOutcome =
+  | { status: 'published'; id: string; slug: string }
+  | { status: 'refused'; reason: string }
+  | { status: 'error'; message: string };
+
+export async function publishAssembledDocument(assembly: AssemblyResult): Promise<PublishOutcome> {
+  if (!assembly.publishReady) {
+    return { status: 'refused', reason: assembly.reason };
+  }
+
+  const doc = assembly.document;
+  const title = typeof doc.title === 'string' ? doc.title : '(untitled)';
+
+  try {
+    const { getSanityClient, getExistingSlugs, markdownToPortableText, uploadImageBufferToSanity } = await import(
+      '../../agents/sanityPublisher'
+    );
+    const { ensureUniqueSlug } = await import('../../utils/slug');
+    const { downloadImage } = await import('../../agents/imageAgent');
+
+    const client = getSanityClient();
+
+    const baseSlug =
+      doc.slug && typeof doc.slug === 'object' && typeof (doc.slug as { current?: unknown }).current === 'string'
+        ? ((doc.slug as { current: string }).current)
+        : '';
+    if (!baseSlug) {
+      return { status: 'error', message: 'Assembled document has no usable slug.' };
+    }
+    const existingSlugs = await getExistingSlugs();
+    const uniqueSlug = ensureUniqueSlug(baseSlug, existingSlugs);
+
+    const bodyMarkdown = typeof doc.bodyMarkdown === 'string' ? doc.bodyMarkdown : '';
+    const portableTextBody = markdownToPortableText(bodyMarkdown);
+    if (!Array.isArray(portableTextBody) || portableTextBody.length === 0) {
+      return { status: 'error', message: 'markdownToPortableText returned an invalid/empty body — refusing to publish.' };
+    }
+
+    let heroImage: Record<string, unknown> | undefined;
+    const heroSource = doc.heroImageSource as { imageUrl?: string; altText?: string } | null | undefined;
+    if (heroSource?.imageUrl) {
+      try {
+        const buf = await downloadImage(heroSource.imageUrl);
+        const assetId = await uploadImageBufferToSanity(buf, `hero-${uniqueSlug}.jpg`);
+        heroImage = {
+          _type: 'image',
+          asset: { _type: 'reference', _ref: assetId },
+          ...(heroSource.altText ? { alt: heroSource.altText } : {}),
+        };
+        console.log(`[publish-assembly] "${title}" → hero image uploaded, assetId=${assetId}`);
+      } catch (imgErr: unknown) {
+        console.warn(
+          `[publish-assembly] "${title}" → hero image upload failed, publishing without one:`,
+          imgErr instanceof Error ? imgErr.message : String(imgErr)
+        );
+      }
+    }
+
+    const realId = `post-${uniqueSlug}-${Date.now()}`;
+    const realDoc: Record<string, unknown> = {
+      _type: 'post',
+      _id: realId,
+      title: doc.title,
+      slug: { _type: 'slug', current: uniqueSlug },
+      excerpt: doc.excerpt,
+      seoTitle: doc.seoTitle,
+      seoDescription: doc.seoDescription,
+      visualStyle: doc.visualStyle,
+      tags: doc.tags,
+      section: doc.section,
+      categories: doc.categories,
+      ...(doc.category ? { category: doc.category } : {}),
+      body: portableTextBody,
+      disclaimer: doc.disclaimer,
+      ...(heroImage ? { heroImage } : {}),
+      contentSource: doc.contentSource,
+      isActive: true,
+      status: 'published',
+      publishedAt: new Date().toISOString(),
+    };
+
+    const result = await client.create(realDoc as Parameters<typeof client.create>[0]);
+    console.log(`[publish-assembly] REAL WRITE — "${title}" → published, _id=${result._id}, slug=${uniqueSlug}`);
+    return { status: 'published', id: result._id as string, slug: uniqueSlug };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[publish-assembly] REAL WRITE failed for "${title}":`, message);
+    return { status: 'error', message };
+  }
 }
 
 // ---------------------------------------------------------------------------

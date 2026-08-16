@@ -3,6 +3,7 @@ import multer from 'multer';
 
 import { config } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
+import { runOrchestratorV2AndPublish } from './src/agents/orchestratorV2';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { syncDispensariesToSanity } from './agents/syncDispensaries';
 import { transcribeAudio } from './agents/transcribeAgent';
@@ -618,6 +619,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
       | 'runWriter'
       | 'syncEvents'
       | 'syncNews'
+      | 'syncNewsV2'
       | 'syncDispensaries'
       | 'syncRestaurants'
       | 'syncNightlife' =>
@@ -625,13 +627,14 @@ function registerDaemonApiRoutes(app: express.Application): void {
       s === 'runWriter' ||
       s === 'syncEvents' ||
       s === 'syncNews' ||
+      s === 'syncNewsV2' ||
       s === 'syncDispensaries' ||
       s === 'syncRestaurants' ||
       s === 'syncNightlife';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncDispensaries | syncRestaurants | syncNightlife.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife.',
       });
       return;
     }
@@ -680,6 +683,31 @@ function registerDaemonApiRoutes(app: express.Application): void {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command syncNews failed:', msg);
           appendActivityLog(`syncNews: failed — ${msg}`, 'syncNews');
+        }
+      })();
+      return;
+    }
+
+    if (command === 'syncNewsV2') {
+      if (!config.serpApi.apiKey) {
+        res.status(503).json({
+          error: 'SERPAPI_API_KEY is not configured',
+        });
+        return;
+      }
+      console.log('[api] /api/command syncNewsV2 → runOrchestratorV2AndPublish (new Stage 0-9 pipeline, real publish)');
+      res.json({ ok: true, status: 'started', command: 'syncNewsV2', source: resolveApiClientSource(req) });
+      void (async () => {
+        try {
+          const result = await runOrchestratorV2AndPublish();
+          appendActivityLog(
+            `syncNewsV2: complete — kept=${result.stage1Kept.length}, published=${result.realPublishes.length}, publishFailures=${result.realPublishFailures.length}`,
+            'syncNewsV2'
+          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command syncNewsV2 failed:', msg);
+          appendActivityLog(`syncNewsV2: failed — ${msg}`, 'syncNewsV2');
         }
       })();
       return;

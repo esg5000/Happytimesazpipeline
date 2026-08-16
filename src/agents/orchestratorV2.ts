@@ -26,12 +26,18 @@
  *        write. Only topics that pass every gate above reach this.
  *
  * Every drop, at every stage, is logged with its reason — this file
- * produces a full funnel, not just a final count. NO Sanity write
- * anywhere in this file. The only live Sanity calls are read-only:
- * Stage 9's recent-posts check (inside dedupeFeature.ts, unchanged) and
- * a category-doc-id lookup for Stage 8's assembled `category` reference
- * (same read-only pattern used in publishAssembly.ts's own test harness
- * and scripts/test-stage7-stage8-real-chain.ts).
+ * produces a full funnel, not just a final count.
+ *
+ * runOrchestratorV2() itself still makes NO Sanity write — the only live
+ * Sanity calls in it are read-only (Stage 9's recent-posts check inside
+ * dedupeFeature.ts, and a category-doc-id lookup for Stage 8's assembled
+ * `category` reference). runOrchestratorV2AndPublish() (added below,
+ * explicitly requested) is the new real-write path: it runs the exact
+ * same dry-run funnel, then actually publishes every Stage-8 publish-ready
+ * result via publishAssembly.ts's publishAssembledDocument() — a real
+ * sanityClient.create() call per article, matching the existing
+ * production pipeline's immediate-publish behavior. Only call it when a
+ * real publish run is actually intended.
  */
 import { runTopicDiscoveryShadow, type TopicDiscoveryResult } from './topicDiscovery';
 import { gatherSources } from './sourceGathering';
@@ -39,7 +45,7 @@ import { evaluateSufficiency } from './sufficiencyGate';
 import { writeArticle, type WrittenArticle } from './articleWriter';
 import { verifyArticle, type VerificationResult } from './verificationGate';
 import { sourceImage } from './imageSourcing';
-import { assemblePublishDocument, type AssemblyResult } from './publishAssembly';
+import { assemblePublishDocument, publishAssembledDocument, type AssemblyResult } from './publishAssembly';
 import { checkForDuplicates } from './dedupeFeature';
 
 // ---------------------------------------------------------------------------
@@ -239,6 +245,44 @@ export async function runOrchestratorV2(): Promise<OrchestratorV2RunResult> {
 
   console.log(`[orchestrator-v2] ========== RUN end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// REAL PUBLISH — runOrchestratorV2AndPublish(). Explicitly requested.
+// Runs the identical dry-run funnel above, then actually publishes every
+// Stage-8 publish-ready result via publishAssembledDocument() — real
+// sanityClient.create() calls. Nothing here changes runOrchestratorV2()'s
+// own behavior; this only adds a publish step after it.
+// ---------------------------------------------------------------------------
+
+export type RealPublishRecord = { title: string; link: string; sanityId: string; slug: string };
+export type RealPublishFailure = { title: string; link: string; message: string };
+
+export type OrchestratorV2PublishRunResult = OrchestratorV2RunResult & {
+  realPublishes: RealPublishRecord[];
+  realPublishFailures: RealPublishFailure[];
+};
+
+export async function runOrchestratorV2AndPublish(): Promise<OrchestratorV2PublishRunResult> {
+  const result = await runOrchestratorV2();
+
+  const realPublishes: RealPublishRecord[] = [];
+  const realPublishFailures: RealPublishFailure[] = [];
+
+  for (const p of result.published) {
+    console.log(`[orchestrator-v2] REAL PUBLISH attempt: "${p.title}"`);
+    const outcome = await publishAssembledDocument({ publishReady: true, document: p.document });
+    if (outcome.status === 'published') {
+      realPublishes.push({ title: p.title, link: p.link, sanityId: outcome.id, slug: outcome.slug });
+      console.log(`[orchestrator-v2] REAL PUBLISH ok: "${p.title}" → _id=${outcome.id}, slug=${outcome.slug}`);
+    } else {
+      const message = outcome.status === 'error' ? outcome.message : outcome.reason;
+      realPublishFailures.push({ title: p.title, link: p.link, message });
+      console.error(`[orchestrator-v2] REAL PUBLISH FAILED: "${p.title}" → ${message}`);
+    }
+  }
+
+  return { ...result, realPublishes, realPublishFailures };
 }
 
 // ---------------------------------------------------------------------------
