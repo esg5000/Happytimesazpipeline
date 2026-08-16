@@ -37,7 +37,7 @@ import { config } from '../../config';
 import { getSanityClient } from '../../agents/sanityPublisher';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
-/** Gemini 3.7 Flash — confirmed reachable on this account/key (2.5-generation models are not; see scripts/probe-gemini-model-access.ts). */
+/** Gemini 3.7 Flash — confirmed reachable on this account/key. 503 "high demand" errors occur at a volatile rate (seen 10%-55% across real runs) regardless of which 3.x flash model is used (3.6-flash also showed 45% failures in a live test); this looks like a Gemini-side capacity issue rather than a model-version issue. 2.5-generation models are not reachable on this account/key. */
 const STAGE1_GEMINI_MODEL = 'gemini-3.7-flash';
 const GEMINI_GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${STAGE1_GEMINI_MODEL}:generateContent`;
 
@@ -55,6 +55,17 @@ const STAGE1_BATCH_SIZE = 4;
  * candidates (see runStage0Discovery).
  */
 const CANNABIS_RESERVED_SLOTS = 4;
+/**
+ * Same mechanism as CANNABIS_RESERVED_SLOTS, mirrored exactly for
+ * lifestyle-az (food/nightlife/events discovery) — confirmed the same
+ * under-representation pattern in tonight's real KEEP lists: cannabis and
+ * weather/news/sports dominated while food/nightlife barely showed up on
+ * pure combined recency, the same symptom that justified the cannabis
+ * reserve originally. Filled by recency WITHIN lifestyle-az only,
+ * backfilled from the general pool if under-filled (see
+ * runStage0Discovery).
+ */
+const LIFESTYLE_RESERVED_SLOTS = 4;
 
 const SHADOW_OUTPUT_DIR = join(
   process.env.TEMP || process.env.TMPDIR || '/tmp',
@@ -65,7 +76,7 @@ const SHADOW_OUTPUT_DIR = join(
 // Stage 0 — Topic Discovery
 // ---------------------------------------------------------------------------
 
-export type QueryClass = 'local-native' | 'national-with-potential-local-angle' | 'cannabis-az';
+export type QueryClass = 'local-native' | 'national-with-potential-local-angle' | 'cannabis-az' | 'lifestyle-az';
 
 type Stage0Query = { query: string; queryClass: QueryClass };
 
@@ -79,7 +90,14 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * `cannabis-az`: Arizona dispensary/law/industry discovery — a real test of
  * whether Stage 0's broader-phrasing approach + Stage 1's model-judged,
  * logged verdict avoids the old slot-4-cannabis-az's opaque 270→0 collapse.
- * Feeds the same pool/dedupe/cap pipeline as the other two classes, no
+ * `lifestyle-az`: Arizona food/nightlife/events discovery — added after
+ * confirming the same under-representation pattern cannabis-az originally
+ * had (see LIFESTYLE_RESERVED_SLOTS). No dedicated "events" section
+ * exists in SECTION_VALUES — event-shaped topics discovered here still
+ * land under whichever real section fits (food/nightlife/news), same as
+ * every other class; this only guarantees they get *discovered* into the
+ * candidate pool, not a forced section.
+ * Feeds the same pool/dedupe/cap pipeline as the other classes, no
  * special-casing (see runStage0Discovery, unchanged).
  */
 const STAGE0_QUERIES: Stage0Query[] = [
@@ -101,6 +119,12 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'Scottsdale Tempe Mesa dispensary', queryClass: 'cannabis-az' },
   { query: 'Arizona cannabis industry growth', queryClass: 'cannabis-az' },
   { query: 'Arizona recreational marijuana news', queryClass: 'cannabis-az' },
+  { query: 'Phoenix new restaurant opening', queryClass: 'lifestyle-az' },
+  { query: 'Valley nightlife bars clubs new', queryClass: 'lifestyle-az' },
+  { query: 'Phoenix Scottsdale events this weekend', queryClass: 'lifestyle-az' },
+  { query: 'Arizona food festival event', queryClass: 'lifestyle-az' },
+  { query: 'Phoenix happy hour nightlife guide', queryClass: 'lifestyle-az' },
+  { query: 'Valley concert festival event announcement', queryClass: 'lifestyle-az' },
 ];
 
 export type RawNewsItem = {
@@ -615,6 +639,7 @@ async function runStage0Discovery(): Promise<{
   nearDedupedCount: number;
   nearDuplicateMerges: NearDuplicateMerge[];
   reservedCannabisItems: RawNewsItem[];
+  reservedLifestyleItems: RawNewsItem[];
   usage: Stage0Usage;
 }> {
   const usage: Stage0Usage = { apiCalls: 0, errors: 0, errorSample: [] };
@@ -649,24 +674,34 @@ async function runStage0Discovery(): Promise<{
     console.log(`[topic-discovery]   reserved-cannabis-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
   });
 
-  // Remaining slots (16, or more if cannabis-az didn't fill all 4 — backfill,
-  // not left empty) fill from the combined pool of all three classes by
+  // Reserved lifestyle-az quota — identical mechanism, mirrored exactly.
+  const lifestyleCandidates = nearDeduped.filter((it) => it.queryClass === 'lifestyle-az');
+  const reservedLifestyleItems = capStage0PoolByRecency(lifestyleCandidates, LIFESTYLE_RESERVED_SLOTS);
+  console.log(
+    `[topic-discovery] Lifestyle reserved quota: ${reservedLifestyleItems.length}/${LIFESTYLE_RESERVED_SLOTS} slot(s) filled from ${lifestyleCandidates.length} lifestyle-az candidate(s) (recency within class).`
+  );
+  reservedLifestyleItems.forEach((it, idx) => {
+    console.log(`[topic-discovery]   reserved-lifestyle-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
+  });
+
+  // Remaining slots (12, or more if either reserve didn't fill — backfill,
+  // not left empty) fill from the combined pool of all four classes by
   // recency, same as before. Reserved items are excluded from re-selection
-  // here so they aren't double-counted, but non-reserved cannabis-az items
-  // remain eligible to also win a general slot on merit.
-  const reservedLinks = new Set(reservedCannabisItems.map((it) => it.link));
-  const remainingSlots = STAGE1_CANDIDATE_CAP - reservedCannabisItems.length;
+  // here so they aren't double-counted, but non-reserved cannabis-az/
+  // lifestyle-az items remain eligible to also win a general slot on merit.
+  const reservedLinks = new Set([...reservedCannabisItems, ...reservedLifestyleItems].map((it) => it.link));
+  const remainingSlots = STAGE1_CANDIDATE_CAP - reservedCannabisItems.length - reservedLifestyleItems.length;
   const remainingPool = nearDeduped.filter((it) => !reservedLinks.has(it.link));
   const generalCapped = capStage0PoolByRecency(remainingPool, remainingSlots);
   console.log(
-    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 3 classes.`
+    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 4 classes.`
   );
 
-  const capped = [...reservedCannabisItems, ...generalCapped];
+  const capped = [...reservedCannabisItems, ...reservedLifestyleItems, ...generalCapped];
 
   console.log(
     `[topic-discovery] Stage 0 done: ${STAGE0_QUERIES.length} queries, ${usage.apiCalls} SerpAPI calls, ${usage.errors} SerpAPI errors, ` +
-      `${all.length} raw → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, general=${generalCapped.length})`
+      `${all.length} raw → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, reserved-lifestyle=${reservedLifestyleItems.length}, general=${generalCapped.length})`
   );
   if (usage.errors > 0 && usage.errors === STAGE0_QUERIES.length) {
     console.warn(
@@ -681,6 +716,7 @@ async function runStage0Discovery(): Promise<{
     nearDedupedCount: nearDeduped.length,
     nearDuplicateMerges,
     reservedCannabisItems,
+    reservedLifestyleItems,
     usage,
   };
 }
@@ -717,6 +753,9 @@ type Stage1VerdictResult = {
   skipReason?: string;
   excludeAsCrimeTragedy: boolean;
   crimeTragedyReason?: string;
+  /** Tone/brand fit — separate dimension from locality and crime/tragedy. A topic can be locally real, non-tragic, and still fail this (dry policy, generic incident report, no lifestyle angle). */
+  editorialFit: boolean;
+  editorialFitReason?: string;
   sources: SearchSummary[];
 };
 
@@ -861,9 +900,13 @@ TASK
    - "Barricaded suspect in Glendale standoff dead, shelter in place lifted" (a fatal police incident)
    - "Boy dies after jumping off London Bridge in Arizona" (a child's death)
    Ordinary local news that merely mentions public safety in passing (e.g. a road-closure or weather-safety story) is NOT crime/tragedy — only flag stories where the substance of the story IS a crime, accident, death, or tragedy.
+7. Separately from locality AND from the crime/tragedy check above, judge editorialFit: does this story fit an upbeat, "good vibes and wild nights" Phoenix lifestyle brand — food, nightlife, cannabis culture, events, health-wellness, sports? Set editorialFit to true if it fits that tone, false if it's off-brand even though it isn't tragedy (dry policy analysis, generic hard-news process stories, bureaucratic/regulatory coverage with no local color or lifestyle angle). This is a real, separate exclusion — a story can pass the crime/tragedy check (it's not a tragedy) and still fail this one because it's simply tonally wrong for the site.
+   Genuinely useful civic/safety content — heat warnings, monsoon alerts, public-safety advisories — should still be marked true; this is about TONE FIT, not whether something counts as real news. Don't over-filter.
+   Tiebreaker for advisory-shaped vs. incident-shaped stories: does this change what a reader does today, or is it just "something happened"? Forward-looking advisories that help a reader plan (a construction heads-up, a heat/monsoon warning) = true. Static, past-tense incident reports with no forward planning value and no lifestyle angle (a standalone crash/traffic-backup story with nothing else to it) = false.
+   Give a short editorialFitReason explaining the call either way.
 
 Return ONLY this JSON shape, no markdown fences, no prose before or after:
-{"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
+{"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
 
   const raw = await geminiGenerateContentCall(`${instructions}\n\n${user}`);
 
@@ -899,6 +942,14 @@ Return ONLY this JSON shape, no markdown fences, no prose before or after:
   const crimeTragedyReason =
     typeof obj.excludeReason === 'string' && obj.excludeReason.trim() ? obj.excludeReason.trim() : undefined;
 
+  // Fail-open, same asymmetric-safety philosophy as excludeAsCrimeTragedy
+  // above (which only drops on an explicit `true`): only an explicit
+  // `false` drops a topic here — missing/malformed data defaults to
+  // "fits," not silently dropped by a parsing gap.
+  const editorialFit = obj.editorialFit !== false;
+  const editorialFitReason =
+    typeof obj.editorialFitReason === 'string' && obj.editorialFitReason.trim() ? obj.editorialFitReason.trim() : undefined;
+
   const rawSources = Array.isArray(obj.sources) ? obj.sources : [];
   const sources = mergeSearchSummariesByUrl(
     rawSources
@@ -914,6 +965,8 @@ Return ONLY this JSON shape, no markdown fences, no prose before or after:
     skipReason,
     excludeAsCrimeTragedy,
     crimeTragedyReason,
+    editorialFit,
+    editorialFitReason,
     sources,
   };
 }
@@ -963,6 +1016,8 @@ export type Stage1Usage = {
   proceededToStage1: number;
   /** Dropped by the Stage 1 model's excludeAsCrimeTragedy judgment (the actual authority), independent of locality verdict. */
   crimeTragedyDropped: number;
+  /** Dropped by the Stage 1 model's editorialFit judgment (tone/brand fit, NOT locality or crime/tragedy — a topic can be locally real, non-tragic, and still off-brand). */
+  editorialFitDropped: number;
   hardStopped: boolean;
   hardStopReason?: string;
   hardStopAtCount?: number;
@@ -987,6 +1042,7 @@ async function runStage1Batched(
     editorialGateDropped: 0,
     proceededToStage1: 0,
     crimeTragedyDropped: 0,
+    editorialFitDropped: 0,
     hardStopped: false,
   };
   const kept: TopicDiscoveryResult[] = [];
@@ -1081,6 +1137,23 @@ async function runStage1Batched(
         });
         console.log(
           `[topic-discovery] SKIP (crime-tragedy, verdict was ${v.verdict}): "${r.item.title.slice(0, 90)}" — ${v.crimeTragedyReason || '(no reason given)'}`
+        );
+        continue;
+      }
+
+      // Editorial-fit exclusion — separate dimension from locality and
+      // crime/tragedy, checked the same way (regardless of verdict): a
+      // topic can be locally real, non-tragic, and still tonally wrong
+      // for the site.
+      if (!v.editorialFit) {
+        usage.editorialFitDropped += 1;
+        skipped.push({
+          title: r.item.title,
+          link: r.item.link,
+          reason: `editorial-fit: ${v.editorialFitReason || '(no reason given)'}`,
+        });
+        console.log(
+          `[topic-discovery] SKIP (editorial-fit, verdict was ${v.verdict}): "${r.item.title.slice(0, 90)}" — ${v.editorialFitReason || '(no reason given)'}`
         );
         continue;
       }
@@ -1264,6 +1337,7 @@ export type ShadowRunResult = {
   nearDuplicateMerges: NearDuplicateMerge[];
   dedupeCounts: Stage0DedupeCounts;
   reservedCannabisItems: RawNewsItem[];
+  reservedLifestyleItems: RawNewsItem[];
   stage0Usage: Stage0Usage;
   stage1Usage: Stage1Usage;
   wallClockMs: number;
@@ -1303,6 +1377,7 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     nearDedupedCount,
     nearDuplicateMerges,
     reservedCannabisItems,
+    reservedLifestyleItems,
     usage: stage0Usage,
   } = await runStage0Discovery();
   const { kept, skipped, usage: stage1Usage } = await runStage1Batched(pool);
@@ -1323,10 +1398,16 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     `[topic-discovery] Cannabis reserved quota filled: ${reservedCannabisItems.length}/${CANNABIS_RESERVED_SLOTS} — ${reservedCannabisItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
   );
   console.log(
+    `[topic-discovery] Lifestyle reserved quota filled: ${reservedLifestyleItems.length}/${LIFESTYLE_RESERVED_SLOTS} — ${reservedLifestyleItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
+  );
+  console.log(
     `[topic-discovery] Editorial gate (keyword pre-filter): ${stage1Usage.editorialGateDropped} dropped before Stage 1, ${stage1Usage.proceededToStage1} proceeded to Stage 1 (of ${pool.length} capped candidates).`
   );
   console.log(
     `[topic-discovery] Crime/tragedy exclusion (Stage 1 model judgment): ${stage1Usage.crimeTragedyDropped} dropped.`
+  );
+  console.log(
+    `[topic-discovery] Editorial-fit exclusion (Stage 1 model judgment, tone-fit not locality): ${stage1Usage.editorialFitDropped} dropped.`
   );
   console.log(
     `[topic-discovery] Stage 1 done: ${stage1Usage.apiCalls} Gemini calls, hardStopped=${stage1Usage.hardStopped}${
@@ -1354,6 +1435,8 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
       cap: STAGE1_CANDIDATE_CAP,
       cannabisReservedSlots: CANNABIS_RESERVED_SLOTS,
       reservedCannabisItems: reservedCannabisItems.map((it) => ({ title: it.title, link: it.link })),
+      lifestyleReservedSlots: LIFESTYLE_RESERVED_SLOTS,
+      reservedLifestyleItems: reservedLifestyleItems.map((it) => ({ title: it.title, link: it.link })),
     },
     stage1: stage1Usage,
     kept,
@@ -1368,6 +1451,7 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     nearDuplicateMerges,
     dedupeCounts,
     reservedCannabisItems,
+    reservedLifestyleItems,
     stage0Usage,
     stage1Usage,
     wallClockMs,
@@ -1391,6 +1475,9 @@ if (require.main === module) {
         `Crime/tragedy exclusion (Stage 1 model judgment): ${result.stage1Usage.crimeTragedyDropped} dropped`
       );
       console.log(
+        `Editorial-fit exclusion (Stage 1 model judgment, tone-fit not locality): ${result.stage1Usage.editorialFitDropped} dropped`
+      );
+      console.log(
         `Stage 1 Gemini calls: ${result.stage1Usage.apiCalls} (cap=${STAGE1_CANDIDATE_CAP}, hardStopped=${result.stage1Usage.hardStopped}${
           result.stage1Usage.hardStopReason ? `, reason=${result.stage1Usage.hardStopReason}` : ''
         })`
@@ -1404,6 +1491,16 @@ if (require.main === module) {
       console.log(
         JSON.stringify(
           result.reservedCannabisItems.map((it) => ({ title: it.title, link: it.link })),
+          null,
+          2
+        )
+      );
+      console.log(
+        `\nLifestyle reserved quota: ${result.reservedLifestyleItems.length}/${LIFESTYLE_RESERVED_SLOTS} filled`
+      );
+      console.log(
+        JSON.stringify(
+          result.reservedLifestyleItems.map((it) => ({ title: it.title, link: it.link })),
           null,
           2
         )
