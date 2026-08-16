@@ -5,12 +5,28 @@ import axios from 'axios';
 import { config } from '../config';
 import { getSanityClient, uploadImageToSanity } from './sanityPublisher';
 
-const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
+/**
+ * Data source: Ticketmaster Discovery API (bulk per-city listing), not
+ * SerpApi's google_events — google_events stopped returning real results
+ * (confirmed dead across every tested query before this swap) and SerpApi's
+ * Bing Events product does not trigger an events carousel on this account
+ * either (also confirmed dead, including SerpApi's own documented example
+ * queries). File/function names below still say "SerpApi" — kept as-is
+ * because daemonServer.ts and telegramHttpServer.ts import
+ * syncSerpApiEventsToSanity by that exact name and renaming it is out of
+ * scope for this fix (this file only). The name is now misleading, worth
+ * a follow-up rename later.
+ */
+const TICKETMASTER_DISCOVERY_URL = 'https://app.ticketmaster.com/discovery/v2/events.json';
+/** How far ahead to pull events per run — matches this sync's existing weekly cadence (config.serpApi.cronSchedule in daemonServer.ts) with margin so a missed week doesn't leave a coverage gap. */
+const TICKETMASTER_LOOKAHEAD_DAYS = 45;
+/** One page per city — mirrors the old fetchEventsForCity, which also only ever read a single page. MAX_EVENTS_PER_SYNC=150 across ~19 cities means 50 raw candidates per city is already far more than a run will ever write. */
+const TICKETMASTER_PAGE_SIZE = 50;
 
 /** Max events written to Sanity per run (manual API and scheduled cron). */
 const MAX_EVENTS_PER_SYNC = 150;
 
-/** Cities to search (Google Events query + location). */
+/** Cities to search (Ticketmaster city + stateCode filter). */
 const TARGET_CITIES = [
   'Phoenix',
   'Scottsdale',
@@ -33,39 +49,39 @@ const TARGET_CITIES = [
   'Safford',
 ] as const;
 
-type SerpDateBlock = {
-  start_date?: string;
-  when?: string;
+type TicketmasterVenue = {
+  name?: string;
+  address?: { line1?: string };
+  city?: { name?: string };
+  state?: { stateCode?: string };
 };
 
-type SerpGoogleEvent = {
-  title?: string;
-  date?: SerpDateBlock;
-  address?: string[];
-  link?: string;
-  description?: string;
-  ticket_info?: Array<{ source?: string; link?: string; link_type?: string }>;
-  venue?: { name?: string };
-  thumbnail?: string;
-  image?: string;
-  /** Set when merging multi-city results — which query produced this row */
-  _searchCity?: string;
+type TicketmasterImage = { ratio?: string; width?: number; url?: string };
+
+type TicketmasterPriceRange = { currency?: string; min?: number; max?: number };
+
+type TicketmasterClassification = {
+  segment?: { name?: string };
+  genre?: { name?: string };
+  subGenre?: { name?: string };
 };
 
-type SerpApiResponse = {
-  search_metadata?: { status?: string };
-  error?: string;
-  events_results?: SerpGoogleEvent[];
+export type TicketmasterEvent = {
+  name?: string;
+  url?: string;
+  images?: TicketmasterImage[];
+  dates?: { start?: { localDate?: string; localTime?: string; dateTime?: string } };
+  priceRanges?: TicketmasterPriceRange[];
+  classifications?: TicketmasterClassification[];
+  _embedded?: { venues?: TicketmasterVenue[] };
 };
 
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+type TicketmasterEventsResponse = {
+  _embedded?: { events?: TicketmasterEvent[] };
+  page?: { totalElements?: number; totalPages?: number };
+};
 
-function normalizeTitle(title: string): string {
+export function normalizeTitle(title: string): string {
   return title.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
@@ -75,11 +91,11 @@ function titleKeyHex(title: string): string {
 }
 
 function documentIdFromTitle(title: string): string {
-  return `event-ge-${titleKeyHex(title).slice(0, 32)}`;
+  return `event-tm-${titleKeyHex(title).slice(0, 32)}`;
 }
 
 function slugFromTitle(title: string): string {
-  return `ge-${titleKeyHex(title).slice(0, 24)}`;
+  return `tm-${titleKeyHex(title).slice(0, 24)}`;
 }
 
 /** Exclude kids / school / family-only style events (checked before include list). */
@@ -105,8 +121,8 @@ function isExcludedAudience(textLower: string): boolean {
   return false;
 }
 
-/** HappyTimesAZ focus: at least one category keyword in title, description, or venue. */
-function matchesHappyTimesCategories(
+/** HappyTimesAZ focus: at least one category keyword in title, description, or venue. Unchanged from the google_events version — see build report for how well this fits Ticketmaster's classification taxonomy instead of free-text description. */
+export function matchesHappyTimesCategories(
   title: string,
   description: string,
   venue: string
@@ -136,119 +152,119 @@ function matchesHappyTimesCategories(
   return false;
 }
 
-/** Stable ISO start time for dedupe; prefers `when`, falls back to start_date + year. */
-function parseStartIso(dateBlock: SerpDateBlock | undefined): string | null {
-  if (!dateBlock) return null;
-  const when = dateBlock.when?.trim();
-  if (when) {
-    const parsed = Date.parse(when);
-    if (!Number.isNaN(parsed)) {
-      const parsedDate = new Date(parsed);
-      if (parsedDate < new Date()) return null;
-      return parsedDate.toISOString();
-    }
+/**
+ * Ticketmaster's base event response has no real event-description text —
+ * `info`/`pleaseNote` are venue policy/logistics copy (bag policy, cashless
+ * payment, mobile-ticket requirements), not a description of the event, so
+ * using them here would mislabel real data as something it isn't. This
+ * builds a short real-data summary from `classifications` instead (e.g.
+ * "Sports — Baseball — MLB") — every word traces to an actual API field,
+ * unlike a fabricated blurb, and it also gives matchesHappyTimesCategories
+ * something to match against beyond title/venue text alone, since a title
+ * like "Arizona Diamondbacks vs. New York Yankees" contains no category
+ * keyword on its own. See build report: this is a real trade-off (shorter,
+ * less descriptive than the old Google-sourced blurbs) called out
+ * explicitly, not a silent change to the include-keyword gate itself.
+ */
+export function buildTicketmasterClassificationSummary(ev: TicketmasterEvent): string {
+  const parts: string[] = [];
+  for (const c of ev.classifications || []) {
+    const bits = [c.segment?.name, c.genre?.name, c.subGenre?.name].filter(
+      (b): b is string => !!b && b.trim().length > 0 && b.toLowerCase() !== 'undefined'
+    );
+    if (bits.length) parts.push(bits.join(' — '));
   }
-  const sd = dateBlock.start_date?.trim();
-  if (!sd) return null;
-  const y = new Date().getFullYear();
-  let d = new Date(`${sd}, ${y}`);
-  if (Number.isNaN(d.getTime())) {
-    d = new Date(`${sd} ${y}`);
-  }
-  if (Number.isNaN(d.getTime())) return null;
-  const now = new Date();
-  if (d < now) {
-    const bumped = new Date(`${sd}, ${y + 1}`);
-    if (Number.isNaN(bumped.getTime())) return null;
-    const sixMonthsOut = new Date(now);
-    sixMonthsOut.setMonth(sixMonthsOut.getMonth() + 6);
-    if (bumped > sixMonthsOut) return null;
-    d = bumped;
-  }
-  return d.toISOString();
+  return parts.join('; ');
 }
 
-function parseAddressLines(address: string[] | undefined): {
+/** Ticketmaster gives a full ISO 8601 UTC dateTime directly — no loose-string parsing needed, unlike Google Events' date.when/start_date. */
+export function parseTicketmasterStartIso(ev: TicketmasterEvent): string | null {
+  const start = ev.dates?.start;
+  if (!start) return null;
+  if (start.dateTime) return start.dateTime;
+  if (start.localDate) {
+    const iso = new Date(`${start.localDate}T${start.localTime || '00:00:00'}`);
+    return Number.isNaN(iso.getTime()) ? null : iso.toISOString();
+  }
+  return null;
+}
+
+export function extractTicketmasterVenueFields(ev: TicketmasterEvent): {
   venue: string;
-  addressLine: string;
+  address: string;
   city: string;
 } {
-  if (!address?.length) {
-    return { venue: '', addressLine: '', city: '' };
-  }
-  const first = address[0] || '';
-  const last = address[address.length - 1] || '';
-  let city = '';
-  const m = last.match(/^([^,]+),\s*([A-Z]{2})\b/i);
-  if (m) {
-    city = m[1].trim();
-  } else {
-    city = last.split(',')[0]?.trim() || '';
-  }
-  const venueFromLine = first.split(',')[0]?.trim() || '';
-  return {
-    venue: venueFromLine,
-    addressLine: address.join(', '),
-    city,
-  };
+  const v = ev._embedded?.venues?.[0];
+  const venue = v?.name?.trim() || '';
+  const city = v?.city?.name?.trim() || '';
+  const addressParts = [v?.address?.line1, city, v?.state?.stateCode].filter(
+    (p): p is string => !!p && p.trim().length > 0
+  );
+  return { venue, address: addressParts.join(', '), city };
 }
 
-function pickTicketUrl(ev: SerpGoogleEvent): string {
-  const tickets = ev.ticket_info?.find((t) => t.link_type === 'tickets' && t.link);
-  if (tickets?.link) return tickets.link;
-  return ev.link || '';
-}
-
-function pickPrice(ev: SerpGoogleEvent): string {
-  const ti = ev.ticket_info;
-  if (!ti?.length) return '';
-  const t = ti.find((x) => x.link_type === 'tickets');
-  return t?.source ? `See ${t.source}` : '';
-}
-
-async function fetchEventsForCity(city: string): Promise<SerpGoogleEvent[]> {
-  const apiKey = config.serpApi.apiKey;
-  if (!apiKey) throw new Error('SERPAPI_API_KEY is not set');
-
-  const out: SerpGoogleEvent[] = [];
-  let start = 0;
-
-  for (let page = 0; page < 1; page++) {
-    const { status, data } = await axios.get<SerpApiResponse>(SERPAPI_SEARCH, {
-      params: {
-        engine: 'google_events',
-        api_key: apiKey,
-        q: `Events in ${city}, Arizona`,
-        location: `${city}, Arizona, United States`,
-        hl: 'en',
-        gl: 'us',
-        start,
-      },
-      validateStatus: () => true,
-    });
-
-    if (status !== 200) {
-      throw new Error(
-        `SerpApi HTTP ${status}: ${typeof data === 'object' && data && 'error' in data ? String((data as SerpApiResponse).error) : 'request failed'}`
-      );
-    }
-
-    if (data.error) {
-      throw new Error(data.error);
-    }
-
-    const results = data.events_results || [];
-    if (results.length === 0) break;
-    out.push(...results);
-    start += 10;
-    if (results.length < 10) break;
-  }
-
-  return out;
+/** Prefers a 16:9 image in a reasonable display width; Ticketmaster's `images` array otherwise skews toward either tiny thumbnails or huge originals. */
+export function pickTicketmasterImageUrl(images: TicketmasterImage[] | undefined): string | undefined {
+  if (!images?.length) return undefined;
+  const wide = images.find((im) => im.ratio === '16_9' && (im.width || 0) >= 640 && (im.width || 0) <= 1200);
+  return (wide || images[0])?.url;
 }
 
 /**
- * Fetches Google Events via SerpApi for Phoenix-area cities and upserts `event` documents in Sanity.
+ * Only a real Ticketmaster priceRanges entry becomes a price fact — confirmed
+ * live that priceRanges is frequently absent entirely (0 of 20 sampled
+ * Phoenix events had it), so no synthesized/placeholder price. This
+ * replaces the old pickPrice, which returned a non-numeric "See {ticket
+ * source}" placeholder string — that placeholder is gone now, not ported.
+ */
+export function pickTicketmasterPrice(ev: TicketmasterEvent): string {
+  const pr = (ev.priceRanges || []).find((p) => typeof p.min === 'number' || typeof p.max === 'number');
+  if (!pr) return '';
+  const currency = pr.currency || 'USD';
+  const { min, max } = pr;
+  if (min != null && max != null && min !== max) return `${currency} ${min}–${max}`;
+  return `${currency} ${min ?? max}`;
+}
+
+function ticketmasterIsoParam(d: Date): string {
+  return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/** One Ticketmaster Discovery API call per city: city + stateCode filter, bounded to the next TICKETMASTER_LOOKAHEAD_DAYS days, single page (TICKETMASTER_PAGE_SIZE). */
+export async function fetchTicketmasterEventsForCity(city: string): Promise<TicketmasterEvent[]> {
+  const apiKey = config.ticketmaster.apiKey;
+  if (!apiKey) throw new Error('TICKETMASTER_API_KEY is not set');
+
+  const now = new Date();
+  const end = new Date(now.getTime() + TICKETMASTER_LOOKAHEAD_DAYS * 24 * 60 * 60 * 1000);
+
+  const { status, data } = await axios.get<TicketmasterEventsResponse>(TICKETMASTER_DISCOVERY_URL, {
+    params: {
+      apikey: apiKey,
+      city,
+      stateCode: 'AZ',
+      startDateTime: ticketmasterIsoParam(now),
+      endDateTime: ticketmasterIsoParam(end),
+      size: TICKETMASTER_PAGE_SIZE,
+    },
+    validateStatus: () => true,
+  });
+
+  if (status === 404) {
+    // Ticketmaster returns 404 (not an empty 200) when a city has zero matches in range — confirmed live for Sedona/Show Low.
+    return [];
+  }
+  if (status !== 200) {
+    const body = data as unknown as { fault?: { faultstring?: string }; errors?: Array<{ detail?: string }> };
+    const errMsg = body?.fault?.faultstring || body?.errors?.[0]?.detail || `HTTP ${status}`;
+    throw new Error(`Ticketmaster HTTP ${status}: ${errMsg}`);
+  }
+
+  return data._embedded?.events || [];
+}
+
+/**
+ * Fetches events via Ticketmaster's Discovery API for Phoenix-area cities and upserts `event` documents in Sanity.
  * One document per normalized title (recurring dates deduped). HappyTimesAZ category + audience filters apply.
  */
 const ERROR_SAMPLE_MAX = 5;
@@ -260,8 +276,8 @@ export async function syncSerpApiEventsToSanity(): Promise<{
   /** A few example error messages from this run, capped — not every failure. Purely additive observability; does not change what gets fetched/synced. */
   errorSample: string[];
 }> {
-  if (!config.serpApi.apiKey) {
-    throw new Error('SERPAPI_API_KEY is not set');
+  if (!config.ticketmaster.apiKey) {
+    throw new Error('TICKETMASTER_API_KEY is not set');
   }
 
   const client = getSanityClient();
@@ -283,26 +299,24 @@ export async function syncSerpApiEventsToSanity(): Promise<{
   cityLoop: for (const city of TARGET_CITIES) {
     if (synced >= MAX_EVENTS_PER_SYNC) break;
 
-    console.log(`[serpapi] Fetching events for ${city}...`);
-    let batch: SerpGoogleEvent[];
+    console.log(`[ticketmaster] Fetching events for ${city}...`);
+    let batch: TicketmasterEvent[];
     try {
-      batch = await fetchEventsForCity(city);
-      console.log(`[serpapi] ${city}: ${batch.length} raw results`);
+      batch = await fetchTicketmasterEventsForCity(city);
+      console.log(`[ticketmaster] ${city}: ${batch.length} raw results`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[serpapi] City "${city}" fetch failed:`, msg);
+      console.error(`[ticketmaster] City "${city}" fetch failed:`, msg);
       errors++;
       pushErrorSample(`${city}: ${msg}`);
       continue;
     }
 
     const syncedBefore = synced;
-    for (const raw of batch) {
+    for (const ev of batch) {
       if (synced >= MAX_EVENTS_PER_SYNC) break cityLoop;
 
-      const ev: SerpGoogleEvent = { ...raw, _searchCity: city };
-
-      const title = ev.title?.trim() || '';
+      const title = (ev.name || '').trim();
       if (!title) {
         skipped++;
         continue;
@@ -314,43 +328,40 @@ export async function syncSerpApiEventsToSanity(): Promise<{
         continue;
       }
 
-      const { venue: venueFromAddr, addressLine, city: cityParsed } = parseAddressLines(
-        ev.address
-      );
-      const venueName = ev.venue?.name?.trim() || venueFromAddr;
-      const description = stripHtml(ev.description || '').slice(0, 30000);
+      const { venue: venueName, address: addressLine, city: cityParsed } = extractTicketmasterVenueFields(ev);
+      const description = buildTicketmasterClassificationSummary(ev);
 
       if (!matchesHappyTimesCategories(title, description, venueName)) {
         skipped++;
         continue;
       }
 
-      const startIso = parseStartIso(ev.date);
+      const startIso = parseTicketmasterStartIso(ev);
       if (!startIso) {
         skipped++;
         continue;
       }
 
-      const imageUrl = ev.image || ev.thumbnail;
+      const imageUrl = pickTicketmasterImageUrl(ev.images);
       const tKey = titleKeyHex(title).slice(0, 16);
       let imageAssetId: string | undefined;
       if (imageUrl) {
         try {
           imageAssetId = await uploadImageToSanity(
             imageUrl,
-            `google-events-${tKey}.jpg`
+            `ticketmaster-${tKey}.jpg`
           );
         } catch (e) {
           console.warn(
-            `[serpapi] Image upload failed for "${title}":`,
+            `[ticketmaster] Image upload failed for "${title}":`,
             e instanceof Error ? e.message : e
           );
         }
       }
 
-      const ticketUrl = pickTicketUrl(ev);
-      const price = pickPrice(ev);
-      const cityOut = cityParsed || ev._searchCity || '';
+      const ticketUrl = ev.url || '';
+      const price = pickTicketmasterPrice(ev);
+      const cityOut = cityParsed || city;
 
       const doc: Record<string, unknown> = {
         _type: 'event',
@@ -366,9 +377,9 @@ export async function syncSerpApiEventsToSanity(): Promise<{
         city: cityOut,
         description,
         price,
-        categories: ['google_events', 'Events'],
+        categories: ['ticketmaster', 'Events'],
         isActive: true,
-        source: 'google_events',
+        source: 'ticketmaster',
       };
 
       if (ticketUrl) {
@@ -394,17 +405,17 @@ export async function syncSerpApiEventsToSanity(): Promise<{
       } catch (e) {
         errors++;
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`[serpapi] Failed to upsert event "${title}":`, msg);
+        console.error(`[ticketmaster] Failed to upsert event "${title}":`, msg);
         pushErrorSample(`upsert "${title}": ${msg}`);
       }
     }
-    console.log(`[serpapi] ${city}: ${synced - syncedBefore} passed filter`);
+    console.log(`[ticketmaster] ${city}: ${synced - syncedBefore} passed filter`);
   }
 
-  console.log(`[serpapi] Done — synced: ${synced}, skipped: ${skipped}, errors: ${errors}`);
+  console.log(`[ticketmaster] Done — synced: ${synced}, skipped: ${skipped}, errors: ${errors}`);
   if (errors > 0 && errors === TARGET_CITIES.length) {
     console.warn(
-      `[serpapi] WARNING: every city fetch errored this run (${errors}/${TARGET_CITIES.length}) — likely an engine/account-level issue, not city-specific. Sample: ${errorSample.join(' | ')}`
+      `[ticketmaster] WARNING: every city fetch errored this run (${errors}/${TARGET_CITIES.length}) — likely an engine/account-level issue, not city-specific. Sample: ${errorSample.join(' | ')}`
     );
   }
   return { synced, skipped, errors, errorSample };
