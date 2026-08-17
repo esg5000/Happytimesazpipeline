@@ -7,8 +7,10 @@
  * that doesn't match a more specific one. Event-shaped topics (subjectTag
  * hints, or section=nightlife) go through gatherEventSourcesTiered:
  * Ticketmaster's Discovery API first (clean structured JSON straight from
- * the ticketing provider, no scraping), falling back to the SerpAPI-based
- * gatherEventSources when Ticketmaster has no confident match. The
+ * the ticketing provider, no scraping), then whatsupeastvalley.com's East
+ * Valley Events listing, then dtphx.org's events calendar (both static-HTML
+ * listing pages, regex-parsed per card), falling back to the SerpAPI-based
+ * gatherEventSources when none of the three has a confident match. The
  * default checker is Stage 3's primary path for everything else —
  * it fetches the real source article, preferring topic.link but falling
  * back through topic.searchSummaries URLs in order when topic.link
@@ -301,6 +303,118 @@ async function fetchVenuePageText(
   return null;
 }
 
+/**
+ * Raw-HTML counterpart to fetchPagePlainTextWithPlaywright above — returns
+ * the rendered DOM's full markup (page.content()) instead of innerText, for
+ * checkers that need to regex-parse listing-card structure rather than read
+ * prose. Used by fetchRawHtml below when a plain HTTP GET is blocked (e.g. a
+ * WAF rejecting non-browser requests) or fails outright.
+ */
+async function fetchPageRawHtmlWithPlaywright(url: string): Promise<string | null> {
+  console.log(`[source-gathering] Playwright raw-HTML fallback triggered for ${url}`);
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    });
+    await page.goto(url, { waitUntil: 'load', timeout: 45_000 });
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    } catch {
+      // Many sites never reach networkidle; `load` above is enough to read the DOM.
+    }
+    const html = await page.content();
+    return html && html.length > 0 ? html : null;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[source-gathering] Playwright raw-HTML fallback failed:', url, msg);
+    return null;
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
+}
+
+/**
+ * Plain HTTP fetch first (same headers/timeouts as fetchVenuePageText),
+ * Playwright fallback if that fails or returns a trivially small response —
+ * used by listing-page checkers (WUEV, dtphx) that need real HTML structure
+ * to regex-parse, not the stripped plain text fetchVenuePageText returns.
+ */
+async function fetchRawHtml(url: string): Promise<{ html: string; method: 'http' | 'playwright' } | null> {
+  let axiosHtml: string | null = null;
+  try {
+    const res = await axios.get<string>(url, {
+      timeout: PAGE_FETCH_TIMEOUT_MS,
+      maxContentLength: PAGE_FETCH_MAX_BYTES,
+      maxBodyLength: PAGE_FETCH_MAX_BYTES,
+      responseType: 'text',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (compatible; HappyTimesAZ-SourceGatheringBot/1.0; +https://happytimesaz.com)',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+      },
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+    if (typeof res.data === 'string' && res.data.length > 200) {
+      axiosHtml = res.data;
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[source-gathering] fetchRawHtml (axios) failed:', url, msg);
+  }
+
+  if (axiosHtml) {
+    return { html: axiosHtml, method: 'http' };
+  }
+
+  const pwHtml = await fetchPageRawHtmlWithPlaywright(url);
+  if (pwHtml) {
+    return { html: pwHtml, method: 'playwright' };
+  }
+  return null;
+}
+
+/**
+ * Decodes/strips markup from a single regex-captured field (a card's title,
+ * venue, date span, etc.) — narrower than htmlToPlainText (no truncation,
+ * no script/style stripping, since callers only ever hand it small already-
+ * isolated fragments) and kept separate so it never risks changing
+ * htmlToPlainText's behavior for the default/SerpAPI-events checkers.
+ */
+function decodeHtmlFieldText(raw: string): string {
+  const t = raw
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (match, n: string) => {
+      const code = parseInt(n, 10);
+      if (!Number.isFinite(code) || code < 32) return match;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return match;
+      }
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (match, h: string) => {
+      const code = parseInt(h, 16);
+      if (!Number.isFinite(code) || code < 32) return match;
+      try {
+        return String.fromCodePoint(code);
+      } catch {
+        return match;
+      }
+    });
+  return t.replace(/\s+/g, ' ').trim();
+}
+
 // ---------------------------------------------------------------------------
 // Lightweight fact extraction from arbitrary page text — regex-based,
 // deliberately conservative. Not a real NLP parser; see build report for
@@ -388,6 +502,37 @@ function simpleTitleSimilarity(a: string, b: string): number {
   for (const t of ta) if (tb.has(t)) inter += 1;
   const union = ta.size + tb.size - inter;
   return union === 0 ? 0 : inter / union;
+}
+
+/**
+ * Stricter companion to simpleTitleSimilarity, used only by the WUEV/dtphx
+ * pick-best functions below (NOT by pickBestMatch/pickBestTicketmasterMatch
+ * above — those, and simpleTitleSimilarity itself, are left exactly as they
+ * were). Confirmed live during this build: on dtphx's 152-card calendar,
+ * "Popsicle Popup Party" scored 0.25 against an unrelated "LAN Party" card
+ * (both share only the generic word "party"), clearing the same 0.2
+ * threshold Ticketmaster uses safely on its much larger catalog — WUEV/
+ * dtphx's shorter, more genericword-heavy titles need every token of the
+ * shorter title to appear in the other before a candidate is even
+ * considered, not just a plurality of shared tokens.
+ */
+function shorterTitleFullyContained(a: string, b: string): boolean {
+  const tok = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 2)
+    );
+  const ta = tok(a);
+  const tb = tok(b);
+  if (ta.size === 0 || tb.size === 0) return false;
+  const [shorter, longer] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  for (const w of shorter) {
+    if (!longer.has(w)) return false;
+  }
+  return true;
 }
 
 function pickBestMatch(
@@ -733,17 +878,295 @@ async function gatherTicketmasterEventSources(topic: TopicInput): Promise<Source
   return { topic, facts, primarySourceFound: facts.length > 0, factCount: facts.length };
 }
 
+// ---------------------------------------------------------------------------
+// WUEV checker — whatsupeastvalley.com/east-valley-events/, TRY-SECOND
+// tier (after Ticketmaster, ahead of dtphx and the SerpAPI fallback). Static
+// server-rendered HTML: listing cards on this one page already carry title,
+// category, venue+address, date, and description — no detail-page follow-
+// through needed. Card markup confirmed live: WordPress "wp-event-solution"
+// plugin output, `.etn-event-item` blocks with stable `etn-*` class names.
+// ---------------------------------------------------------------------------
+
+const WUEV_EVENTS_URL = 'https://whatsupeastvalley.com/east-valley-events/';
+/** Same reasoning as TICKETMASTER_MIN_MATCH_SCORE above — below this score the "best" card is treated as no real match rather than a wrong-event attachment. */
+const WUEV_MIN_MATCH_SCORE = 0.2;
+
+type WuevCard = {
+  title: string;
+  detailUrl?: string;
+  category?: string;
+  locationBlob?: string;
+  date?: string;
+  description?: string;
+};
+
 /**
- * Ticketmaster first (clean, free, structured, zero HTML scraping); if it
- * has no confident match, fall back to the existing SerpAPI-based
- * gatherEventSources unchanged above. Deliberately does NOT chain a third
- * tier to gatherDefaultSources: this preserves the file's existing
- * invariant (see header comment) that event-shaped topics are handled by
- * "the events checker" as a single logical path — gatherEventSources is
- * structurally suited to event facts (venue/date/ticket fields, SerpAPI
- * events engine + venue-page fetch), whereas gatherDefaultSources returns
- * one long-form article-text blob with no structured event fields, a worse
- * last resort for an event topic than simply reporting no match found.
+ * Card markup (confirmed live, whitespace-collapsed):
+ * <div class="etn-event-item">...<a href="URL" ... aria-label="East Valley Events">...
+ *   <div class="etn-event-category"><span>Category</span></div> ...
+ *   <div class="etn-event-location"><i .../> Venue Name, Street, City, AZ ZIP</div>
+ *   <h3 class="etn-title etn-event-title"><a ...>Title</a></h3>
+ *   <p>Description</p>
+ *   <div class="etn-event-date"><span><i .../> Month D, YYYY</span></div>
+ * Regex-per-card, same "deliberately conservative" approach as the rest of
+ * this file — split on the item-marker class, then extract each field from
+ * its own chunk.
+ */
+function parseWuevCards(html: string): WuevCard[] {
+  const norm = html.replace(/\s+/g, ' ');
+  const chunks = norm.split('etn-event-item').slice(1);
+  const cards: WuevCard[] = [];
+  for (const chunk of chunks) {
+    const titleMatch = chunk.match(/<h3 class="etn-title etn-event-title">\s*<a[^>]*>([^<]*)<\/a>/);
+    if (!titleMatch) continue;
+    const linkMatch = chunk.match(/<a href="([^"]+)"[^>]*aria-label="East Valley Events">/);
+    const categoryMatch = chunk.match(/<div class="etn-event-category">\s*<span>([^<]*)<\/span>/);
+    const locationMatch = chunk.match(/<div class="etn-event-location">(?:<i[^>]*><\/i>)?\s*([^<]*)<\/div>/);
+    const descMatch = chunk.match(/<\/h3>\s*<p>([^<]*)<\/p>/);
+    const dateMatch = chunk.match(/<div class="etn-event-date">\s*<span>\s*(?:<i[^>]*><\/i>)?\s*([^<]*)<\/span>/);
+
+    cards.push({
+      title: decodeHtmlFieldText(titleMatch[1]),
+      detailUrl: linkMatch ? linkMatch[1] : undefined,
+      category: categoryMatch ? decodeHtmlFieldText(categoryMatch[1]) : undefined,
+      locationBlob: locationMatch ? decodeHtmlFieldText(locationMatch[1]) : undefined,
+      date: dateMatch ? decodeHtmlFieldText(dateMatch[1]) : undefined,
+      description: descMatch ? decodeHtmlFieldText(descMatch[1]) : undefined,
+    });
+  }
+  return cards;
+}
+
+/** The location blob is "Venue Name, street, city, state zip" as one string — venue name is everything before the first comma, address is the rest. */
+function splitWuevLocationBlob(blob: string): { venueName?: string; address?: string } {
+  const text = blob.trim();
+  if (!text) return {};
+  const firstComma = text.indexOf(',');
+  if (firstComma === -1) return { venueName: text };
+  return {
+    venueName: text.slice(0, firstComma).trim() || undefined,
+    address: text.slice(firstComma + 1).trim() || undefined,
+  };
+}
+
+function pickBestWuevMatch(title: string, cards: WuevCard[]): { card: WuevCard; score: number } | undefined {
+  const candidates = cards.filter((card) => shorterTitleFullyContained(title, card.title));
+  if (candidates.length === 0) return undefined;
+  let best = candidates[0];
+  let bestScore = -1;
+  for (const card of candidates) {
+    const score = simpleTitleSimilarity(title, card.title);
+    if (score > bestScore) {
+      bestScore = score;
+      best = card;
+    }
+  }
+  return { card: best, score: bestScore };
+}
+
+function buildWuevEventFacts(card: WuevCard): Fact[] {
+  const facts: Fact[] = [];
+  const source = "What's Up East Valley — East Valley Events listing";
+  const sourceUrl = card.detailUrl || WUEV_EVENTS_URL;
+
+  if (card.category) facts.push({ field: 'category', value: card.category, source, sourceUrl });
+
+  const { venueName, address } = splitWuevLocationBlob(card.locationBlob || '');
+  if (venueName) facts.push({ field: 'venueName', value: venueName, source, sourceUrl });
+  if (address) facts.push({ field: 'address', value: address, source, sourceUrl });
+
+  if (card.date) facts.push({ field: 'date', value: card.date, source, sourceUrl });
+  if (card.description) facts.push({ field: 'description', value: card.description, source, sourceUrl });
+  if (card.detailUrl) facts.push({ field: 'ticketUrl', value: card.detailUrl, source, sourceUrl });
+
+  return facts;
+}
+
+/**
+ * 1. Fetch the one East Valley Events listing page (fetchRawHtml — plain
+ *    HTTP, Playwright fallback if blocked).
+ * 2. Parse every listing card, pick the closest title match.
+ * 3. Below WUEV_MIN_MATCH_SCORE, treat as no match (same discipline as
+ *    Ticketmaster's checker) so the caller falls through to dtphx/SerpAPI
+ *    instead of attaching facts to the wrong event.
+ */
+async function gatherWuevEventSources(topic: TopicInput): Promise<SourceGatheringResult> {
+  console.log(`[source-gathering] wuev: fetching ${WUEV_EVENTS_URL}`);
+  const raw = await fetchRawHtml(WUEV_EVENTS_URL);
+  if (!raw) {
+    const checkerNote = `Could not fetch ${WUEV_EVENTS_URL} (WUEV East Valley Events listing).`;
+    console.warn(`[source-gathering] wuev: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  const cards = parseWuevCards(raw.html);
+  console.log(`[source-gathering] wuev: parsed ${cards.length} listing card(s) via ${raw.method}`);
+
+  const bestMatch = pickBestWuevMatch(topic.title, cards);
+  if (!bestMatch || bestMatch.score < WUEV_MIN_MATCH_SCORE) {
+    const checkerNote = bestMatch
+      ? `No WUEV match for "${topic.title}" — closest candidate "${bestMatch.card.title}" scored ${bestMatch.score.toFixed(2)}, below the ${WUEV_MIN_MATCH_SCORE} threshold.`
+      : cards.length > 0
+        ? `Parsed ${cards.length} WUEV listing card(s), but none share every word of "${topic.title}" — no confident match.`
+        : `No WUEV listing cards parsed from ${WUEV_EVENTS_URL}.`;
+    console.log(`[source-gathering] wuev: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  console.log(`[source-gathering] wuev: best match = "${bestMatch.card.title}" (score=${bestMatch.score.toFixed(2)})`);
+  const facts = buildWuevEventFacts(bestMatch.card);
+  return { topic, facts, primarySourceFound: facts.length > 0, factCount: facts.length };
+}
+
+// ---------------------------------------------------------------------------
+// dtphx checker — dtphx.org/events/calendar, TRY-THIRD tier (after
+// Ticketmaster and WUEV, ahead of the SerpAPI fallback). Static server-
+// rendered HTML: confirmed live that the full card list (title, time, day,
+// date, venue, detail-page link) is present in the plain HTTP response
+// itself — `a.pcrd` cards from the "Picnic" calendar widget CivicPlus
+// (dtphx.org's CMS vendor) renders server-side, no JS execution required.
+// ---------------------------------------------------------------------------
+
+const DTPHX_CALENDAR_URL = 'https://dtphx.org/events/calendar';
+const DTPHX_BASE_URL = 'https://dtphx.org';
+/** Same reasoning as TICKETMASTER_MIN_MATCH_SCORE/WUEV_MIN_MATCH_SCORE above. */
+const DTPHX_MIN_MATCH_SCORE = 0.2;
+
+type DtphxCard = {
+  title: string;
+  detailUrl?: string;
+  venue?: string;
+  time?: string;
+  dow?: string;
+  day?: string;
+  month?: string;
+};
+
+/**
+ * Card markup (confirmed live, whitespace-collapsed):
+ * <a class="pcrd" href="/do/slug">
+ *   <div class="pcrd-content-headline">Title</div>
+ *   <div class="pcrd-content-time"><span><i .../></span> 9am</div>
+ *   <div class="pcrd-content-venue"><span><i .../></span>Venue Name</div>
+ *   <div class="pcrd-date-box">
+ *     <div class="pcrd-date-dow">Monday</div>
+ *     <div class="pcrd-date-day">17</div>
+ *     <div class="pcrd-date-month">Aug</div>
+ *   </div>
+ * </a>
+ * No nested <a> inside a card, so a single non-greedy anchor-to-anchor
+ * regex safely captures one whole card at a time. No year is shown on the
+ * card (only weekday/day/month-abbreviation) — the date fact reports
+ * exactly that, no invented year.
+ */
+function parseDtphxCards(html: string): DtphxCard[] {
+  const norm = html.replace(/\s+/g, ' ');
+  const cardRe = /<a class="pcrd" href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  const cards: DtphxCard[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = cardRe.exec(norm)) !== null) {
+    const href = m[1];
+    const inner = m[2];
+    const titleMatch = inner.match(/<div class="pcrd-content-headline">([^<]*)<\/div>/);
+    if (!titleMatch) continue;
+
+    const timeMatch = inner.match(/<div class="pcrd-content-time">[\s\S]*?<\/span>\s*([^<]*)<\/div>/);
+    const venueMatch = inner.match(/<div class="pcrd-content-venue">[\s\S]*?<\/span>\s*([^<]*)<\/div>/);
+    const dowMatch = inner.match(/<div class="pcrd-date-dow">([^<]*)<\/div>/);
+    const dayMatch = inner.match(/<div class="pcrd-date-day">([^<]*)<\/div>/);
+    const monthMatch = inner.match(/<div class="pcrd-date-month">([^<]*)<\/div>/);
+
+    const detailUrl = href
+      ? href.startsWith('http')
+        ? href
+        : `${DTPHX_BASE_URL}${href.startsWith('/') ? '' : '/'}${href}`
+      : undefined;
+
+    cards.push({
+      title: decodeHtmlFieldText(titleMatch[1]),
+      detailUrl,
+      venue: venueMatch ? decodeHtmlFieldText(venueMatch[1]) : undefined,
+      time: timeMatch ? decodeHtmlFieldText(timeMatch[1]) : undefined,
+      dow: dowMatch ? decodeHtmlFieldText(dowMatch[1]) : undefined,
+      day: dayMatch ? decodeHtmlFieldText(dayMatch[1]) : undefined,
+      month: monthMatch ? decodeHtmlFieldText(monthMatch[1]) : undefined,
+    });
+  }
+  return cards;
+}
+
+function pickBestDtphxMatch(title: string, cards: DtphxCard[]): { card: DtphxCard; score: number } | undefined {
+  const candidates = cards.filter((card) => shorterTitleFullyContained(title, card.title));
+  if (candidates.length === 0) return undefined;
+  let best = candidates[0];
+  let bestScore = -1;
+  for (const card of candidates) {
+    const score = simpleTitleSimilarity(title, card.title);
+    if (score > bestScore) {
+      bestScore = score;
+      best = card;
+    }
+  }
+  return { card: best, score: bestScore };
+}
+
+function buildDtphxEventFacts(card: DtphxCard): Fact[] {
+  const facts: Fact[] = [];
+  const source = 'Downtown Phoenix (DTPHX.org) — events calendar';
+  const sourceUrl = card.detailUrl || DTPHX_CALENDAR_URL;
+
+  if (card.venue) facts.push({ field: 'venueName', value: card.venue, source, sourceUrl });
+
+  const dateValue = [card.dow, [card.month, card.day].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  if (dateValue) facts.push({ field: 'date', value: dateValue, source, sourceUrl });
+
+  if (card.time) facts.push({ field: 'time', value: card.time, source, sourceUrl });
+  if (card.detailUrl) facts.push({ field: 'ticketUrl', value: card.detailUrl, source, sourceUrl });
+
+  return facts;
+}
+
+/**
+ * Same three-step shape as the WUEV checker above: fetch the one calendar
+ * page, parse every card, pick the closest title match, and require it to
+ * clear DTPHX_MIN_MATCH_SCORE before attaching facts.
+ */
+async function gatherDtphxEventSources(topic: TopicInput): Promise<SourceGatheringResult> {
+  console.log(`[source-gathering] dtphx: fetching ${DTPHX_CALENDAR_URL}`);
+  const raw = await fetchRawHtml(DTPHX_CALENDAR_URL);
+  if (!raw) {
+    const checkerNote = `Could not fetch ${DTPHX_CALENDAR_URL} (dtphx.org events calendar).`;
+    console.warn(`[source-gathering] dtphx: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  const cards = parseDtphxCards(raw.html);
+  console.log(`[source-gathering] dtphx: parsed ${cards.length} listing card(s) via ${raw.method}`);
+
+  const bestMatch = pickBestDtphxMatch(topic.title, cards);
+  if (!bestMatch || bestMatch.score < DTPHX_MIN_MATCH_SCORE) {
+    const checkerNote = bestMatch
+      ? `No dtphx match for "${topic.title}" — closest candidate "${bestMatch.card.title}" scored ${bestMatch.score.toFixed(2)}, below the ${DTPHX_MIN_MATCH_SCORE} threshold.`
+      : cards.length > 0
+        ? `Parsed ${cards.length} dtphx listing card(s), but none share every word of "${topic.title}" — no confident match.`
+        : `No dtphx listing cards parsed from ${DTPHX_CALENDAR_URL}.`;
+    console.log(`[source-gathering] dtphx: ${checkerNote}`);
+    return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
+  }
+
+  console.log(`[source-gathering] dtphx: best match = "${bestMatch.card.title}" (score=${bestMatch.score.toFixed(2)})`);
+  const facts = buildDtphxEventFacts(bestMatch.card);
+  return { topic, facts, primarySourceFound: facts.length > 0, factCount: facts.length };
+}
+
+/**
+ * Ticketmaster first (clean, free, structured, zero HTML scraping); then
+ * WUEV; then dtphx; only then the existing SerpAPI-based gatherEventSources
+ * as final fallback — same tiered, try-until-a-confident-match pattern as
+ * the Ticketmaster→SerpAPI tiering already had, just with two more real
+ * sources spliced into the middle. Each tier is unchanged by this addition:
+ * gatherTicketmasterEventSources and gatherEventSources keep their original
+ * bodies untouched above.
  */
 async function gatherEventSourcesTiered(topic: TopicInput): Promise<SourceGatheringResult> {
   const tm = await gatherTicketmasterEventSources(topic);
@@ -751,8 +1174,25 @@ async function gatherEventSourcesTiered(topic: TopicInput): Promise<SourceGather
     return tm;
   }
   console.log(
-    `[source-gathering] events: Ticketmaster had no usable match (${tm.checkerNote || 'no reason given'}) — falling back to SerpAPI events checker.`
+    `[source-gathering] events: Ticketmaster had no usable match (${tm.checkerNote || 'no reason given'}) — trying WUEV.`
   );
+
+  const wuev = await gatherWuevEventSources(topic);
+  if (wuev.factCount > 0) {
+    return wuev;
+  }
+  console.log(
+    `[source-gathering] events: WUEV had no usable match (${wuev.checkerNote || 'no reason given'}) — trying dtphx.`
+  );
+
+  const dtphx = await gatherDtphxEventSources(topic);
+  if (dtphx.factCount > 0) {
+    return dtphx;
+  }
+  console.log(
+    `[source-gathering] events: dtphx had no usable match (${dtphx.checkerNote || 'no reason given'}) — falling back to SerpAPI events checker.`
+  );
+
   return gatherEventSources(topic);
 }
 
@@ -970,6 +1410,60 @@ const BONUS_NON_EVENT_TOPIC: TopicInput = {
   subjectTag: 'restaurant opening',
 };
 
+/**
+ * Small/local real events picked specifically to exercise the WUEV and
+ * dtphx tiers — none of these are the kind of touring/ticketed show
+ * Ticketmaster would carry, so (assuming Ticketmaster has no match, logged
+ * per-topic below) the tier should fall through to WUEV or dtphx and stop
+ * there, never reaching the SerpAPI fallback. Confirmed live on the
+ * respective listing pages as of 2026-08-17.
+ */
+const WUEV_DTPHX_TEST_TOPICS: TopicInput[] = [
+  {
+    title: 'Popsicle Popup Party',
+    snippet: 'East Valley Moms brings its free Popsicle Popup Party to Eastmark Great Park in Mesa, AZ.',
+    section: 'family',
+    verdict: 'direct-local',
+    subjectTag: 'community event',
+    location: 'Mesa, AZ',
+  },
+  {
+    title: 'Free Summer Concert: Stilicho the Band',
+    snippet: 'A free evening of traditional Irish music at Chandler Community Center as part of the Chandler summer concert series.',
+    section: 'nightlife',
+    verdict: 'direct-local',
+    subjectTag: 'concert',
+    location: 'Chandler, AZ',
+  },
+  {
+    title: 'Comedy Rumble: Gilbert Edition',
+    snippet: "An audience-powered stand-up comedy tournament at JP's Comedy Club in Gilbert, AZ.",
+    section: 'nightlife',
+    verdict: 'direct-local',
+    subjectTag: 'comedy show',
+    location: 'Gilbert, AZ',
+  },
+  {
+    title: 'Trivia Night at GenuWine Arizona Wine Bar',
+    snippet: 'Weekly trivia night at GenuWine Arizona Wine Bar in downtown Phoenix, AZ.',
+    section: 'nightlife',
+    verdict: 'direct-local',
+    subjectTag: 'trivia',
+    location: 'Phoenix, AZ',
+  },
+];
+
+/** Which tier actually resolved a result — derived from facts[0].source (each checker tags its own facts distinctly), for the tier-skip check in the test report. */
+function resolvedTierLabel(result: SourceGatheringResult): string {
+  const src = result.facts[0]?.source;
+  if (!src) return '(no match — checkerNote: ' + (result.checkerNote ?? 'none') + ')';
+  if (src.includes('Ticketmaster')) return 'Ticketmaster';
+  if (src.includes('What\'s Up East Valley')) return 'WUEV';
+  if (src.includes('Downtown Phoenix')) return 'dtphx';
+  if (src.includes('SerpAPI')) return 'SerpAPI';
+  return src;
+}
+
 function writeShadowLog(payload: unknown): string {
   mkdirSync(SHADOW_OUTPUT_DIR, { recursive: true });
   const filename = `source-gathering-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -995,6 +1489,17 @@ async function runShadowTestHarness(): Promise<void> {
     );
   }
 
+  console.log('\n[source-gathering] --- WUEV/dtphx tier: 4 small/local real events Ticketmaster likely can\'t cover ---');
+  const wuevDtphxResults: { topic: TopicInput; result: SourceGatheringResult }[] = [];
+  for (const topic of WUEV_DTPHX_TEST_TOPICS) {
+    console.log(`\n[source-gathering] --- Testing: "${topic.title}" ---`);
+    const result = await gatherSources(topic);
+    wuevDtphxResults.push({ topic, result });
+    console.log(
+      `[source-gathering] "${topic.title}" → factCount=${result.factCount}, primarySourceFound=${result.primarySourceFound}, resolvedTier=${resolvedTierLabel(result)}`
+    );
+  }
+
   console.log('\n[source-gathering] --- Bonus: non-events category (dispatch check) ---');
   const bonusResult = await gatherSources(BONUS_NON_EVENT_TOPIC);
   console.log(
@@ -1004,13 +1509,20 @@ async function runShadowTestHarness(): Promise<void> {
   const outPath = writeShadowLog({
     generatedAt: new Date().toISOString(),
     results,
+    wuevDtphxResults,
     bonusNonEventCheck: { topic: BONUS_NON_EVENT_TOPIC, result: bonusResult },
   });
 
   console.log('\n\n########## SOURCE GATHERING TEST HARNESS SUMMARY ##########');
   for (const { topic, result } of results) {
     console.log(`\n--- ${topic.title} ---`);
-    console.log(`factCount=${result.factCount} primarySourceFound=${result.primarySourceFound}`);
+    console.log(`factCount=${result.factCount} primarySourceFound=${result.primarySourceFound} resolvedTier=${resolvedTierLabel(result)}`);
+    console.log(JSON.stringify(result, null, 2));
+  }
+  console.log('\n########## WUEV/DTPHX TIER RESULTS ##########');
+  for (const { topic, result } of wuevDtphxResults) {
+    console.log(`\n--- ${topic.title} ---`);
+    console.log(`factCount=${result.factCount} primarySourceFound=${result.primarySourceFound} resolvedTier=${resolvedTierLabel(result)}`);
     console.log(JSON.stringify(result, null, 2));
   }
   console.log('\n--- Bonus: non-events dispatch check ---');
