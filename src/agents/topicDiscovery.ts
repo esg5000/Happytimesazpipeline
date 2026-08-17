@@ -10,18 +10,31 @@
  * getSanityClient for the shadow-mode comparison query), agents/editorAgent.ts,
  * or src/agents/researchAgent.ts. Runs alongside the existing 5-slot
  * pipeline, not in place of it. SHADOW MODE ONLY: fetches from SerpAPI,
- * classifies with Gemini, logs to a file outside the repo. Never publishes
+ * classifies with OpenAI, logs to a file outside the repo. Never publishes
  * to Sanity.
  *
- * Stage 1 classification runs on Gemini 3.7 Flash (generateContent +
- * googleSearch grounding tool), not OpenAI — swapped from the original
- * OpenAI Responses API + web_search implementation using the exact
- * request pattern confirmed live in scripts/probe-gemini-grounding.ts
- * earlier this session (same endpoint, same model, same tool key, no
- * responseSchema/responseMimeType — freeform JSON via prompt instruction,
- * same approach the OpenAI version used). Output parsing/shape
- * (verdict/section/relevanceScore/subjectTag/excludeAsCrimeTragedy) is
- * unchanged — this was a provider swap, not a logic change.
+ * Stage 1 classification runs on OpenAI's Responses API (gpt-5.4-mini),
+ * the PERMANENT default provider as of this build — not Gemini. (History:
+ * OpenAI was the original implementation; commit a8d155c swapped to
+ * Gemini 3.7 Flash for a session; that swap is reverted here after live
+ * testing showed OpenAI's web_search tool completing 18/18 Stage 1 calls
+ * with zero errors in a real run, vs. Gemini's volatile 503 "high demand"
+ * rate (10%-55% failures across multiple real runs, even with retry-with-
+ * backoff added). Output parsing/shape (verdict/section/relevanceScore/
+ * subjectTag/excludeAsCrimeTragedy/editorialFit) is unchanged by the
+ * provider choice.
+ *
+ * Stage 1 now runs a cheap, no-search pre-pass before the expensive
+ * web_search-grounded call: one plain OpenAI call per candidate (no tools,
+ * headline/snippet only) asks for the same classification PLUS a
+ * self-reported confidence. A candidate is accepted straight from the
+ * cheap pass — skipping the expensive search call entirely — only when
+ * confidence is "high" AND the verdict is unambiguously "direct-local" or
+ * "national-skip"; "national-reframe" and "national-verify-local" always
+ * fall through to the expensive pass regardless of self-reported
+ * confidence, since both verdicts are inherently about facts the model
+ * cannot know without searching. See runStage1QuickPassForCandidate /
+ * quickPassIsHighConfidence.
  *
  * `normalizeSourceRow` / `mergeSourcesByUrl` from src/agents/researchAgent.ts
  * were ported (copied, not imported — they are not exported there) and
@@ -37,9 +50,8 @@ import { config } from '../../config';
 import { getSanityClient } from '../../agents/sanityPublisher';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
-/** Gemini 3.7 Flash — confirmed reachable on this account/key. 503 "high demand" errors occur at a volatile rate (seen 10%-55% across real runs) regardless of which 3.x flash model is used (3.6-flash also showed 45% failures in a live test); this looks like a Gemini-side capacity issue rather than a model-version issue. 2.5-generation models are not reachable on this account/key. */
-const STAGE1_GEMINI_MODEL = 'gemini-3.7-flash';
-const GEMINI_GENERATE_CONTENT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${STAGE1_GEMINI_MODEL}:generateContent`;
+const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
+const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
 
 /** After Stage 0 pool + dedupe, keep at most this many candidates (newest first) before Stage 1. */
 export const STAGE1_CANDIDATE_CAP = 20;
@@ -725,8 +737,8 @@ async function runStage0Discovery(): Promise<{
 // Stage 1 — Locality & Relevance Verdict (+ Stage 2 section, same call)
 // ---------------------------------------------------------------------------
 //
-// Stage 2 (section routing) is folded into the same Gemini call as Stage 1
-// rather than issued as a second call per candidate. The build spec asks
+// Stage 2 (section routing) is folded into the same OpenAI call(s) as
+// Stage 1 rather than issued as a second call per candidate. The build spec asks
 // for "ONE call" per topic for Stage 1 and scopes the usage governor to
 // that one-call-per-topic budget; a separate Stage-2 call per topic would
 // double real API cost against the exact bound the governor exists to
@@ -800,95 +812,118 @@ function clampScore(n: number): number {
   return Math.min(10, Math.max(1, Math.round(n)));
 }
 
-/** Retry-with-backoff tuning for Gemini's 503 "high demand" errors — confirmed via AI Studio's rate-limit dashboard to be genuine Google-side capacity issues, not quota exhaustion (12-20 RPM used of a 1,000 RPM limit). */
-const GEMINI_503_MAX_RETRIES = 2; // up to 2 retries (3 total attempts) before giving up on a candidate
-const GEMINI_503_RETRY_DELAY_MS = 2500;
-/** Minimum spacing enforced between the *start* of consecutive outbound Gemini calls, even when Stage 1 fires a batch of STAGE1_BATCH_SIZE concurrently — a burst/concurrent-request limit (a real 429 spike was seen alongside the 503s) can trip on near-simultaneous dispatch in a way a simple RPM average wouldn't show. */
-const GEMINI_CALL_STAGGER_MS = 400;
-
-let nextGeminiDispatchAt = 0;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Reserves the next outbound-call slot at least GEMINI_CALL_STAGGER_MS after the previous one, then waits for it. */
-async function staggerGeminiDispatch(): Promise<void> {
-  const now = Date.now();
-  const dispatchAt = Math.max(now, nextGeminiDispatchAt);
-  nextGeminiDispatchAt = dispatchAt + GEMINI_CALL_STAGGER_MS;
-  const delay = dispatchAt - now;
-  if (delay > 0) await sleep(delay);
-}
-
+/** Minimal copy of researchAgent.ts's private openaiResponses — generic Responses API HTTP call, zero Dig & Write coupling. Not imported (private there); reimplemented so this module has no dependency on researchAgent.ts. No retry/backoff: OpenAI's Responses API has not shown the volatile 503 rate Gemini did, so this stays simple. */
 /**
- * Gemini 3.7 Flash generateContent call with the googleSearch grounding
- * tool — same request shape confirmed live in
- * scripts/probe-gemini-grounding.ts (single combined prompt in
- * contents[0].parts[0].text, tools: [{ googleSearch: {} }], no
- * generationConfig.responseSchema/responseMimeType — freeform JSON via
- * prompt instruction, same approach the OpenAI version used). Auth is a
- * `key` query param (Gemini's own auth style), not a Bearer header.
- *
- * Retries specifically on HTTP 503 (transient "high demand") with a
- * fixed delay; any other error status throws immediately, same as
- * before.
+ * Cumulative token-usage tracker across OpenAI calls in this process,
+ * split into the cheap no-tools quick pass vs. the expensive
+ * web_search-tool full pass — real cost visibility for the two-tier
+ * design, not an estimate. Read via getOpenAiUsageTotals(); reset via
+ * resetOpenAiUsageTotals() at the start of a run/test if you want
+ * per-run numbers instead of process-lifetime totals.
  */
-async function geminiGenerateContentCall(promptText: string, timeoutMs = 180_000): Promise<unknown> {
-  const key = config.gemini.apiKey;
-  if (!key) {
-    throw new Error('GEMINI_API_KEY is not set (required for topicDiscovery Stage 1)');
-  }
+export type OpenAiUsageBucket = { calls: number; inputTokens: number; outputTokens: number };
+export type OpenAiUsageTotals = { quickPass: OpenAiUsageBucket; fullPass: OpenAiUsageBucket };
 
-  const body = {
-    contents: [{ parts: [{ text: promptText }] }],
-    tools: [{ googleSearch: {} }],
+let openAiUsageTotals: OpenAiUsageTotals = {
+  quickPass: { calls: 0, inputTokens: 0, outputTokens: 0 },
+  fullPass: { calls: 0, inputTokens: 0, outputTokens: 0 },
+};
+
+export function resetOpenAiUsageTotals(): void {
+  openAiUsageTotals = {
+    quickPass: { calls: 0, inputTokens: 0, outputTokens: 0 },
+    fullPass: { calls: 0, inputTokens: 0, outputTokens: 0 },
   };
-
-  for (let attempt = 0; ; attempt++) {
-    await staggerGeminiDispatch();
-
-    const res = await axios.post(GEMINI_GENERATE_CONTENT_URL, body, {
-      params: { key },
-      headers: { 'Content-Type': 'application/json' },
-      timeout: timeoutMs,
-      validateStatus: () => true,
-    });
-
-    if (res.status === 503 && attempt < GEMINI_503_MAX_RETRIES) {
-      console.warn(
-        `[topic-discovery] Gemini 503 (high demand) — retrying in ${GEMINI_503_RETRY_DELAY_MS}ms (attempt ${
-          attempt + 1
-        }/${GEMINI_503_MAX_RETRIES})`
-      );
-      await sleep(GEMINI_503_RETRY_DELAY_MS);
-      continue;
-    }
-
-    if (res.status >= 400) {
-      const data = res.data;
-      const msg =
-        typeof data === 'object' && data && 'error' in (data as object)
-          ? JSON.stringify((data as { error?: unknown }).error)
-          : res.statusText || String(res.status);
-      throw new Error(`Gemini generateContent HTTP ${res.status}: ${msg}`);
-    }
-    return res.data;
-  }
 }
 
-/** Extracts the concatenated text of the first candidate — same envelope shape confirmed in scripts/probe-gemini-grounding.ts. */
-function extractGeminiText(data: unknown): string {
-  if (!data || typeof data !== 'object') return '';
-  const d = data as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+export function getOpenAiUsageTotals(): OpenAiUsageTotals {
+  return openAiUsageTotals;
+}
+
+async function openaiResponsesCall(
+  params: {
+    instructions?: string;
+    input: string | unknown[];
+    tools?: unknown[];
+    max_output_tokens?: number;
+    temperature?: number;
+  },
+  timeoutMs = 180_000
+): Promise<unknown> {
+  const key = config.openai.apiKey;
+  if (!key) {
+    throw new Error('OPENAI_API_KEY is not set (required for topicDiscovery Stage 1)');
+  }
+
+  const usesTools = !!(params.tools && params.tools.length > 0);
+
+  const body: Record<string, unknown> = {
+    model: STAGE1_OPENAI_MODEL,
+    input: params.input,
+    max_output_tokens: params.max_output_tokens ?? 8192,
   };
-  const parts = d.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((p) => p.text)
-    .filter((t): t is string => typeof t === 'string')
-    .join('')
-    .trim();
+  if (params.instructions) body.instructions = params.instructions;
+  if (usesTools) {
+    body.tools = params.tools;
+    body.tool_choice = 'auto';
+  }
+  if (typeof params.temperature === 'number') body.temperature = params.temperature;
+
+  const res = await axios.post(OPENAI_RESPONSES_URL, body, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: timeoutMs,
+    validateStatus: () => true,
+  });
+
+  if (res.status >= 400) {
+    const data = res.data;
+    const msg =
+      typeof data === 'object' && data && 'error' in (data as object)
+        ? JSON.stringify((data as { error?: unknown }).error)
+        : res.statusText || String(res.status);
+    throw new Error(`OpenAI Responses API HTTP ${res.status}: ${msg}`);
+  }
+
+  const bucket = usesTools ? openAiUsageTotals.fullPass : openAiUsageTotals.quickPass;
+  bucket.calls += 1;
+  const usage =
+    res.data && typeof res.data === 'object' ? (res.data as Record<string, unknown>).usage : undefined;
+  if (usage && typeof usage === 'object') {
+    const u = usage as Record<string, unknown>;
+    if (typeof u.input_tokens === 'number') bucket.inputTokens += u.input_tokens;
+    if (typeof u.output_tokens === 'number') bucket.outputTokens += u.output_tokens;
+  }
+
+  return res.data;
+}
+
+/** Copy of researchAgent.ts's private extractOutputTextFromResponse — generic Responses API envelope parsing. */
+function extractOutputTextFromResponse(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const d = data as Record<string, unknown>;
+  if (typeof d.output_text === 'string' && d.output_text.trim()) {
+    return d.output_text.trim();
+  }
+  const output = d.output;
+  if (!Array.isArray(output)) return '';
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    if (o.type === 'message' && Array.isArray(o.content)) {
+      for (const c of o.content as unknown[]) {
+        if (!c || typeof c !== 'object') continue;
+        const block = c as Record<string, unknown>;
+        if (block.type === 'output_text' && typeof block.text === 'string') {
+          parts.push(block.text);
+        }
+      }
+    }
+  }
+  return parts.join('\n').trim();
 }
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
@@ -908,51 +943,61 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
 }
 
 /**
- * Single Gemini 3.7 Flash generateContent call with the googleSearch
- * grounding tool — asks for a locality verdict + section + 2-3 evidence
- * summaries. No full-page fetch, no Playwright — that belongs to a
- * future Stage 3 (article-body sourcing).
+ * Shared classification rubric — identical wording for the cheap no-search
+ * quick pass and the expensive web_search-grounded full pass below, so
+ * both judge every candidate by the same rules and differ ONLY in whether
+ * they have real search evidence to back the call. Extracted once to keep
+ * the two prompts from drifting out of sync with each other.
  */
-async function runStage1VerdictForCandidate(item: RawNewsItem): Promise<Stage1VerdictResult> {
-  const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
-
-  const user = `You are a locality/relevance classifier for HappyTimesAZ, a Phoenix AZ metro lifestyle & news site.
-
-CANDIDATE STORY
-Title: ${item.title}
-Snippet: ${item.snippet || '(none)'}
-Source outlet: ${item.sourceOutlet || 'unknown'}
-Link: ${item.link}
-
-TASK
-1. Use search to find 2-3 relevant, credible sources about this story. Prefer sources with concrete local Arizona/Phoenix-metro detail if the story could plausibly have one — dates, venues, addresses, named local businesses, official local statements.
-2. Classify this story into exactly one of:
+function buildStage1ClassificationCriteria(): string {
+  return `Classify this story into exactly one of:
    - "direct-local": the story is inherently, primarily about the greater Phoenix/Arizona metro area (a local event, local business, local government action, local sports team, local person). No uncertainty about whether it's local — it just is.
    - "national-reframe": the story is fundamentally national/global and does NOT occur locally, but there's a genuine, already-known "here's the Arizona angle or alternative" story to tell. Example: a meteor shower peaks tonight but forecasts show it won't be visible from Arizona due to clouds — the AZ story is "here's what you can see instead" or "here's when it's visible here next." The local angle is known and confirmed, just not the primary event itself.
    - "national-verify-local": the story is national/global AND local relevance itself is the open question — whether it's visible, applicable, or occurring in Arizona is NOT yet known from the headline/snippet alone and needs a follow-up check before you could call it direct-local or national-skip. Example: "Can you see the eclipse from Arizona?" (visibility unconfirmed), "does this federal cannabis rule change apply to Arizona dispensaries?" (applicability unconfirmed), "does this retail chain have Valley locations?" (occurrence unconfirmed). This is NOT a subtype of direct-local or national-reframe — it's a distinct editorial motion: the answer to "is this even a local story" hasn't been established yet, so it's flagged for a dedicated fact-check pass rather than decided now.
    - "national-skip": the story is national/global with no meaningful, addable local hook for Phoenix-metro readers, and nothing about local relevance is even in question — it's just not a local angle at all (e.g. a purely out-of-state incident, national politics with no Arizona tie).
-3. If direct-local, national-reframe, or national-verify-local, assign the single best section for this site based on what the story is actually about (not on how it was found): one of food, nightlife, cannabis, health-wellness, sports, news.
-4. Score overall relevance/value to a Phoenix-metro local lifestyle audience, 1-10.
-5. Assign a short, freeform subjectTag describing what this story is actually about at a glance (e.g. "weather", "sports", "food", "crime", "culture", "policy", "cannabis-law", "astronomy") — your own words, not a fixed list, but keep it to 1-3 words.
-6. Separately from the locality verdict, judge whether this story is crime, an accident, a death, or a tragedy — set excludeAsCrimeTragedy to true if so, with a short excludeReason. This applies no matter what verdict you gave above: a direct-local, national-reframe, or national-verify-local story can still be crime/tragedy content and must still be flagged. Judge the CONTENT and what actually happened, not whether specific trigger words like "fatal," "dead," "killed," or "shooting" literally appear in the title — a headline can describe a fatal incident without using any of those words and must still be flagged. For example, all three of these should be flagged true even though none contains an obvious trigger word:
+If direct-local, national-reframe, or national-verify-local, assign the single best section for this site based on what the story is actually about (not on how it was found): one of food, nightlife, cannabis, health-wellness, sports, news.
+Score overall relevance/value to a Phoenix-metro local lifestyle audience, 1-10.
+Assign a short, freeform subjectTag describing what this story is actually about at a glance (e.g. "weather", "sports", "food", "crime", "culture", "policy", "cannabis-law", "astronomy") — your own words, not a fixed list, but keep it to 1-3 words.
+Separately from the locality verdict, judge whether this story is crime, an accident, a death, or a tragedy — set excludeAsCrimeTragedy to true if so, with a short excludeReason. This applies no matter what verdict you gave above: a direct-local, national-reframe, or national-verify-local story can still be crime/tragedy content and must still be flagged. Judge the CONTENT and what actually happened, not whether specific trigger words like "fatal," "dead," "killed," or "shooting" literally appear in the title — a headline can describe a fatal incident without using any of those words and must still be flagged. For example, all three of these should be flagged true even though none contains an obvious trigger word:
    - "Man killed in Payson plane crash remembered as 'loving, caring' person" (a fatal accident, described through a tribute framing)
    - "Barricaded suspect in Glendale standoff dead, shelter in place lifted" (a fatal police incident)
    - "Boy dies after jumping off London Bridge in Arizona" (a child's death)
    Ordinary local news that merely mentions public safety in passing (e.g. a road-closure or weather-safety story) is NOT crime/tragedy — only flag stories where the substance of the story IS a crime, accident, death, or tragedy.
-7. Separately from locality AND from the crime/tragedy check above, judge editorialFit: does this story fit an upbeat, "good vibes and wild nights" Phoenix lifestyle brand — food, nightlife, cannabis culture, events, health-wellness, sports? Set editorialFit to true if it fits that tone, false if it's off-brand even though it isn't tragedy (dry policy analysis, generic hard-news process stories, bureaucratic/regulatory coverage with no local color or lifestyle angle). This is a real, separate exclusion — a story can pass the crime/tragedy check (it's not a tragedy) and still fail this one because it's simply tonally wrong for the site.
+Separately from locality AND from the crime/tragedy check above, judge editorialFit: does this story fit an upbeat, "good vibes and wild nights" Phoenix lifestyle brand — food, nightlife, cannabis culture, events, health-wellness, sports? Set editorialFit to true if it fits that tone, false if it's off-brand even though it isn't tragedy (dry policy analysis, generic hard-news process stories, bureaucratic/regulatory coverage with no local color or lifestyle angle). This is a real, separate exclusion — a story can pass the crime/tragedy check (it's not a tragedy) and still fail this one because it's simply tonally wrong for the site.
    Genuinely useful civic/safety content — heat warnings, monsoon alerts, public-safety advisories — should still be marked true; this is about TONE FIT, not whether something counts as real news. Don't over-filter.
    Tiebreaker for advisory-shaped vs. incident-shaped stories: does this change what a reader does today, or is it just "something happened"? Forward-looking advisories that help a reader plan (a construction heads-up, a heat/monsoon warning) = true. Static, past-tense incident reports with no forward planning value and no lifestyle angle (a standalone crash/traffic-backup story with nothing else to it) = false.
-   Give a short editorialFitReason explaining the call either way.
+   Give a short editorialFitReason explaining the call either way.`;
+}
 
-Return ONLY this JSON shape, no markdown fences, no prose before or after:
-{"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
+function buildCandidateStoryBlock(item: RawNewsItem): string {
+  return `CANDIDATE STORY
+Title: ${item.title}
+Snippet: ${item.snippet || '(none)'}
+Source outlet: ${item.sourceOutlet || 'unknown'}
+Link: ${item.link}`;
+}
 
-  const raw = await geminiGenerateContentCall(`${instructions}\n\n${user}`);
+type Stage1ParsedFields = {
+  verdict: Stage1Verdict;
+  section: SectionSlug;
+  relevanceScore: number;
+  subjectTag: string;
+  skipReason?: string;
+  excludeAsCrimeTragedy: boolean;
+  crimeTragedyReason?: string;
+  editorialFit: boolean;
+  editorialFitReason?: string;
+};
 
-  const text = extractGeminiText(raw);
-  const obj = tryParseJsonObject(text);
-  if (!obj) throw new Error('Stage 1: model did not return parseable JSON');
-
+/**
+ * Shared parsing/validation for the classification fields common to both
+ * passes — extracted so the quick pass and full pass can never drift out
+ * of sync on how a field is read from the model's JSON. Throws on a
+ * missing/invalid verdict (the one field with no safe default); every
+ * other field fails open with a sane default, same behavior as before
+ * this was split out.
+ */
+function parseStage1Fields(obj: Record<string, unknown>): Stage1ParsedFields {
   const verdict = obj.verdict;
   if (
     verdict !== 'direct-local' &&
@@ -989,13 +1034,6 @@ Return ONLY this JSON shape, no markdown fences, no prose before or after:
   const editorialFitReason =
     typeof obj.editorialFitReason === 'string' && obj.editorialFitReason.trim() ? obj.editorialFitReason.trim() : undefined;
 
-  const rawSources = Array.isArray(obj.sources) ? obj.sources : [];
-  const sources = mergeSearchSummariesByUrl(
-    rawSources
-      .map((r) => normalizeSearchSummaryRow(r))
-      .filter((s): s is SearchSummary => s !== null)
-  ).slice(0, 3);
-
   return {
     verdict,
     section,
@@ -1006,8 +1044,113 @@ Return ONLY this JSON shape, no markdown fences, no prose before or after:
     crimeTragedyReason,
     editorialFit,
     editorialFitReason,
-    sources,
   };
+}
+
+/**
+ * Single OpenAI Responses API call with the hosted `web_search` tool — the
+ * expensive, evidence-backed pass. Only reached for candidates the cheap
+ * quick pass (below) didn't resolve with high confidence.
+ */
+async function runStage1VerdictForCandidate(item: RawNewsItem): Promise<Stage1VerdictResult> {
+  const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
+
+  const user = `You are a locality/relevance classifier for HappyTimesAZ, a Phoenix AZ metro lifestyle & news site.
+
+${buildCandidateStoryBlock(item)}
+
+TASK
+1. Use search to find 2-3 relevant, credible sources about this story. Prefer sources with concrete local Arizona/Phoenix-metro detail if the story could plausibly have one — dates, venues, addresses, named local businesses, official local statements.
+2. ${buildStage1ClassificationCriteria()}
+
+Return ONLY this JSON shape, no markdown fences, no prose before or after:
+{"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
+
+  const raw = await openaiResponsesCall({
+    instructions,
+    input: user,
+    tools: [{ type: 'web_search' }],
+    max_output_tokens: 8192,
+    temperature: 0.3,
+  });
+
+  const text = extractOutputTextFromResponse(raw);
+  const obj = tryParseJsonObject(text);
+  if (!obj) throw new Error('Stage 1: model did not return parseable JSON');
+
+  const parsed = parseStage1Fields(obj);
+
+  const rawSources = Array.isArray(obj.sources) ? obj.sources : [];
+  const sources = mergeSearchSummariesByUrl(
+    rawSources
+      .map((r) => normalizeSearchSummaryRow(r))
+      .filter((s): s is SearchSummary => s !== null)
+  ).slice(0, 3);
+
+  return { ...parsed, sources };
+}
+
+type Stage1QuickPassResult = Stage1VerdictResult & { confidence: 'high' | 'low' };
+
+/** Verdicts eligible to be accepted straight from the quick pass. national-reframe and national-verify-local are excluded on principle, not just by low confidence: both hinge on a fact (a known local angle, or an unconfirmed applicability/visibility question) the model cannot actually know without searching, so a "confident" quick-pass claim of either is not trustworthy no matter how the model phrases it. */
+const QUICK_PASS_ACCEPTABLE_VERDICTS = new Set<Stage1Verdict>(['direct-local', 'national-skip']);
+
+function quickPassIsHighConfidence(qp: Stage1QuickPassResult): boolean {
+  return qp.confidence === 'high' && QUICK_PASS_ACCEPTABLE_VERDICTS.has(qp.verdict);
+}
+
+/**
+ * Cheap pre-pass: ONE plain OpenAI call, no tools (no web_search — no
+ * search cost, far fewer tokens than the grounded call), judging only from
+ * the headline/snippet SerpAPI already gathered. Asks for the same
+ * classification as the full pass PLUS a self-reported confidence. Returns
+ * null (never throws) on any failure to parse a usable result — a quick-
+ * pass miss just means "fall through to the expensive pass," never a
+ * dropped candidate.
+ */
+async function runStage1QuickPassForCandidate(item: RawNewsItem): Promise<Stage1QuickPassResult | null> {
+  const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
+
+  const user = `You are a FAST, no-search pre-screen for HappyTimesAZ's locality/relevance classifier (a Phoenix AZ metro lifestyle & news site). You have NO web search access for this pass — judge using ONLY the title/snippet/source outlet below, nothing else. Your job is to catch the obvious, high-confidence cases so the expensive verified-search pass can be skipped for them; anything even slightly unclear must be marked low confidence, not guessed.
+
+${buildCandidateStoryBlock(item)}
+
+TASK
+1. First decide your confidence: set "confidence" to "high" ONLY when BOTH of these hold:
+   - You are CERTAIN of the verdict, AND that verdict is either "direct-local" (unambiguously about the Phoenix/Arizona metro — names a local team, venue, city, government body, or business with zero room for doubt) or "national-skip" (unambiguously national/global with no plausible Arizona angle at all — no local names, no "could this apply/be visible/be relevant here" question).
+   - You are also CERTAIN of the crime/tragedy call and the editorial-fit call below — no doubt on either.
+   "national-reframe" and "national-verify-local" can NEVER be marked high confidence in this pass, even if you're sure that's the right verdict category — both inherently depend on a fact (a confirmed local angle, or an unconfirmed applicability/visibility question) that only a search could verify. If you land on either of those, mark confidence "low" and give your best-guess answer anyway; it will be re-verified with search.
+   When in doubt at all, choose "low" — a wrong "high" skips real verification, a wrong "low" just costs one extra (already-budgeted) search call.
+2. ${buildStage1ClassificationCriteria()}
+
+Return ONLY this JSON shape, no markdown fences, no prose before or after, and no "sources" field (you have no search access, so don't fabricate one):
+{"confidence":"high"|"low","verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>"}`;
+
+  const raw = await openaiResponsesCall({
+    instructions,
+    input: user,
+    // Deliberately no `tools` — this is the entire point of the cheap pass.
+    max_output_tokens: 1024,
+    temperature: 0.2,
+  });
+
+  const text = extractOutputTextFromResponse(raw);
+  const obj = tryParseJsonObject(text);
+  if (!obj) return null;
+
+  let parsed: Stage1ParsedFields;
+  try {
+    parsed = parseStage1Fields(obj);
+  } catch {
+    return null;
+  }
+
+  const confidence = obj.confidence === 'high' ? 'high' : 'low';
+
+  // sources is always empty here regardless of what the model returned —
+  // this pass has no search tool, so any "sources" the model invented
+  // would be fabricated, not evidence. Never trusted.
+  return { ...parsed, sources: [], confidence };
 }
 
 export type TopicDiscoveryResult = {
@@ -1030,14 +1173,14 @@ export type SkippedTopic = { title: string; link: string; reason: string };
  * pattern/intent of NEGATIVE_HEADLINE_RE in agents/newsApiSync.ts (read there,
  * not imported or modified: "Fast reject before AI — crime, tragedy, serious
  * accidents, national partisan frame (headline-level)"). Applied BEFORE Stage 1's
- * Gemini generateContent call purely to save a call on the most obvious keyword
+ * Stage 1 OpenAI call purely to save a call on the most obvious keyword
  * matches (explicit "murder", "shooting", etc.) — it is NOT the authority on
  * crime/tragedy exclusion. It mirrors the existing pattern's exact keyword set,
  * so it will not catch every crime/tragedy headline on its own (e.g. a death
  * reported without one of these specific words passes this cheap filter). The
  * actual authority is the excludeAsCrimeTragedy judgment the Stage 1 model makes
  * on every topic that reaches it, which judges content regardless of wording —
- * see runStage1VerdictForCandidate.
+ * see runStage1VerdictForCandidate / runStage1QuickPassForCandidate.
  */
 const NEGATIVE_HEADLINE_RE =
   /murder|homicide|mass\s*shooting|killed in (a )?shooting|fatal (crash|collision|accident)|deadly (crash|collision|wreck)|terror(ist|ism)?|suicide|sexual assault|kidnap|rape\b|school\s*shooting|armed robbery|stabbed|shot dead|police\s+shooting|charged with|sentenced to|arrested for|domestic violence|child abuse|overdose death|capitol\s*riot|january\s*6|impeachment|white\s*house|mar[- ]a[- ]lago|\bGOP\b|\bDNC\b|presidential\s*campaign|midterm\s*election|election\s*fraud|stop\s*the\s*steal|congressional\s*hearing|supreme\s*court\s*(rules?|decides)/i;
@@ -1049,8 +1192,9 @@ function passesEditorialAppropriatenessGate(item: RawNewsItem): boolean {
 
 /** Usage/concurrency governor for Stage 1 — mirrors newsApiSync.ts's SerpRunUsage pattern. */
 export type Stage1Usage = {
+  /** Candidates dispatched into Stage 1 (kept as the STAGE1_CANDIDATE_CAP gate/log — NOT the same as total OpenAI calls now that each candidate can cost 1 or 2 calls; see quickPassCalls/fullPassCalls for that). */
   apiCalls: number;
-  /** Dropped by the cheap NEGATIVE_HEADLINE_RE keyword pre-filter, before any Gemini call. */
+  /** Dropped by the cheap NEGATIVE_HEADLINE_RE keyword pre-filter, before any OpenAI call. */
   editorialGateDropped: number;
   proceededToStage1: number;
   /** Dropped by the Stage 1 model's excludeAsCrimeTragedy judgment (the actual authority), independent of locality verdict. */
@@ -1060,18 +1204,29 @@ export type Stage1Usage = {
   hardStopped: boolean;
   hardStopReason?: string;
   hardStopAtCount?: number;
+  /** Cheap no-search pre-pass calls made — one per candidate that reached Stage 1. */
+  quickPassCalls: number;
+  /** Of quickPassCalls, how many were accepted outright (high confidence, direct-local/national-skip) — these candidates never made the expensive web_search call. */
+  quickPassResolved: number;
+  /** Expensive web_search-grounded calls made — one per candidate the quick pass didn't resolve. quickPassResolved + fullPassCalls == proceededToStage1 (minus any candidate whose quick pass itself errored before either count could be attributed — see quick-pass error handling below). */
+  fullPassCalls: number;
 };
 
 /**
  * Runs Stage 1 (+ Stage 2) for the capped candidate pool in batches of
- * STAGE1_BATCH_SIZE, never issuing more than STAGE1_CANDIDATE_CAP Gemini
- * calls total for the run. If the pool somehow exceeds the cap, remaining
- * candidates are marked skipped (not silently dropped) and the run
- * continues with whatever completed — it does not fail the whole run.
+ * STAGE1_BATCH_SIZE, never dispatching more than STAGE1_CANDIDATE_CAP
+ * candidates total for the run (see apiCalls' doc comment — that cap is on
+ * candidates, not raw OpenAI calls, now that each candidate costs 1 or 2
+ * calls). If the pool somehow exceeds the cap, remaining candidates are
+ * marked skipped (not silently dropped) and the run continues with
+ * whatever completed — it does not fail the whole run.
  *
- * Before any candidate reaches the Gemini call, it must pass
+ * Before any candidate reaches an OpenAI call, it must pass
  * passesEditorialAppropriatenessGate; failures are logged and skipped here
- * without spending an API call or counting against usage.apiCalls.
+ * without spending an API call or counting against usage.apiCalls. Every
+ * candidate that does pass first gets ONE cheap no-search quick-pass call;
+ * only candidates it doesn't resolve with high confidence get the
+ * expensive web_search-grounded call — see runStage1QuickPassForCandidate.
  */
 async function runStage1Batched(
   candidates: RawNewsItem[]
@@ -1083,6 +1238,9 @@ async function runStage1Batched(
     crimeTragedyDropped: 0,
     editorialFitDropped: 0,
     hardStopped: false,
+    quickPassCalls: 0,
+    quickPassResolved: 0,
+    fullPassCalls: 0,
   };
   const kept: TopicDiscoveryResult[] = [];
   const skipped: SkippedTopic[] = [];
@@ -1138,6 +1296,28 @@ async function runStage1Batched(
       batch.map(async (item) => {
         usage.apiCalls += 1;
         try {
+          // Cheap pre-pass first, always — one no-search call per candidate.
+          // A thrown/unparseable quick pass is NOT fatal to the candidate;
+          // it just means "no cheap answer available," same as an
+          // explicit low-confidence result — either way we fall through
+          // to the expensive verified pass below.
+          usage.quickPassCalls += 1;
+          const quick = await runStage1QuickPassForCandidate(item).catch((e) => {
+            console.warn(
+              `[topic-discovery] Stage 1 quick-pass error for "${item.title.slice(0, 80)}" (falling through to full pass): ${e instanceof Error ? e.message : e}`
+            );
+            return null;
+          });
+
+          if (quick && quickPassIsHighConfidence(quick)) {
+            usage.quickPassResolved += 1;
+            console.log(
+              `[topic-discovery] Stage 1 quick-pass HIGH CONFIDENCE (${quick.verdict}): "${item.title.slice(0, 90)}" — web_search pass skipped.`
+            );
+            return { item, verdictResult: quick as Stage1VerdictResult, error: null as string | null };
+          }
+
+          usage.fullPassCalls += 1;
           const verdictResult = await runStage1VerdictForCandidate(item);
           return { item, verdictResult, error: null as string | null };
         } catch (e) {
@@ -1393,7 +1573,7 @@ function writeShadowLog(payload: unknown): string {
 }
 
 /**
- * Runs Stage 0 → Stage 1/2 against live SerpAPI + Gemini, logs the full
+ * Runs Stage 0 → Stage 1/2 against live SerpAPI + OpenAI, logs the full
  * result to a file outside the repo, and returns it. Never publishes to
  * Sanity, never calls syncNewsApiToSanity, never touches the existing
  * 5-slot pipeline.
@@ -1402,10 +1582,11 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
   if (!config.serpApi.apiKey) {
     throw new Error('SERPAPI_API_KEY is not set');
   }
-  if (!config.gemini.apiKey) {
-    throw new Error('GEMINI_API_KEY is not set (required for Stage 1 — topicDiscovery.ts now uses Gemini, not OpenAI)');
+  if (!config.openai.apiKey) {
+    throw new Error('OPENAI_API_KEY is not set (required for Stage 1)');
   }
 
+  resetOpenAiUsageTotals();
   const startedAt = Date.now();
   console.log('[topic-discovery] ========== SHADOW MODE run start ==========');
 
@@ -1449,9 +1630,13 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     `[topic-discovery] Editorial-fit exclusion (Stage 1 model judgment, tone-fit not locality): ${stage1Usage.editorialFitDropped} dropped.`
   );
   console.log(
-    `[topic-discovery] Stage 1 done: ${stage1Usage.apiCalls} Gemini calls, hardStopped=${stage1Usage.hardStopped}${
+    `[topic-discovery] Stage 1 done: ${stage1Usage.apiCalls} candidate(s) processed — ${stage1Usage.quickPassCalls} quick-pass call(s) (${stage1Usage.quickPassResolved} resolved without search), ${stage1Usage.fullPassCalls} full web_search-pass call(s), ${stage1Usage.quickPassCalls + stage1Usage.fullPassCalls} OpenAI call(s) total, hardStopped=${stage1Usage.hardStopped}${
       stage1Usage.hardStopReason ? ` (${stage1Usage.hardStopReason})` : ''
     }`
+  );
+  const openAiUsage = getOpenAiUsageTotals();
+  console.log(
+    `[topic-discovery] OpenAI token usage — quick-pass: ${openAiUsage.quickPass.calls} call(s), ${openAiUsage.quickPass.inputTokens} input + ${openAiUsage.quickPass.outputTokens} output tokens; full web_search-pass: ${openAiUsage.fullPass.calls} call(s), ${openAiUsage.fullPass.inputTokens} input + ${openAiUsage.fullPass.outputTokens} output tokens.`
   );
   console.log(`[topic-discovery] kept=${kept.length}, skipped=${skipped.length}`);
   console.log(`[topic-discovery] wall-clock: ${(wallClockMs / 1000).toFixed(1)}s`);
@@ -1517,9 +1702,12 @@ if (require.main === module) {
         `Editorial-fit exclusion (Stage 1 model judgment, tone-fit not locality): ${result.stage1Usage.editorialFitDropped} dropped`
       );
       console.log(
-        `Stage 1 Gemini calls: ${result.stage1Usage.apiCalls} (cap=${STAGE1_CANDIDATE_CAP}, hardStopped=${result.stage1Usage.hardStopped}${
+        `Stage 1 candidates: ${result.stage1Usage.apiCalls} (cap=${STAGE1_CANDIDATE_CAP}, hardStopped=${result.stage1Usage.hardStopped}${
           result.stage1Usage.hardStopReason ? `, reason=${result.stage1Usage.hardStopReason}` : ''
         })`
+      );
+      console.log(
+        `Stage 1 OpenAI calls: ${result.stage1Usage.quickPassCalls} quick-pass + ${result.stage1Usage.fullPassCalls} full web_search-pass = ${result.stage1Usage.quickPassCalls + result.stage1Usage.fullPassCalls} total (${result.stage1Usage.quickPassResolved}/${result.stage1Usage.quickPassCalls} quick-pass calls resolved without search)`
       );
       console.log(`Wall-clock: ${(result.wallClockMs / 1000).toFixed(1)}s`);
       console.log(`Kept: ${result.kept.length}, Skipped: ${result.skipped.length}`);
