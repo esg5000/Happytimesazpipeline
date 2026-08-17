@@ -99,7 +99,7 @@ function slugFromTitle(title: string): string {
 }
 
 /** Exclude kids / school / family-only style events (checked before include list). */
-function isExcludedAudience(textLower: string): boolean {
+export function isExcludedAudience(textLower: string): boolean {
   const excludePhrases = [
     'family-only',
     'family only',
@@ -230,7 +230,25 @@ function ticketmasterIsoParam(d: Date): string {
   return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-/** One Ticketmaster Discovery API call per city: city + stateCode filter, bounded to the next TICKETMASTER_LOOKAHEAD_DAYS days, single page (TICKETMASTER_PAGE_SIZE). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Retry-with-backoff tuning for Ticketmaster's 429 rate limit — confirmed live: "Spike arrest violation. Allowed rate: MessageRate{messagesPerPeriod=5, periodInMicroseconds=1000000, maxBurstMessageCount=1.0}" (5 req/sec, burst of 1) hit on the Surprise call during the first full 19-city run. Same pattern as the Gemini 503 fix in topicDiscovery.ts. */
+const TICKETMASTER_429_MAX_RETRIES = 2; // up to 2 retries (3 total attempts)
+const TICKETMASTER_429_RETRY_DELAY_MS = 1500;
+/**
+ * Stagger before each city's fetch, in the loop itself (not just reactive
+ * retry) — the 429 in testing happened right after Peoria returned 0
+ * results: with nothing to process (no image uploads/Sanity writes to
+ * create a natural gap), the Peoria and Surprise fetches fired back to
+ * back with ~0ms between them, tripping the burst-of-1 limit. A city with
+ * real results doesn't need this (processing time already spaces the next
+ * fetch out), but a zero-result city has no such natural delay.
+ */
+const TICKETMASTER_CITY_STAGGER_MS = 500;
+
+/** One Ticketmaster Discovery API call per city: city + stateCode filter, bounded to the next TICKETMASTER_LOOKAHEAD_DAYS days, single page (TICKETMASTER_PAGE_SIZE). Retries on 429 specifically; any other error status throws immediately. */
 export async function fetchTicketmasterEventsForCity(city: string): Promise<TicketmasterEvent[]> {
   const apiKey = config.ticketmaster.apiKey;
   if (!apiKey) throw new Error('TICKETMASTER_API_KEY is not set');
@@ -238,29 +256,42 @@ export async function fetchTicketmasterEventsForCity(city: string): Promise<Tick
   const now = new Date();
   const end = new Date(now.getTime() + TICKETMASTER_LOOKAHEAD_DAYS * 24 * 60 * 60 * 1000);
 
-  const { status, data } = await axios.get<TicketmasterEventsResponse>(TICKETMASTER_DISCOVERY_URL, {
-    params: {
-      apikey: apiKey,
-      city,
-      stateCode: 'AZ',
-      startDateTime: ticketmasterIsoParam(now),
-      endDateTime: ticketmasterIsoParam(end),
-      size: TICKETMASTER_PAGE_SIZE,
-    },
-    validateStatus: () => true,
-  });
+  for (let attempt = 0; ; attempt++) {
+    const { status, data } = await axios.get<TicketmasterEventsResponse>(TICKETMASTER_DISCOVERY_URL, {
+      params: {
+        apikey: apiKey,
+        city,
+        stateCode: 'AZ',
+        startDateTime: ticketmasterIsoParam(now),
+        endDateTime: ticketmasterIsoParam(end),
+        size: TICKETMASTER_PAGE_SIZE,
+      },
+      validateStatus: () => true,
+    });
 
-  if (status === 404) {
-    // Ticketmaster returns 404 (not an empty 200) when a city has zero matches in range — confirmed live for Sedona/Show Low.
-    return [];
-  }
-  if (status !== 200) {
-    const body = data as unknown as { fault?: { faultstring?: string }; errors?: Array<{ detail?: string }> };
-    const errMsg = body?.fault?.faultstring || body?.errors?.[0]?.detail || `HTTP ${status}`;
-    throw new Error(`Ticketmaster HTTP ${status}: ${errMsg}`);
-  }
+    if (status === 404) {
+      // Ticketmaster returns 404 (not an empty 200) when a city has zero matches in range — confirmed live for Sedona/Show Low.
+      return [];
+    }
 
-  return data._embedded?.events || [];
+    if (status === 429 && attempt < TICKETMASTER_429_MAX_RETRIES) {
+      console.warn(
+        `[ticketmaster] HTTP 429 (rate limit) for "${city}" — retrying in ${TICKETMASTER_429_RETRY_DELAY_MS}ms (attempt ${
+          attempt + 1
+        }/${TICKETMASTER_429_MAX_RETRIES})`
+      );
+      await sleep(TICKETMASTER_429_RETRY_DELAY_MS);
+      continue;
+    }
+
+    if (status !== 200) {
+      const body = data as unknown as { fault?: { faultstring?: string }; errors?: Array<{ detail?: string }> };
+      const errMsg = body?.fault?.faultstring || body?.errors?.[0]?.detail || `HTTP ${status}`;
+      throw new Error(`Ticketmaster HTTP ${status}: ${errMsg}`);
+    }
+
+    return data._embedded?.events || [];
+  }
 }
 
 /**
@@ -296,8 +327,12 @@ export async function syncSerpApiEventsToSanity(): Promise<{
     if (errorSample.length < ERROR_SAMPLE_MAX) errorSample.push(msg);
   };
 
-  cityLoop: for (const city of TARGET_CITIES) {
+  cityLoop: for (const [cityIdx, city] of TARGET_CITIES.entries()) {
     if (synced >= MAX_EVENTS_PER_SYNC) break;
+
+    if (cityIdx > 0) {
+      await sleep(TICKETMASTER_CITY_STAGGER_MS);
+    }
 
     console.log(`[ticketmaster] Fetching events for ${city}...`);
     let batch: TicketmasterEvent[];
@@ -331,7 +366,33 @@ export async function syncSerpApiEventsToSanity(): Promise<{
       const { venue: venueName, address: addressLine, city: cityParsed } = extractTicketmasterVenueFields(ev);
       const description = buildTicketmasterClassificationSummary(ev);
 
-      if (!matchesHappyTimesCategories(title, description, venueName)) {
+      /**
+       * Unclassified Ticketmaster events (empty classification summary —
+       * segment "Undefined" or missing entirely) pass through the
+       * include-keyword gate rather than getting dropped. Reasoning
+       * (confirmed against a live pull of every unclassified event across
+       * all 19 cities before this was implemented — 13 distinct real
+       * events, all legitimate live-music/theater/EDM shows at named
+       * venues, none junk-looking): Ticketmaster is a curated ticketing
+       * platform, not a raw web scrape, so the keyword gate's original
+       * purpose — filtering genuine junk out of an open web index —
+       * doesn't apply the same way to an event Ticketmaster itself has
+       * already vetted onto its platform, just without a classification
+       * tag. matchesHappyTimesCategories() is unchanged and still fully
+       * applies to every event that DOES have real classification data.
+       *
+       * The audience exclusion (isExcludedAudience — kids/family-only)
+       * is a separate concern from the topical keyword gate and still
+       * applies here regardless of classification status: a curated
+       * source doesn't make an event any more or less kid-oriented.
+       */
+      const isUnclassified = description === '';
+      if (isUnclassified) {
+        if (isExcludedAudience(`${title}\n${venueName}`.toLowerCase())) {
+          skipped++;
+          continue;
+        }
+      } else if (!matchesHappyTimesCategories(title, description, venueName)) {
         skipped++;
         continue;
       }
