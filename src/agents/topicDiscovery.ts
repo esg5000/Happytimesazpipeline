@@ -78,6 +78,23 @@ const CANNABIS_RESERVED_SLOTS = 4;
  * runStage0Discovery).
  */
 const LIFESTYLE_RESERVED_SLOTS = 4;
+/**
+ * Same mechanism again, mirrored exactly for sports-az (Cardinals/Suns/
+ * Diamondbacks/ASU/real game coverage) — added after an investigation
+ * (2026-08-17) found zero MLB/Cardinals topics in a capped-20 pool where
+ * 5 slots (25%) were consumed by sportsdata.usatoday.com auto-generated
+ * schedule-stub pages ("Team at Team - NBA News - <future date>", no
+ * snippet, no article content) riding in through the generic local-native
+ * queries — there was no dedicated sports query lane at all, so real
+ * sports journalism had no protected path into the pool the way cannabis
+ * and lifestyle now do. The stub pages themselves are excluded separately
+ * (see LOW_VALUE_STUB_DOMAINS below); this reserve exists so real sports
+ * coverage doesn't *also* have to win a bare combined-recency race against
+ * same-day breaking local/national news, same justification as the other
+ * two reserves. Filled by recency WITHIN sports-az only, backfilled from
+ * the general pool if under-filled (see runStage0Discovery).
+ */
+const SPORTS_RESERVED_SLOTS = 4;
 
 const SHADOW_OUTPUT_DIR = join(
   process.env.TEMP || process.env.TMPDIR || '/tmp',
@@ -88,7 +105,12 @@ const SHADOW_OUTPUT_DIR = join(
 // Stage 0 — Topic Discovery
 // ---------------------------------------------------------------------------
 
-export type QueryClass = 'local-native' | 'national-with-potential-local-angle' | 'cannabis-az' | 'lifestyle-az';
+export type QueryClass =
+  | 'local-native'
+  | 'national-with-potential-local-angle'
+  | 'cannabis-az'
+  | 'lifestyle-az'
+  | 'sports-az';
 
 type Stage0Query = { query: string; queryClass: QueryClass };
 
@@ -109,6 +131,15 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * land under whichever real section fits (food/nightlife/news), same as
  * every other class; this only guarantees they get *discovered* into the
  * candidate pool, not a forced section.
+ * `sports-az`: Arizona team sports discovery (Cardinals, Suns, Diamondbacks,
+ * ASU Sun Devils, Mercury) — added alongside SPORTS_RESERVED_SLOTS after
+ * confirming there was no dedicated sports query lane at all, so real
+ * game/team coverage had to compete on bare recency against whatever
+ * incidentally surfaced from local-native queries, including low-value
+ * schedule-stub pages (see LOW_VALUE_STUB_DOMAINS). Query wording favors
+ * "recap"/"news" phrasing to bias toward real articles over raw schedule
+ * listings, though the actual stub exclusion is the domain filter below,
+ * not the query wording.
  * Feeds the same pool/dedupe/cap pipeline as the other classes, no
  * special-casing (see runStage0Discovery, unchanged).
  */
@@ -137,6 +168,12 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'Arizona food festival event', queryClass: 'lifestyle-az' },
   { query: 'Phoenix happy hour nightlife guide', queryClass: 'lifestyle-az' },
   { query: 'Valley concert festival event announcement', queryClass: 'lifestyle-az' },
+  { query: 'Arizona Cardinals game recap', queryClass: 'sports-az' },
+  { query: 'Phoenix Suns game recap', queryClass: 'sports-az' },
+  { query: 'Arizona Diamondbacks news', queryClass: 'sports-az' },
+  { query: 'ASU Sun Devils sports news', queryClass: 'sports-az' },
+  { query: 'Phoenix Mercury news', queryClass: 'sports-az' },
+  { query: 'Arizona sports news today', queryClass: 'sports-az' },
 ];
 
 export type RawNewsItem = {
@@ -296,6 +333,31 @@ async function fetchSerpNewsForQuery(
   const items = flattenStage0Results(data.news_results, q.queryClass, q.query);
   console.log(`[topic-discovery] Stage 0: "${q.query}" → ${items.length} result(s)`);
   return items;
+}
+
+// ---- Low-value auto-generated stub source exclusion -----------------------
+//
+// Investigation (2026-08-17): sportsdata.usatoday.com surfaces as
+// "Team at Team - NBA News - <date>" pages via SerpAPI's Google News index
+// with a fresh crawl date regardless of how far in the future the game is —
+// every instance observed had an empty snippet and zero article content, it's
+// a raw schedule/stat widget, not journalism. Because near-dedupe correctly
+// treats each game as a distinct event (different opponent/date = genuinely
+// different story), these pages don't get merged away — they can legitimately
+// consume 5 of 20 capped slots on pure recency, crowding out real coverage
+// (confirmed: zero MLB/Cardinals topics reached the capped pool that run).
+// Excluded by exact hostname, not a broader usatoday.com block, so real USA
+// Today sports journalism (e.g. www.usatoday.com/story/sports/...) is
+// unaffected — sportsdata.usatoday.com is a distinct subdomain that only
+// ever serves this schedule-widget content, never bylined articles.
+const LOW_VALUE_STUB_DOMAINS = new Set(['sportsdata.usatoday.com']);
+
+function isLowValueScheduleStub(item: RawNewsItem): boolean {
+  try {
+    return LOW_VALUE_STUB_DOMAINS.has(new URL(item.link).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
 }
 
 /** Unique by link (exact), then by normalized title (case/whitespace-insensitive) to catch wire-copy dupes under different URLs. */
@@ -644,23 +706,29 @@ function capStage0PoolByRecency(items: RawNewsItem[], max: number): RawNewsItem[
   return tagged.slice(0, max).map((x) => x.it);
 }
 
+/** How many near-deduped-pool items to log/persist as a readable sample, per class — the full pool (~260 items) is logged as counts + this sample, not dumped line-by-line into the console, but the FULL list is still returned/persisted to the shadow JSON so a future investigation can search it. */
+const NEAR_DEDUPED_SAMPLE_PER_CLASS = 5;
+
 async function runStage0Discovery(): Promise<{
   pool: RawNewsItem[];
   rawCount: number;
   exactDedupedCount: number;
   nearDedupedCount: number;
+  nearDedupedPool: RawNewsItem[];
   nearDuplicateMerges: NearDuplicateMerge[];
+  lowValueStubExcludedCount: number;
   reservedCannabisItems: RawNewsItem[];
   reservedLifestyleItems: RawNewsItem[];
+  reservedSportsItems: RawNewsItem[];
   usage: Stage0Usage;
 }> {
   const usage: Stage0Usage = { apiCalls: 0, errors: 0, errorSample: [] };
-  const all: RawNewsItem[] = [];
+  const rawAll: RawNewsItem[] = [];
 
   for (const q of STAGE0_QUERIES) {
     try {
       const items = await fetchSerpNewsForQuery(q, usage);
-      all.push(...items);
+      rawAll.push(...items);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       usage.errors++;
@@ -671,8 +739,44 @@ async function runStage0Discovery(): Promise<{
     }
   }
 
+  // Low-value auto-generated stub sources are dropped before dedupe — they
+  // shouldn't consume a dedupe "slot" (near-identical stub pairs sorting into
+  // the same cluster) any more than they should consume a cap slot. Logged
+  // distinctly so a future investigation can see exactly how many were cut.
+  const all = rawAll.filter((it) => !isLowValueScheduleStub(it));
+  const lowValueStubExcludedCount = rawAll.length - all.length;
+  if (lowValueStubExcludedCount > 0) {
+    console.log(
+      `[topic-discovery] Excluded ${lowValueStubExcludedCount} low-value auto-generated schedule-stub item(s) (domain match: ${[...LOW_VALUE_STUB_DOMAINS].join(', ')}) before dedupe.`
+    );
+  }
+
   const exactDeduped = dedupeStage0Pool(all);
   const { deduped: nearDeduped, merges: nearDuplicateMerges } = nearDedupeStage0Pool(exactDeduped);
+
+  // Pre-cap pool logging: the near-deduped pool is the full candidate set
+  // BEFORE the STAGE1_CANDIDATE_CAP recency cut — this is what a future
+  // investigation needs to tell "crowded out by the cap" apart from "never
+  // surfaced at all." Logged as per-class counts + a small sample here (the
+  // full list is still returned/persisted to the shadow JSON, see
+  // runTopicDiscoveryShadow's writeShadowLog call).
+  const nearDedupedByClass = new Map<QueryClass, RawNewsItem[]>();
+  for (const it of nearDeduped) {
+    const list = nearDedupedByClass.get(it.queryClass);
+    if (list) list.push(it);
+    else nearDedupedByClass.set(it.queryClass, [it]);
+  }
+  console.log(
+    `[topic-discovery] Pre-cap near-deduped pool: ${nearDeduped.length} total — ` +
+      [...nearDedupedByClass.entries()].map(([cls, items]) => `${cls}=${items.length}`).join(', ')
+  );
+  for (const [cls, items] of nearDedupedByClass.entries()) {
+    const sample = items.slice(0, NEAR_DEDUPED_SAMPLE_PER_CLASS);
+    console.log(
+      `[topic-discovery]   ${cls} sample (${sample.length}/${items.length}): ` +
+        sample.map((it) => `"${it.title.slice(0, 70)}"`).join(' | ')
+    );
+  }
 
   // Reserved cannabis-az quota: filled by recency WITHIN cannabis-az only
   // (no other pre-Stage-1 quality signal exists yet), so it doesn't have to
@@ -696,24 +800,40 @@ async function runStage0Discovery(): Promise<{
     console.log(`[topic-discovery]   reserved-lifestyle-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
   });
 
-  // Remaining slots (12, or more if either reserve didn't fill — backfill,
-  // not left empty) fill from the combined pool of all four classes by
-  // recency, same as before. Reserved items are excluded from re-selection
-  // here so they aren't double-counted, but non-reserved cannabis-az/
-  // lifestyle-az items remain eligible to also win a general slot on merit.
-  const reservedLinks = new Set([...reservedCannabisItems, ...reservedLifestyleItems].map((it) => it.link));
-  const remainingSlots = STAGE1_CANDIDATE_CAP - reservedCannabisItems.length - reservedLifestyleItems.length;
+  // Reserved sports-az quota — identical mechanism, mirrored exactly. Runs
+  // against `nearDeduped`, which already excludes the schedule-stub domain
+  // (filtered out of `all` before dedupe), so this quota can only be filled
+  // by real sports coverage, not stub pages.
+  const sportsCandidates = nearDeduped.filter((it) => it.queryClass === 'sports-az');
+  const reservedSportsItems = capStage0PoolByRecency(sportsCandidates, SPORTS_RESERVED_SLOTS);
+  console.log(
+    `[topic-discovery] Sports reserved quota: ${reservedSportsItems.length}/${SPORTS_RESERVED_SLOTS} slot(s) filled from ${sportsCandidates.length} sports-az candidate(s) (recency within class).`
+  );
+  reservedSportsItems.forEach((it, idx) => {
+    console.log(`[topic-discovery]   reserved-sports-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
+  });
+
+  // Remaining slots (8, or more if any reserve didn't fill — backfill, not
+  // left empty) fill from the combined pool of all five classes by recency,
+  // same as before. Reserved items are excluded from re-selection here so
+  // they aren't double-counted, but non-reserved cannabis-az/lifestyle-az/
+  // sports-az items remain eligible to also win a general slot on merit.
+  const reservedLinks = new Set(
+    [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems].map((it) => it.link)
+  );
+  const remainingSlots =
+    STAGE1_CANDIDATE_CAP - reservedCannabisItems.length - reservedLifestyleItems.length - reservedSportsItems.length;
   const remainingPool = nearDeduped.filter((it) => !reservedLinks.has(it.link));
   const generalCapped = capStage0PoolByRecency(remainingPool, remainingSlots);
   console.log(
-    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 4 classes.`
+    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 5 classes.`
   );
 
-  const capped = [...reservedCannabisItems, ...reservedLifestyleItems, ...generalCapped];
+  const capped = [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems, ...generalCapped];
 
   console.log(
     `[topic-discovery] Stage 0 done: ${STAGE0_QUERIES.length} queries, ${usage.apiCalls} SerpAPI calls, ${usage.errors} SerpAPI errors, ` +
-      `${all.length} raw → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, reserved-lifestyle=${reservedLifestyleItems.length}, general=${generalCapped.length})`
+      `${rawAll.length} raw → ${lowValueStubExcludedCount} stub-excluded → ${all.length} eligible → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, reserved-lifestyle=${reservedLifestyleItems.length}, reserved-sports=${reservedSportsItems.length}, general=${generalCapped.length})`
   );
   if (usage.errors > 0 && usage.errors === STAGE0_QUERIES.length) {
     console.warn(
@@ -723,12 +843,15 @@ async function runStage0Discovery(): Promise<{
 
   return {
     pool: capped,
-    rawCount: all.length,
+    rawCount: rawAll.length,
     exactDedupedCount: exactDeduped.length,
     nearDedupedCount: nearDeduped.length,
+    nearDedupedPool: nearDeduped,
     nearDuplicateMerges,
+    lowValueStubExcludedCount,
     reservedCannabisItems,
     reservedLifestyleItems,
+    reservedSportsItems,
     usage,
   };
 }
@@ -1545,6 +1668,7 @@ async function compareAgainstTodaysSlotOutput(
 
 export type Stage0DedupeCounts = {
   rawCount: number;
+  lowValueStubExcludedCount: number;
   exactDedupedCount: number;
   nearDedupedCount: number;
   cappedCount: number;
@@ -1554,9 +1678,11 @@ export type ShadowRunResult = {
   kept: TopicDiscoveryResult[];
   skipped: SkippedTopic[];
   nearDuplicateMerges: NearDuplicateMerge[];
+  nearDedupedPool: RawNewsItem[];
   dedupeCounts: Stage0DedupeCounts;
   reservedCannabisItems: RawNewsItem[];
   reservedLifestyleItems: RawNewsItem[];
+  reservedSportsItems: RawNewsItem[];
   stage0Usage: Stage0Usage;
   stage1Usage: Stage1Usage;
   wallClockMs: number;
@@ -1595,9 +1721,12 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     rawCount,
     exactDedupedCount,
     nearDedupedCount,
+    nearDedupedPool,
     nearDuplicateMerges,
+    lowValueStubExcludedCount,
     reservedCannabisItems,
     reservedLifestyleItems,
+    reservedSportsItems,
     usage: stage0Usage,
   } = await runStage0Discovery();
   const { kept, skipped, usage: stage1Usage } = await runStage1Batched(pool);
@@ -1606,19 +1735,23 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
 
   const dedupeCounts: Stage0DedupeCounts = {
     rawCount,
+    lowValueStubExcludedCount,
     exactDedupedCount,
     nearDedupedCount,
     cappedCount: pool.length,
   };
 
   console.log(
-    `[topic-discovery] Dedupe pipeline: raw=${dedupeCounts.rawCount} → exact-dedupe=${dedupeCounts.exactDedupedCount} → near-dedupe=${dedupeCounts.nearDedupedCount} (${nearDuplicateMerges.length} merged) → capped=${dedupeCounts.cappedCount}`
+    `[topic-discovery] Dedupe pipeline: raw=${dedupeCounts.rawCount} → stub-excluded=${dedupeCounts.lowValueStubExcludedCount} → exact-dedupe=${dedupeCounts.exactDedupedCount} → near-dedupe=${dedupeCounts.nearDedupedCount} (${nearDuplicateMerges.length} merged) → capped=${dedupeCounts.cappedCount}`
   );
   console.log(
     `[topic-discovery] Cannabis reserved quota filled: ${reservedCannabisItems.length}/${CANNABIS_RESERVED_SLOTS} — ${reservedCannabisItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
   );
   console.log(
     `[topic-discovery] Lifestyle reserved quota filled: ${reservedLifestyleItems.length}/${LIFESTYLE_RESERVED_SLOTS} — ${reservedLifestyleItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
+  );
+  console.log(
+    `[topic-discovery] Sports reserved quota filled: ${reservedSportsItems.length}/${SPORTS_RESERVED_SLOTS} — ${reservedSportsItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
   );
   console.log(
     `[topic-discovery] Editorial gate (keyword pre-filter): ${stage1Usage.editorialGateDropped} dropped before Stage 1, ${stage1Usage.proceededToStage1} proceeded to Stage 1 (of ${pool.length} capped candidates).`
@@ -1652,8 +1785,21 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
       serpApiErrors: stage0Usage.errors,
       serpApiErrorSample: stage0Usage.errorSample,
       rawResults: dedupeCounts.rawCount,
+      lowValueStubExcludedCount: dedupeCounts.lowValueStubExcludedCount,
+      lowValueStubDomains: [...LOW_VALUE_STUB_DOMAINS],
       exactDedupedResults: dedupeCounts.exactDedupedCount,
       nearDedupedResults: dedupeCounts.nearDedupedCount,
+      // Full pre-cap pool — the ~260-item set the STAGE1_CANDIDATE_CAP recency
+      // cut is applied to. Persisted in full (not just a sample) so a future
+      // investigation can search it directly, rather than only ever seeing
+      // the post-cap 20 the way today's investigation was limited to.
+      nearDedupedPool: nearDedupedPool.map((it) => ({
+        title: it.title,
+        link: it.link,
+        queryClass: it.queryClass,
+        sourceOutlet: it.sourceOutlet ?? null,
+        publishedDate: it.publishedDate ? it.publishedDate.toISOString() : null,
+      })),
       nearDuplicateMerges,
       cappedPoolSize: dedupeCounts.cappedCount,
       cap: STAGE1_CANDIDATE_CAP,
@@ -1661,6 +1807,8 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
       reservedCannabisItems: reservedCannabisItems.map((it) => ({ title: it.title, link: it.link })),
       lifestyleReservedSlots: LIFESTYLE_RESERVED_SLOTS,
       reservedLifestyleItems: reservedLifestyleItems.map((it) => ({ title: it.title, link: it.link })),
+      sportsReservedSlots: SPORTS_RESERVED_SLOTS,
+      reservedSportsItems: reservedSportsItems.map((it) => ({ title: it.title, link: it.link })),
     },
     stage1: stage1Usage,
     kept,
@@ -1673,9 +1821,11 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     kept,
     skipped,
     nearDuplicateMerges,
+    nearDedupedPool,
     dedupeCounts,
     reservedCannabisItems,
     reservedLifestyleItems,
+    reservedSportsItems,
     stage0Usage,
     stage1Usage,
     wallClockMs,
@@ -1690,7 +1840,7 @@ if (require.main === module) {
       console.log('\n\n########## SHADOW MODE SUMMARY ##########');
       console.log(`Stage 0 SerpAPI calls: ${result.stage0Usage.apiCalls}, errors: ${result.stage0Usage.errors}`);
       console.log(
-        `Dedupe pipeline: raw=${result.dedupeCounts.rawCount} → exact-dedupe=${result.dedupeCounts.exactDedupedCount} → near-dedupe=${result.dedupeCounts.nearDedupedCount} (${result.nearDuplicateMerges.length} merged) → capped=${result.dedupeCounts.cappedCount}`
+        `Dedupe pipeline: raw=${result.dedupeCounts.rawCount} → stub-excluded=${result.dedupeCounts.lowValueStubExcludedCount} → exact-dedupe=${result.dedupeCounts.exactDedupedCount} → near-dedupe=${result.dedupeCounts.nearDedupedCount} (${result.nearDuplicateMerges.length} merged) → capped=${result.dedupeCounts.cappedCount}`
       );
       console.log(
         `Editorial gate (keyword pre-filter): ${result.stage1Usage.editorialGateDropped} dropped, ${result.stage1Usage.proceededToStage1} proceeded to Stage 1`
@@ -1731,6 +1881,19 @@ if (require.main === module) {
           null,
           2
         )
+      );
+      console.log(
+        `\nSports reserved quota: ${result.reservedSportsItems.length}/${SPORTS_RESERVED_SLOTS} filled`
+      );
+      console.log(
+        JSON.stringify(
+          result.reservedSportsItems.map((it) => ({ title: it.title, link: it.link })),
+          null,
+          2
+        )
+      );
+      console.log(
+        `\nLow-value schedule-stub sources excluded before dedupe: ${result.dedupeCounts.lowValueStubExcludedCount}`
       );
       console.log('\n--- Near-duplicates merged (Stage 0, pre-cap) ---');
       console.log(JSON.stringify(result.nearDuplicateMerges, null, 2));
