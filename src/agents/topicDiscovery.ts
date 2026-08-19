@@ -9,7 +9,8 @@
  * agents/newsApiSync.ts, agents/sanityPublisher.ts (except the read-only
  * getSanityClient for the shadow-mode comparison query), agents/editorAgent.ts,
  * or src/agents/researchAgent.ts. Runs alongside the existing 5-slot
- * pipeline, not in place of it. SHADOW MODE ONLY: fetches from SerpAPI,
+ * pipeline, not in place of it. SHADOW MODE ONLY: fetches from Bright Data's
+ * SERP API (primary) / SerpAPI (fallback on error/timeout/empty/non-200),
  * classifies with OpenAI, logs to a file outside the repo. Never publishes
  * to Sanity.
  *
@@ -50,6 +51,7 @@ import { config } from '../../config';
 import { getSanityClient } from '../../agents/sanityPublisher';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
+const BRIGHTDATA_REQUEST_URL = 'https://api.brightdata.com/request';
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
 
@@ -186,12 +188,19 @@ export type RawNewsItem = {
   matchedQuery: string;
 };
 
-/** Counts SerpAPI HTTP calls made during Stage 0 of this run, and fetch failures distinctly from a normal query with no results. */
+/** Per-provider Stage 0 call accounting — calls attempted, unrecoverable errors, and queries this provider's result was actually used for. */
+type Stage0ProviderUsage = { calls: number; errors: number; served: number };
+
+/** Counts Stage 0 provider HTTP calls made during this run, and fetch failures distinctly from a normal query with no results. */
 type Stage0Usage = {
+  /** Total provider call attempts across both providers (Bright Data + SerpAPI fallback attempts combined). */
   apiCalls: number;
+  /** Queries where BOTH Bright Data and the SerpAPI fallback failed — a query with no usable result at all. */
   errors: number;
-  /** A few example SerpApi error messages from this run, capped — not every failure. */
+  /** A few example error messages from unrecoverable (both-providers-failed) queries this run, capped — not every failure. */
   errorSample: string[];
+  brightData: Stage0ProviderUsage;
+  serpApi: Stage0ProviderUsage;
 };
 
 const STAGE0_ERROR_SAMPLE_MAX = 5;
@@ -301,6 +310,7 @@ async function fetchSerpNewsForQuery(
   usage: Stage0Usage
 ): Promise<RawNewsItem[]> {
   usage.apiCalls += 1;
+  usage.serpApi.calls += 1;
   console.log(`[topic-discovery] Stage 0: calling SerpAPI for "${q.query}" (class=${q.queryClass})`);
 
   const { data, status } = await axios.get<{
@@ -332,6 +342,148 @@ async function fetchSerpNewsForQuery(
 
   const items = flattenStage0Results(data.news_results, q.queryClass, q.query);
   console.log(`[topic-discovery] Stage 0: "${q.query}" → ${items.length} result(s)`);
+  return items;
+}
+
+// ---- Bright Data SERP API — Stage 0 primary provider -----------------------
+//
+// Bright Data is tried first; fetchStage0NewsForQuery below falls back to the
+// SerpAPI implementation above on error, timeout, non-200, or a genuinely
+// empty result set. Confirmed via a live test call (2026-08-19, query
+// "Phoenix news today" from STAGE0_QUERIES, url param tbm=nws&gl=us&hl=en):
+// Bright Data's `general.search_type` came back "news" with a flat `news[]`
+// array — a materially different, flatter shape than SerpAPI's
+// highlight/stories-wrapped news_results, not just renamed fields.
+
+function buildGoogleNewsSearchUrl(query: string): string {
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=nws&gl=us&hl=en`;
+}
+
+/**
+ * Adapter: Bright Data's flat news[] item shape → RawNewsItem, the same
+ * internal shape flattenStage0Results produces from SerpAPI, so nothing
+ * downstream of Stage 0 needs to change. Per the live test: `source` is
+ * always a plain string (no {name,icon} object form SerpAPI sometimes uses,
+ * so no extractSourceOutlet-style branching is needed); `description` (→
+ * snippet) was present on only ~35% of items in the sample — left undefined
+ * otherwise, which flattenStage0Results's own RawNewsItem shape already
+ * tolerates (snippet is optional); `date` was a relative string ("7 hours
+ * ago") on every item observed, no iso_date-equivalent field at all, so this
+ * reuses parseRelativeNewsDate() directly rather than parsePublishedDate()
+ * (which also branches on an iso_date field Bright Data doesn't provide).
+ * image/image_base64/source_logo/rank/global_rank are dropped — unused by
+ * anything downstream of Stage 0.
+ */
+function flattenBrightDataNewsResults(
+  raw: unknown[] | undefined,
+  queryClass: QueryClass,
+  query: string
+): RawNewsItem[] {
+  const out: RawNewsItem[] = [];
+  for (const entry of raw || []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const title = e.title;
+    const link = e.link;
+    if (typeof title !== 'string' || typeof link !== 'string' || !link.startsWith('http')) continue;
+    out.push({
+      title,
+      link,
+      snippet: typeof e.description === 'string' ? e.description : undefined,
+      sourceOutlet: typeof e.source === 'string' && e.source.trim() ? e.source.trim() : undefined,
+      publishedDate: typeof e.date === 'string' ? parseRelativeNewsDate(e.date) : undefined,
+      queryClass,
+      matchedQuery: query,
+    });
+  }
+  return out;
+}
+
+async function fetchBrightDataNewsForQuery(
+  q: Stage0Query,
+  usage: Stage0Usage
+): Promise<RawNewsItem[]> {
+  if (!config.brightData.apiKey) {
+    throw new Error('BRIGHTDATA_API_KEY is not set');
+  }
+
+  usage.apiCalls += 1;
+  usage.brightData.calls += 1;
+  console.log(`[topic-discovery] Stage 0: calling Bright Data for "${q.query}" (class=${q.queryClass})`);
+
+  const { data, status } = await axios.post<{ body?: unknown }>(
+    BRIGHTDATA_REQUEST_URL,
+    {
+      zone: config.brightData.zone,
+      url: buildGoogleNewsSearchUrl(q.query),
+      format: 'json',
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${config.brightData.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30_000,
+      validateStatus: () => true,
+    }
+  );
+
+  if (status !== 200) {
+    throw new Error(`Bright Data HTTP ${status}`);
+  }
+
+  // Bright Data double-wraps the response: the outer envelope's `body` field
+  // is itself a JSON STRING (Google's parsed SERP JSON), not a nested object
+  // — it must be JSON.parse'd a second time. Confirmed via the live test call.
+  if (typeof data.body !== 'string') {
+    throw new Error('Bright Data response missing string `body` field');
+  }
+
+  let parsedBody: { news?: unknown[] };
+  try {
+    parsedBody = JSON.parse(data.body) as { news?: unknown[] };
+  } catch (e) {
+    throw new Error(`Bright Data body JSON.parse failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const items = flattenBrightDataNewsResults(parsedBody.news, q.queryClass, q.query);
+  console.log(`[topic-discovery] Stage 0: Bright Data "${q.query}" → ${items.length} result(s)`);
+  return items;
+}
+
+/**
+ * Stage 0 provider layer: Bright Data tried first, SerpAPI as fallback on
+ * error, timeout, non-200, OR a genuinely empty result set (not just a
+ * thrown exception) — per query, not per run, so one query's Bright Data
+ * hiccup doesn't force every other query onto SerpAPI. Logs which provider
+ * actually served each query for later cost/quota tracking (usage.brightData
+ * / usage.serpApi).
+ */
+async function fetchStage0NewsForQuery(
+  q: Stage0Query,
+  usage: Stage0Usage
+): Promise<RawNewsItem[]> {
+  try {
+    const items = await fetchBrightDataNewsForQuery(q, usage);
+    if (items.length > 0) {
+      usage.brightData.served += 1;
+      console.log(`[topic-discovery] Stage 0: "${q.query}" served by Bright Data (${items.length} result(s))`);
+      return items;
+    }
+    console.warn(
+      `[topic-discovery] Stage 0: Bright Data returned 0 results for "${q.query}" — falling back to SerpAPI`
+    );
+  } catch (e) {
+    usage.brightData.errors += 1;
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(
+      `[topic-discovery] Stage 0: Bright Data errored for "${q.query}": ${msg} — falling back to SerpAPI`
+    );
+  }
+
+  const items = await fetchSerpNewsForQuery(q, usage);
+  usage.serpApi.served += 1;
+  console.log(`[topic-discovery] Stage 0: "${q.query}" served by SerpAPI (fallback, ${items.length} result(s))`);
   return items;
 }
 
@@ -709,7 +861,8 @@ function capStage0PoolByRecency(items: RawNewsItem[], max: number): RawNewsItem[
 /** How many near-deduped-pool items to log/persist as a readable sample, per class — the full pool (~260 items) is logged as counts + this sample, not dumped line-by-line into the console, but the FULL list is still returned/persisted to the shadow JSON so a future investigation can search it. */
 const NEAR_DEDUPED_SAMPLE_PER_CLASS = 5;
 
-async function runStage0Discovery(): Promise<{
+/** Exported for provider-swap verification (scripts/*) — not used by any other module. */
+export async function runStage0Discovery(): Promise<{
   pool: RawNewsItem[];
   rawCount: number;
   exactDedupedCount: number;
@@ -722,14 +875,21 @@ async function runStage0Discovery(): Promise<{
   reservedSportsItems: RawNewsItem[];
   usage: Stage0Usage;
 }> {
-  const usage: Stage0Usage = { apiCalls: 0, errors: 0, errorSample: [] };
+  const usage: Stage0Usage = {
+    apiCalls: 0,
+    errors: 0,
+    errorSample: [],
+    brightData: { calls: 0, errors: 0, served: 0 },
+    serpApi: { calls: 0, errors: 0, served: 0 },
+  };
   const rawAll: RawNewsItem[] = [];
 
   for (const q of STAGE0_QUERIES) {
     try {
-      const items = await fetchSerpNewsForQuery(q, usage);
+      const items = await fetchStage0NewsForQuery(q, usage);
       rawAll.push(...items);
     } catch (e) {
+      usage.serpApi.errors++;
       const msg = e instanceof Error ? e.message : String(e);
       usage.errors++;
       if (usage.errorSample.length < STAGE0_ERROR_SAMPLE_MAX) {
@@ -832,12 +992,15 @@ async function runStage0Discovery(): Promise<{
   const capped = [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems, ...generalCapped];
 
   console.log(
-    `[topic-discovery] Stage 0 done: ${STAGE0_QUERIES.length} queries, ${usage.apiCalls} SerpAPI calls, ${usage.errors} SerpAPI errors, ` +
+    `[topic-discovery] Stage 0 done: ${STAGE0_QUERIES.length} queries, ${usage.apiCalls} total provider calls ` +
+      `(Bright Data: ${usage.brightData.calls} calls/${usage.brightData.served} served/${usage.brightData.errors} errors, ` +
+      `SerpAPI fallback: ${usage.serpApi.calls} calls/${usage.serpApi.served} served/${usage.serpApi.errors} errors), ` +
+      `${usage.errors} unrecoverable query error(s) (both providers failed), ` +
       `${rawAll.length} raw → ${lowValueStubExcludedCount} stub-excluded → ${all.length} eligible → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, reserved-lifestyle=${reservedLifestyleItems.length}, reserved-sports=${reservedSportsItems.length}, general=${generalCapped.length})`
   );
   if (usage.errors > 0 && usage.errors === STAGE0_QUERIES.length) {
     console.warn(
-      `[topic-discovery] STAGE 0 WARNING: every SerpAPI query errored this run (${usage.errors}/${STAGE0_QUERIES.length}) — likely an engine/account-level issue, not query-specific. Sample: ${usage.errorSample.join(' | ')}`
+      `[topic-discovery] STAGE 0 WARNING: every query errored this run on BOTH providers (${usage.errors}/${STAGE0_QUERIES.length}) — likely an account/network-level issue, not query-specific. Sample: ${usage.errorSample.join(' | ')}`
     );
   }
 

@@ -31,6 +31,12 @@ export const config = {
     /** Ticketmaster Discovery API consumer key — https://developer.ticketmaster.com */
     apiKey: (process.env.TICKETMASTER_API_KEY || '').trim(),
   },
+  brightData: {
+    /** Bright Data API key — https://brightdata.com */
+    apiKey: (process.env.BRIGHTDATA_API_KEY || '').trim(),
+    /** Bright Data SERP zone name. Stage 0's primary provider; falls back to SerpAPI on error/timeout/empty/non-200. */
+    zone: (process.env.BRIGHTDATA_ZONE || 'happyserp_api1').trim(),
+  },
   serpApi: {
     /** SerpApi key — https://serpapi.com/manage-api-key */
     apiKey: (process.env.SERPAPI_API_KEY || '').trim(),
