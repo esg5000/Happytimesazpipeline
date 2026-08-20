@@ -55,8 +55,14 @@ const BRIGHTDATA_REQUEST_URL = 'https://api.brightdata.com/request';
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
 
-/** After Stage 0 pool + dedupe, keep at most this many candidates (newest first) before Stage 1. */
-export const STAGE1_CANDIDATE_CAP = 20;
+/**
+ * After Stage 0 pool + dedupe, keep at most this many candidates (newest
+ * first) before Stage 1. 24 = 4 (cannabis) + 4 (lifestyle) + 4 (sports) +
+ * 4 (health-wellness) reserved slots + 8 general pool — raised from 20 to
+ * 24 specifically to add the health-wellness reserve without shrinking the
+ * general pool or any existing reserve (see HEALTH_WELLNESS_RESERVED_SLOTS).
+ */
+export const STAGE1_CANDIDATE_CAP = 24;
 /** Stage 1 in-flight concurrency — batches, not one Promise.all across the whole capped list. */
 const STAGE1_BATCH_SIZE = 4;
 /**
@@ -97,6 +103,20 @@ const LIFESTYLE_RESERVED_SLOTS = 4;
  * the general pool if under-filled (see runStage0Discovery).
  */
 const SPORTS_RESERVED_SLOTS = 4;
+/**
+ * Same mechanism again, mirrored exactly for health-wellness-az —
+ * investigation (2026-08-20) found zero health-wellness-section topics
+ * survived across two consecutive runs while weather/sports dominated:
+ * there was no dedicated health-wellness query lane at all (health content
+ * only ever entered incidentally via local-native/lifestyle-az queries,
+ * none of which are wellness-worded), so it had no protected path into the
+ * pool the same way cannabis/lifestyle/sports now do. Filled by recency
+ * WITHIN health-wellness-az only, backfilled from the general pool if
+ * under-filled (see runStage0Discovery). STAGE1_CANDIDATE_CAP raised
+ * 20→24 alongside this so the general pool and the other three reserves
+ * stay exactly the same size.
+ */
+const HEALTH_WELLNESS_RESERVED_SLOTS = 4;
 
 const SHADOW_OUTPUT_DIR = join(
   process.env.TEMP || process.env.TMPDIR || '/tmp',
@@ -112,7 +132,8 @@ export type QueryClass =
   | 'national-with-potential-local-angle'
   | 'cannabis-az'
   | 'lifestyle-az'
-  | 'sports-az';
+  | 'sports-az'
+  | 'health-wellness-az';
 
 type Stage0Query = { query: string; queryClass: QueryClass };
 
@@ -142,6 +163,11 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * "recap"/"news" phrasing to bias toward real articles over raw schedule
  * listings, though the actual stub exclusion is the domain filter below,
  * not the query wording.
+ * `health-wellness-az`: Arizona fitness/mental-health/spa/healthcare
+ * discovery — added alongside HEALTH_WELLNESS_RESERVED_SLOTS after
+ * confirming zero health-wellness-section topics survived across two
+ * consecutive runs; there was no dedicated wellness query lane at all
+ * (unlike lifestyle-az, which is 100% food/nightlife/events-worded).
  * Feeds the same pool/dedupe/cap pipeline as the other classes, no
  * special-casing (see runStage0Discovery, unchanged).
  */
@@ -176,6 +202,12 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'ASU Sun Devils sports news', queryClass: 'sports-az' },
   { query: 'Phoenix Mercury news', queryClass: 'sports-az' },
   { query: 'Arizona sports news today', queryClass: 'sports-az' },
+  { query: 'Phoenix fitness wellness news', queryClass: 'health-wellness-az' },
+  { query: 'Arizona mental health news', queryClass: 'health-wellness-az' },
+  { query: 'Valley yoga meditation wellness studio', queryClass: 'health-wellness-az' },
+  { query: 'Phoenix healthcare hospital news', queryClass: 'health-wellness-az' },
+  { query: 'Arizona spa wellness retreat', queryClass: 'health-wellness-az' },
+  { query: 'Phoenix gym fitness trend', queryClass: 'health-wellness-az' },
 ];
 
 export type RawNewsItem = {
@@ -873,6 +905,7 @@ export async function runStage0Discovery(): Promise<{
   reservedCannabisItems: RawNewsItem[];
   reservedLifestyleItems: RawNewsItem[];
   reservedSportsItems: RawNewsItem[];
+  reservedHealthWellnessItems: RawNewsItem[];
   usage: Stage0Usage;
 }> {
   const usage: Stage0Usage = {
@@ -973,30 +1006,56 @@ export async function runStage0Discovery(): Promise<{
     console.log(`[topic-discovery]   reserved-sports-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
   });
 
+  // Reserved health-wellness-az quota — identical mechanism, mirrored exactly.
+  const healthWellnessCandidates = nearDeduped.filter((it) => it.queryClass === 'health-wellness-az');
+  const reservedHealthWellnessItems = capStage0PoolByRecency(
+    healthWellnessCandidates,
+    HEALTH_WELLNESS_RESERVED_SLOTS
+  );
+  console.log(
+    `[topic-discovery] Health-wellness reserved quota: ${reservedHealthWellnessItems.length}/${HEALTH_WELLNESS_RESERVED_SLOTS} slot(s) filled from ${healthWellnessCandidates.length} health-wellness-az candidate(s) (recency within class).`
+  );
+  reservedHealthWellnessItems.forEach((it, idx) => {
+    console.log(`[topic-discovery]   reserved-health-wellness-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
+  });
+
   // Remaining slots (8, or more if any reserve didn't fill — backfill, not
-  // left empty) fill from the combined pool of all five classes by recency,
+  // left empty) fill from the combined pool of all six classes by recency,
   // same as before. Reserved items are excluded from re-selection here so
   // they aren't double-counted, but non-reserved cannabis-az/lifestyle-az/
-  // sports-az items remain eligible to also win a general slot on merit.
+  // sports-az/health-wellness-az items remain eligible to also win a general
+  // slot on merit.
   const reservedLinks = new Set(
-    [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems].map((it) => it.link)
+    [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems, ...reservedHealthWellnessItems].map(
+      (it) => it.link
+    )
   );
   const remainingSlots =
-    STAGE1_CANDIDATE_CAP - reservedCannabisItems.length - reservedLifestyleItems.length - reservedSportsItems.length;
+    STAGE1_CANDIDATE_CAP -
+    reservedCannabisItems.length -
+    reservedLifestyleItems.length -
+    reservedSportsItems.length -
+    reservedHealthWellnessItems.length;
   const remainingPool = nearDeduped.filter((it) => !reservedLinks.has(it.link));
   const generalCapped = capStage0PoolByRecency(remainingPool, remainingSlots);
   console.log(
-    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 5 classes.`
+    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 6 classes.`
   );
 
-  const capped = [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems, ...generalCapped];
+  const capped = [
+    ...reservedCannabisItems,
+    ...reservedLifestyleItems,
+    ...reservedSportsItems,
+    ...reservedHealthWellnessItems,
+    ...generalCapped,
+  ];
 
   console.log(
     `[topic-discovery] Stage 0 done: ${STAGE0_QUERIES.length} queries, ${usage.apiCalls} total provider calls ` +
       `(Bright Data: ${usage.brightData.calls} calls/${usage.brightData.served} served/${usage.brightData.errors} errors, ` +
       `SerpAPI fallback: ${usage.serpApi.calls} calls/${usage.serpApi.served} served/${usage.serpApi.errors} errors), ` +
       `${usage.errors} unrecoverable query error(s) (both providers failed), ` +
-      `${rawAll.length} raw → ${lowValueStubExcludedCount} stub-excluded → ${all.length} eligible → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, reserved-lifestyle=${reservedLifestyleItems.length}, reserved-sports=${reservedSportsItems.length}, general=${generalCapped.length})`
+      `${rawAll.length} raw → ${lowValueStubExcludedCount} stub-excluded → ${all.length} eligible → ${exactDeduped.length} exact-deduped → ${nearDeduped.length} near-deduped (${nearDuplicateMerges.length} merged) → ${capped.length} capped (max ${STAGE1_CANDIDATE_CAP}, reserved-cannabis=${reservedCannabisItems.length}, reserved-lifestyle=${reservedLifestyleItems.length}, reserved-sports=${reservedSportsItems.length}, reserved-health-wellness=${reservedHealthWellnessItems.length}, general=${generalCapped.length})`
   );
   if (usage.errors > 0 && usage.errors === STAGE0_QUERIES.length) {
     console.warn(
@@ -1015,6 +1074,7 @@ export async function runStage0Discovery(): Promise<{
     reservedCannabisItems,
     reservedLifestyleItems,
     reservedSportsItems,
+    reservedHealthWellnessItems,
     usage,
   };
 }
@@ -1847,6 +1907,7 @@ export type ShadowRunResult = {
   reservedCannabisItems: RawNewsItem[];
   reservedLifestyleItems: RawNewsItem[];
   reservedSportsItems: RawNewsItem[];
+  reservedHealthWellnessItems: RawNewsItem[];
   stage0Usage: Stage0Usage;
   stage1Usage: Stage1Usage;
   wallClockMs: number;
@@ -1891,6 +1952,7 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     reservedCannabisItems,
     reservedLifestyleItems,
     reservedSportsItems,
+    reservedHealthWellnessItems,
     usage: stage0Usage,
   } = await runStage0Discovery();
   const { kept, skipped, usage: stage1Usage } = await runStage1Batched(pool);
@@ -1916,6 +1978,9 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
   );
   console.log(
     `[topic-discovery] Sports reserved quota filled: ${reservedSportsItems.length}/${SPORTS_RESERVED_SLOTS} — ${reservedSportsItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
+  );
+  console.log(
+    `[topic-discovery] Health-wellness reserved quota filled: ${reservedHealthWellnessItems.length}/${HEALTH_WELLNESS_RESERVED_SLOTS} — ${reservedHealthWellnessItems.map((it) => `"${it.title.slice(0, 60)}"`).join(', ') || '(none)'}`
   );
   console.log(
     `[topic-discovery] Editorial gate (keyword pre-filter): ${stage1Usage.editorialGateDropped} dropped before Stage 1, ${stage1Usage.proceededToStage1} proceeded to Stage 1 (of ${pool.length} capped candidates).`
@@ -1973,6 +2038,8 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
       reservedLifestyleItems: reservedLifestyleItems.map((it) => ({ title: it.title, link: it.link })),
       sportsReservedSlots: SPORTS_RESERVED_SLOTS,
       reservedSportsItems: reservedSportsItems.map((it) => ({ title: it.title, link: it.link })),
+      healthWellnessReservedSlots: HEALTH_WELLNESS_RESERVED_SLOTS,
+      reservedHealthWellnessItems: reservedHealthWellnessItems.map((it) => ({ title: it.title, link: it.link })),
     },
     stage1: stage1Usage,
     kept,
@@ -1990,6 +2057,7 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
     reservedCannabisItems,
     reservedLifestyleItems,
     reservedSportsItems,
+    reservedHealthWellnessItems,
     stage0Usage,
     stage1Usage,
     wallClockMs,
