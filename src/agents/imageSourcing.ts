@@ -89,20 +89,43 @@ const AMBIGUOUS_TERM_RULES: { term: string; whenSection: string; append: string 
     whenSection: 'sports',
     append: 'american football',
   },
+  {
+    term: 'turkey',
+    whenSection: 'health-wellness',
+    append: 'turkey tail mushroom',
+  },
 ];
 
-function applyDisambiguation(parts: string[], section: string): string[] {
+/**
+ * `requiredTerms`: tokens from a fired rule's `append` phrase, EXCLUDING
+ * the ambiguous `term` itself (e.g. "turkey tail mushroom" minus "turkey"
+ * -> ["tail", "mushroom"]). Confirmed bug (Test A, tonight, 3rd re-run):
+ * appending the disambiguation phrase changes what Unsplash returns, but
+ * the picker's any-term-match kept accepting the bare ambiguous term on
+ * its own, so a literal turkey photo still passed. Callers pass
+ * requiredTerms into the picker so a fired rule narrows the accepted
+ * match set instead of just adding to it.
+ */
+function applyDisambiguation(parts: string[], section: string): { parts: string[]; requiredTerms: string[] } {
   const additions: string[] = [];
+  const requiredTerms: string[] = [];
   for (const part of parts) {
     const tokens = part.toLowerCase().split(/\s+/);
     for (const rule of AMBIGUOUS_TERM_RULES) {
       if (rule.whenSection !== section) continue;
       if (tokens.includes(rule.term) && !additions.includes(rule.append)) {
         additions.push(rule.append);
+        const disambiguatingTokens = rule.append
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w) => w !== rule.term.toLowerCase() && w.length >= 3);
+        for (const t of disambiguatingTokens) {
+          if (!requiredTerms.includes(t)) requiredTerms.push(t);
+        }
       }
     }
   }
-  return [...parts, ...additions];
+  return { parts: [...parts, ...additions], requiredTerms };
 }
 
 const STOP_TAGS = new Set(['news', 'events', 'local', 'phoenix', 'arizona']);
@@ -140,7 +163,7 @@ export function buildImageSearchQuery(input: ImageSourcingInput): string {
   }
 
   const disambiguated = applyDisambiguation(parts, input.section);
-  const query = disambiguated.join(' ').slice(0, QUERY_MAX_CHARS).trim();
+  const query = disambiguated.parts.join(' ').slice(0, QUERY_MAX_CHARS).trim();
   return query || 'editorial';
 }
 
@@ -170,15 +193,17 @@ function dedupeAndCleanTerms(terms: string[]): string[] {
  * one narrow attempt. Each rung is still built from structured input only;
  * the raw headline never enters any rung.
  */
-function buildQueryLadder(input: ImageSourcingInput): string[] {
-  const candidates: string[] = [];
+type QueryLadderRung = { query: string; requiredTerms: string[] };
+
+function buildQueryLadder(input: ImageSourcingInput): QueryLadderRung[] {
+  const candidates: QueryLadderRung[] = [];
   const seenQueries = new Set<string>();
   const addCandidate = (parts: string[]) => {
     const disambiguated = applyDisambiguation(parts, input.section);
-    const q = disambiguated.join(' ').slice(0, QUERY_MAX_CHARS).trim();
+    const q = disambiguated.parts.join(' ').slice(0, QUERY_MAX_CHARS).trim();
     if (q && !seenQueries.has(q)) {
       seenQueries.add(q);
-      candidates.push(q);
+      candidates.push({ query: q, requiredTerms: disambiguated.requiredTerms });
     }
   };
 
@@ -200,7 +225,7 @@ function buildQueryLadder(input: ImageSourcingInput): string[] {
   // Rung 4: section alone — last resort before giving up.
   addCandidate([input.section]);
 
-  return candidates.length > 0 ? candidates : ['editorial'];
+  return candidates.length > 0 ? candidates : [{ query: 'editorial', requiredTerms: [] }];
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +264,73 @@ function pickHighestResolutionPhoto(results: UnsplashPhotoRow[]): UnsplashPhotoR
     }
   }
   return best;
+}
+
+/** Reused as both the query-builder's word filter and the relevance-check term filter. */
+const RELEVANCE_STOP_WORDS = new Set([
+  'the',
+  'and',
+  'for',
+  'with',
+  'that',
+  'this',
+  'from',
+  'are',
+  'was',
+  'has',
+  'have',
+  'will',
+  'been',
+  'about',
+  'into',
+  'your',
+  'their',
+]);
+
+/**
+ * Confirmed production bug (ported from unsplashHero.ts, same root cause):
+ * pickHighestResolutionPhoto() ranks ALL results by resolution alone, with
+ * no check that the photo has anything to do with the query — an unrelated
+ * highest-resolution photo (e.g. a bird photo for a "medicinal mushrooms"
+ * query) wins outright. This filters to results whose
+ * alt_description/description actually mentions one of the query's
+ * significant terms (stop-words and terms under 3 chars excluded) BEFORE
+ * ranking by resolution. Unlike unsplashHero.ts's single-query version,
+ * this is called once per ladder rung by sourceImage() below, which tries
+ * every rung looking for a relevance match before ever falling back to a
+ * resolution-only pick — see sourceImage()'s ladder loop.
+ *
+ * Confirmed follow-on bug (Test A, unsplashHero.ts, 3rd re-run — same root
+ * cause applies here): appending a disambiguation term (e.g. "turkey" ->
+ * "turkey tail mushroom") changes what Unsplash returns, but not what this
+ * filter accepts — the bare ambiguous term stayed in queryTerms and
+ * any-match logic let a mismatched photo through anyway. When the caller
+ * has a fired rule's disambiguating tokens (requiredTerms — the append
+ * phrase minus the ambiguous term itself), those replace queryTerms as
+ * the match set entirely. Empty requiredTerms (no rule fired) keeps the
+ * original any-term behavior.
+ */
+function pickRelevantHighestResolutionPhoto(
+  results: UnsplashPhotoRow[],
+  query: string,
+  requiredTerms: string[] = []
+): { photo: UnsplashPhotoRow | null; matchedRelevanceFilter: boolean } {
+  const queryTerms = query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !RELEVANCE_STOP_WORDS.has(w));
+
+  const matchTerms = requiredTerms.length > 0 ? requiredTerms : queryTerms;
+
+  const relevant = results.filter((p) => {
+    const text = `${p.alt_description || ''} ${p.description || ''}`.toLowerCase();
+    return matchTerms.some((term) => text.includes(term));
+  });
+
+  const matchedRelevanceFilter = relevant.length > 0;
+  const pool = matchedRelevanceFilter ? relevant : results;
+  return { photo: pickHighestResolutionPhoto(pool), matchedRelevanceFilter };
 }
 
 /**
@@ -309,6 +401,13 @@ export type ImageSourcingResult = {
   altText: string;
   /** Unsplash-ToS-specific requirement — always false for gpt-image-1 (nothing to trigger). */
   downloadTriggerFired: boolean;
+  /**
+   * True if some rung of the query ladder actually passed the relevance
+   * filter; false if every rung's results were off-topic and this result
+   * is the resolution-only fallback pick. Always true for gpt-image-1
+   * (generated directly from the structured input, nothing to mismatch).
+   */
+  matchedRelevanceFilter: boolean;
 };
 
 export type ImageSourcingOutcome =
@@ -323,10 +422,13 @@ export type ImageSourcingOutcome =
 // Stage 7 entry point
 // ---------------------------------------------------------------------------
 
-async function searchUnsplashOnce(
-  query: string,
-  key: string
-): Promise<{ outcome: 'ok'; photo: UnsplashPhotoRow } | { outcome: 'no-results' | 'rate-limited' | 'error'; httpStatus?: number; message?: string }> {
+type SearchUnsplashOutcome =
+  | { outcome: 'ok'; results: UnsplashPhotoRow[] }
+  | { outcome: 'no-results'; httpStatus?: number }
+  | { outcome: 'rate-limited'; httpStatus: number }
+  | { outcome: 'error'; message: string };
+
+async function searchUnsplashOnce(query: string, key: string): Promise<SearchUnsplashOutcome> {
   let res;
   try {
     res = await axios.get<UnsplashSearchResponse>(UNSPLASH_SEARCH, {
@@ -347,12 +449,7 @@ async function searchUnsplashOnce(
     return { outcome: 'no-results', httpStatus: res.status };
   }
 
-  const photo = pickHighestResolutionPhoto(res.data.results);
-  if (!photo?.urls) {
-    return { outcome: 'no-results', httpStatus: res.status };
-  }
-
-  return { outcome: 'ok', photo };
+  return { outcome: 'ok', results: res.data.results };
 }
 
 // ---------------------------------------------------------------------------
@@ -412,10 +509,16 @@ async function generateImageWithGptImage1(prompt: string): Promise<Buffer | null
 }
 
 /**
- * Tries buildQueryLadder()'s rungs in order (most specific first),
- * stopping at the first rung that returns real results. Stops immediately
- * on a rate-limit/quota response or a network error — never retries past
- * that, per the build spec.
+ * Tries buildQueryLadder()'s rungs in order (most specific first), looking
+ * for the first rung whose results actually pass the relevance filter
+ * (pickRelevantHighestResolutionPhoto) — a rung with results that are all
+ * off-topic no longer wins just because it's the most specific rung. Only
+ * if NO rung in the whole ladder produces a relevance-filter match does
+ * this fall back to a resolution-only pick, from the earliest rung that
+ * had any usable results — logged clearly, same "always produce something,
+ * but say so" pattern as unsplashHero.ts's plain fallback. Stops
+ * immediately on a rate-limit/quota response or a network error — never
+ * retries past that, per the build spec.
  */
 export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourcingOutcome> {
   const key = config.unsplash.accessKey;
@@ -427,26 +530,50 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
   const ladder = buildQueryLadder(input);
   console.log(`[image-sourcing] "${input.title}" → query ladder: ${JSON.stringify(ladder)}`);
 
-  let query = ladder[0]!;
+  let query = ladder[0]!.query;
   let photo: UnsplashPhotoRow | null = null;
+  let matchedRelevanceFilter = false;
+  let fallback: { query: string; photo: UnsplashPhotoRow } | null = null;
 
   for (const candidate of ladder) {
-    query = candidate;
-    const attempt = await searchUnsplashOnce(candidate, key);
-    if (attempt.outcome === 'ok') {
-      photo = attempt.photo;
-      console.log(`[image-sourcing] rung "${candidate}" → matched`);
-      break;
-    }
+    const attempt = await searchUnsplashOnce(candidate.query, key);
     if (attempt.outcome === 'rate-limited') {
       console.error(`[image-sourcing] STOPPING — Unsplash rate-limit/quota response (HTTP ${attempt.httpStatus}). Not retrying.`);
-      return { status: 'rate-limited', query: candidate, httpStatus: attempt.httpStatus! };
+      return { status: 'rate-limited', query: candidate.query, httpStatus: attempt.httpStatus! };
     }
     if (attempt.outcome === 'error') {
       console.error(`[image-sourcing] Unsplash search call threw: ${attempt.message}`);
-      return { status: 'error', query: candidate, message: attempt.message! };
+      return { status: 'error', query: candidate.query, message: attempt.message! };
     }
-    console.log(`[image-sourcing] rung "${candidate}" → no results, trying next rung if any`);
+    if (attempt.outcome === 'no-results') {
+      console.log(`[image-sourcing] rung "${candidate.query}" → no results, trying next rung if any`);
+      continue;
+    }
+
+    const picked = pickRelevantHighestResolutionPhoto(attempt.results, candidate.query, candidate.requiredTerms);
+    if (!picked.photo?.urls) {
+      console.log(`[image-sourcing] rung "${candidate.query}" → results had no usable photo URLs, trying next rung if any`);
+      continue;
+    }
+    if (!fallback) {
+      fallback = { query: candidate.query, photo: picked.photo };
+    }
+    if (picked.matchedRelevanceFilter) {
+      query = candidate.query;
+      photo = picked.photo;
+      matchedRelevanceFilter = true;
+      console.log(`[image-sourcing] rung "${candidate.query}" → matched (relevance filter satisfied)`);
+      break;
+    }
+    console.log(`[image-sourcing] rung "${candidate.query}" → results found but none matched the relevance filter, trying next rung if any`);
+  }
+
+  if (!photo && fallback) {
+    console.warn(
+      `[image-sourcing] No rung in the ladder produced a relevance-filter match. Falling back to resolution-only pick from rung "${fallback.query}" (ladder tried: ${JSON.stringify(ladder)}).`
+    );
+    query = fallback.query;
+    photo = fallback.photo;
   }
 
   if (!photo) {
@@ -465,6 +592,7 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
         photographerProfileUrl: '',
         altText: buildAiAltText(input),
         downloadTriggerFired: false,
+        matchedRelevanceFilter: true,
       };
       console.log(`[image-sourcing] gpt-image-1 fallback succeeded — generated ${genBuffer.length} bytes.`);
       return { status: 'ok', result };
@@ -495,10 +623,11 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
     photographerProfileUrl: photo.user?.links?.html || '',
     altText: buildAltText(photo, query),
     downloadTriggerFired,
+    matchedRelevanceFilter,
   };
 
   console.log(
-    `[image-sourcing] selected photoId=${result.photoId} photographer="${result.photographerName}" downloadTriggerFired=${downloadTriggerFired}`
+    `[image-sourcing] selected photoId=${result.photoId} photographer="${result.photographerName}" downloadTriggerFired=${downloadTriggerFired} matchedRelevanceFilter=${matchedRelevanceFilter}`
   );
   return { status: 'ok', result };
 }
