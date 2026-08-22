@@ -213,14 +213,31 @@ function pickRelevantHighestResolutionPhoto(
   return { photo: pickHighestResolutionPhoto(pool), matchedRelevanceFilter };
 }
 
+export type UnsplashHeroImageResult = {
+  buffer: Buffer;
+  /**
+   * False when no rung/query actually passed the relevance filter and
+   * this is the resolution-only fallback pick (see
+   * pickRelevantHighestResolutionPhoto). Exposed so callers (e.g.
+   * newsApiSync.ts's generateAndUploadHeroForGoogleNews) can choose to
+   * try gpt-image-1 instead of silently accepting a mismatched photo —
+   * same shape as src/agents/imageSourcing.ts's ImageSourcingResult.
+   */
+  matchedRelevanceFilter: boolean;
+};
+
 /**
- * Search Unsplash, trigger attribution download, fetch best-resolution bytes.
- * Returns null if no key, no results, or download fails.
+ * Search Unsplash, trigger attribution download, fetch best-resolution
+ * bytes. Returns null if no key, no results, or download fails. Internal —
+ * fetchUnsplashHeroImageBuffer (below) is the original Buffer-only wrapper
+ * kept for existing callers; fetchUnsplashHeroImageResult (further below)
+ * is the same call exposing matchedRelevanceFilter for callers that need
+ * to react to it.
  */
-export async function fetchUnsplashHeroImageBuffer(
+async function fetchUnsplashHeroImageResultInternal(
   title: string,
   notes: string
-): Promise<Buffer | null> {
+): Promise<UnsplashHeroImageResult | null> {
   const key = config.unsplash.accessKey;
   if (!key) {
     console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — UNSPLASH_ACCESS_KEY not set');
@@ -316,8 +333,9 @@ export async function fetchUnsplashHeroImageBuffer(
     console.log('[unsplash] fetchUnsplashHeroImageBuffer: success', {
       byteLength: img.data.byteLength,
       photoId: photo.id,
+      matchedRelevanceFilter,
     });
-    return Buffer.from(img.data);
+    return { buffer: Buffer.from(img.data), matchedRelevanceFilter };
   } catch (e) {
     console.warn('[unsplash] fetchUnsplashHeroImageBuffer: returning null — image fetch threw', {
       message: e instanceof Error ? e.message : String(e),
@@ -325,4 +343,28 @@ export async function fetchUnsplashHeroImageBuffer(
     });
     return null;
   }
+}
+
+/**
+ * Same Unsplash search/fetch as fetchUnsplashHeroImageBuffer, but exposes
+ * matchedRelevanceFilter so a caller can react when the result is only a
+ * resolution-only fallback pick rather than a real relevance match.
+ */
+export async function fetchUnsplashHeroImageResult(
+  title: string,
+  notes: string
+): Promise<UnsplashHeroImageResult | null> {
+  return fetchUnsplashHeroImageResultInternal(title, notes);
+}
+
+/**
+ * Original Buffer-only shape, unchanged for existing callers
+ * (orchestrator.ts, researchAndWritePipeline.ts, backfillHeroImages.ts) —
+ * still returns null exactly when it did before, including the
+ * matchedRelevanceFilter=false case (that decision now lives with callers
+ * that use fetchUnsplashHeroImageResult instead).
+ */
+export async function fetchUnsplashHeroImageBuffer(title: string, notes: string): Promise<Buffer | null> {
+  const result = await fetchUnsplashHeroImageResultInternal(title, notes);
+  return result ? result.buffer : null;
 }

@@ -576,8 +576,18 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
     photo = fallback.photo;
   }
 
-  if (!photo) {
-    console.warn(`[image-sourcing] Exhausted query ladder with no results. Ladder tried: ${JSON.stringify(ladder)} — falling back to gpt-image-1.`);
+  // Confirmed bug (Ketel Marte casino articles, this morning): this used
+  // to be `if (!photo)` only — a rung with results but zero relevance
+  // matches still set `photo` from the resolution-only fallback above,
+  // so gpt-image-1 was never tried and a mismatched photo (three women
+  // running, for a "sports" query with no relevant results) got used
+  // silently. Now triggers on EITHER a genuinely empty ladder (photo still
+  // null) OR a ladder that returned photos but never a relevance match.
+  if (!photo || !matchedRelevanceFilter) {
+    const reason = !photo
+      ? 'Exhausted query ladder with no results'
+      : 'No rung produced a relevance-filter match (best available was a resolution-only pick)';
+    console.warn(`[image-sourcing] ${reason}. Ladder tried: ${JSON.stringify(ladder)} — trying gpt-image-1.`);
 
     const genPrompt = buildImageGenerationPrompt(input);
     const genBuffer = await generateImageWithGptImage1(genPrompt);
@@ -598,8 +608,11 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
       return { status: 'ok', result };
     }
 
-    console.warn('[image-sourcing] gpt-image-1 fallback also failed — no image available from any source.');
-    return { status: 'no-image', query };
+    if (!photo) {
+      console.warn('[image-sourcing] gpt-image-1 fallback also failed — no image available from any source.');
+      return { status: 'no-image', query };
+    }
+    console.warn('[image-sourcing] gpt-image-1 fallback also failed — using the irrelevant resolution-only Unsplash pick as last resort.');
   }
 
   const imageUrl = photo.urls?.raw || photo.urls?.full || photo.urls?.regular || '';
