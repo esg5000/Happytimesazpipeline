@@ -1108,6 +1108,7 @@ type Stage1VerdictResult = {
   section: SectionSlug;
   relevanceScore: number;
   subjectTag: string;
+  specificSubject: string;
   skipReason?: string;
   excludeAsCrimeTragedy: boolean;
   crimeTragedyReason?: string;
@@ -1304,6 +1305,7 @@ function buildStage1ClassificationCriteria(): string {
 If direct-local, national-reframe, or national-verify-local, assign the single best section for this site based on what the story is actually about (not on how it was found): one of food, nightlife, cannabis, health-wellness, sports, news.
 Score overall relevance/value to a Phoenix-metro local lifestyle audience, 1-10.
 Assign a short, freeform subjectTag describing what this story is actually about at a glance (e.g. "weather", "sports", "food", "crime", "culture", "policy", "cannabis-law", "astronomy") — your own words, not a fixed list, but keep it to 1-3 words.
+Separately, assign a specificSubject: a short phrase naming the actual event/occurrence this specific story is about — WHAT HAPPENED, not just who or what category it falls under. This exists so a duplicate-detection step downstream can tell "this exact story, from any outlet" apart from "any other story with the same broad topic or the same person on a different day." A bare person/place/team name alone is NOT enough (e.g. "Ketel Marte" is too broad — two different stories about that same person, days apart, would wrongly look identical); name the specific occurrence too (e.g. "Ketel Marte casino sighting", "Trulieve Chandler dispensary opening", "ASU football season opener"). Keep it to roughly 3-8 words — specific enough to identify this occurrence, not a full sentence.
 Separately from the locality verdict, judge whether this story is crime, an accident, a death, or a tragedy — set excludeAsCrimeTragedy to true if so, with a short excludeReason. This applies no matter what verdict you gave above: a direct-local, national-reframe, or national-verify-local story can still be crime/tragedy content and must still be flagged. Judge the CONTENT and what actually happened, not whether specific trigger words like "fatal," "dead," "killed," or "shooting" literally appear in the title — a headline can describe a fatal incident without using any of those words and must still be flagged. For example, all three of these should be flagged true even though none contains an obvious trigger word:
    - "Man killed in Payson plane crash remembered as 'loving, caring' person" (a fatal accident, described through a tribute framing)
    - "Barricaded suspect in Glendale standoff dead, shelter in place lifted" (a fatal police incident)
@@ -1329,6 +1331,7 @@ type Stage1ParsedFields = {
   section: SectionSlug;
   relevanceScore: number;
   subjectTag: string;
+  specificSubject: string;
   skipReason?: string;
   excludeAsCrimeTragedy: boolean;
   crimeTragedyReason?: string;
@@ -1367,6 +1370,13 @@ function parseStage1Fields(obj: Record<string, unknown>): Stage1ParsedFields {
   const subjectTagRaw = typeof obj.subjectTag === 'string' ? obj.subjectTag.trim().replace(/\s+/g, ' ') : '';
   const subjectTag = subjectTagRaw ? subjectTagRaw.slice(0, 40) : 'uncategorized';
 
+  // Fails open to subjectTag (never to a hardcoded default) when the model
+  // omits it — a missing specificSubject should degrade dedupe precision
+  // back to today's behavior, not produce an empty/misleading key.
+  const specificSubjectRaw =
+    typeof obj.specificSubject === 'string' ? obj.specificSubject.trim().replace(/\s+/g, ' ') : '';
+  const specificSubject = specificSubjectRaw ? specificSubjectRaw.slice(0, 80) : subjectTag;
+
   const skipReason = typeof obj.skipReason === 'string' && obj.skipReason.trim() ? obj.skipReason.trim() : undefined;
 
   const excludeAsCrimeTragedy = obj.excludeAsCrimeTragedy === true;
@@ -1386,6 +1396,7 @@ function parseStage1Fields(obj: Record<string, unknown>): Stage1ParsedFields {
     section,
     relevanceScore,
     subjectTag,
+    specificSubject,
     skipReason,
     excludeAsCrimeTragedy,
     crimeTragedyReason,
@@ -1411,7 +1422,7 @@ TASK
 2. ${buildStage1ClassificationCriteria()}
 
 Return ONLY this JSON shape, no markdown fences, no prose before or after:
-{"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
+{"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","specificSubject":"<what actually happened, ~3-8 words, e.g. \"Ketel Marte casino sighting\">","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
 
   const raw = await openaiResponsesCall({
     instructions,
@@ -1471,7 +1482,7 @@ TASK
 2. ${buildStage1ClassificationCriteria()}
 
 Return ONLY this JSON shape, no markdown fences, no prose before or after, and no "sources" field (you have no search access, so don't fabricate one):
-{"confidence":"high"|"low","verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>"}`;
+{"confidence":"high"|"low","verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","specificSubject":"<what actually happened, ~3-8 words, e.g. \"Ketel Marte casino sighting\">","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>"}`;
 
   const raw = await openaiResponsesCall({
     instructions,
@@ -1510,6 +1521,7 @@ export type TopicDiscoveryResult = {
   section: SectionSlug;
   relevanceScore: number;
   subjectTag: string;
+  specificSubject: string;
   searchSummaries: SearchSummary[];
 };
 
@@ -1746,10 +1758,11 @@ async function runStage1Batched(
         section: v.section,
         relevanceScore: v.relevanceScore,
         subjectTag: v.subjectTag,
+        specificSubject: v.specificSubject,
         searchSummaries: v.sources,
       });
       console.log(
-        `[topic-discovery] KEEP (${v.verdict}, section=${v.section}, tag=${v.subjectTag}, score=${v.relevanceScore}): "${r.item.title.slice(0, 90)}"`
+        `[topic-discovery] KEEP (${v.verdict}, section=${v.section}, tag=${v.subjectTag}, specificSubject="${v.specificSubject}", score=${v.relevanceScore}): "${r.item.title.slice(0, 90)}"`
       );
     }
   }

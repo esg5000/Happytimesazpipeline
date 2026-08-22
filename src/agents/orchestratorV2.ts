@@ -46,7 +46,7 @@ import { writeArticle, type WrittenArticle } from './articleWriter';
 import { verifyArticle, type VerificationResult } from './verificationGate';
 import { sourceImage } from './imageSourcing';
 import { assemblePublishDocument, publishAssembledDocument, type AssemblyResult } from './publishAssembly';
-import { checkForDuplicates } from './dedupeFeature';
+import { checkForDuplicates, type SeenThisRunEntry } from './dedupeFeature';
 
 // ---------------------------------------------------------------------------
 // Run-log types — every topic that entered, and exactly which stage/gate
@@ -114,22 +114,36 @@ async function runTopicThroughPipeline(
     droppedAtWriting: DroppedTopic[];
     droppedAtVerification: DroppedTopic[];
     published: PublishedTopic[];
+    /**
+     * Accumulated across the whole run's topic loop — see
+     * dedupeFeature.ts's checkForDuplicates() doc comment: Sanity's
+     * fetchRecentPosts() only sees posts published in PREVIOUS runs, so
+     * two sibling candidates discovered in this same run (e.g. the same
+     * event covered by two outlets) would never be cross-checked against
+     * each other without this. One entry pushed per topic that clears
+     * Stage 9 this run, checked (not just appended) before the push.
+     */
+    seenThisRun: SeenThisRunEntry[];
   }
 ): Promise<void> {
   console.log(`\n[orchestrator-v2] === "${topic.title}" (verdict=${topic.verdict}, section=${topic.section}, tag=${topic.subjectTag}) ===`);
 
   // --- STAGE 9: dedupe, as early as possible (before Stage 3's fetch work) ---
-  const dedupeCheck = await checkForDuplicates({
-    title: topic.title,
-    entityName: topic.subjectTag,
-    date: topic.publishedDate ?? undefined,
-  });
+  const dedupeCheck = await checkForDuplicates(
+    {
+      title: topic.title,
+      entityName: topic.specificSubject || topic.subjectTag,
+      date: topic.publishedDate ?? undefined,
+    },
+    buckets.seenThisRun
+  );
   if (dedupeCheck.isDuplicate) {
     const reason = `Stage 9: likely duplicate — key "${dedupeCheck.candidateKey}" matches ${dedupeCheck.matches.length} recent post(s): ${dedupeCheck.matches.map((m) => `"${m.title}"`).join('; ')}`;
     console.log(`[orchestrator-v2] DROP (Stage 9 dedupe): ${reason}`);
     buckets.droppedAtDedupe.push({ title: topic.title, link: topic.link, reason });
     return;
   }
+  buckets.seenThisRun.push({ key: dedupeCheck.candidateKey, title: topic.title });
 
   // --- STAGE 3: source gathering ---
   const sourcing = await gatherSources(topic);
@@ -217,6 +231,7 @@ export async function runOrchestratorV2(): Promise<OrchestratorV2RunResult> {
   const droppedAtWriting: DroppedTopic[] = [];
   const droppedAtVerification: DroppedTopic[] = [];
   const published: PublishedTopic[] = [];
+  const seenThisRun: SeenThisRunEntry[] = [];
 
   for (const topic of discovery.kept) {
     await runTopicThroughPipeline(topic, {
@@ -225,6 +240,7 @@ export async function runOrchestratorV2(): Promise<OrchestratorV2RunResult> {
       droppedAtWriting,
       droppedAtVerification,
       published,
+      seenThisRun,
     });
   }
 

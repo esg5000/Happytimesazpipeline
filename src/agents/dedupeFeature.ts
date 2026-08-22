@@ -168,14 +168,36 @@ async function fetchRecentPosts(): Promise<RecentPost[]> {
 }
 
 /**
+ * One entry per topic that has already passed Stage 9 THIS RUN — see
+ * `seenThisRun` on checkForDuplicates below for why this exists.
+ */
+export type SeenThisRunEntry = { key: string; title: string };
+
+/**
  * Stage 9 entry point. Read-only — never writes. Builds the candidate's
  * key, pulls the last RECENT_WINDOW_DAYS days of posts, re-derives a
  * best-effort key for each (see deriveDedupeKeyFromExistingPost), and
  * flags a match on exact key equality only (no fuzzy scoring — a
  * mismatch, even a near one, is treated as distinct rather than guessed
  * at).
+ *
+ * Confirmed gap (two Ketel Marte casino articles, same event, different
+ * outlets, published 5 seconds apart): fetchRecentPosts() only sees posts
+ * already durably published in Sanity BEFORE this run started.
+ * orchestratorV2.ts's runOrchestratorV2AndPublish() runs the entire dry-run
+ * funnel — including every topic's Stage 9 check — for ALL topics before
+ * the real-publish loop writes anything, so two sibling candidates
+ * discovered in the SAME run were never cross-checked against each other;
+ * neither was in Sanity yet when the other's check ran. `seenThisRun` is
+ * an optional in-memory list the caller accumulates across its own loop
+ * (one {key, title} entry per topic that passed Stage 9 so far this run)
+ * and passes back in on each subsequent call — checked with the exact
+ * same equality logic as the Sanity check, not a looser one.
  */
-export async function checkForDuplicates(candidate: DedupeCandidateInput): Promise<DedupeCheckResult> {
+export async function checkForDuplicates(
+  candidate: DedupeCandidateInput,
+  seenThisRun: SeenThisRunEntry[] = []
+): Promise<DedupeCheckResult> {
   const candidateKey = buildDedupeKey(candidate);
   if (!candidateKey) {
     console.warn(`[dedupe] Empty dedupe key for "${candidate.title}" — cannot check for duplicates, treating as not-a-duplicate.`);
@@ -191,7 +213,15 @@ export async function checkForDuplicates(candidate: DedupeCandidateInput): Promi
     }
   }
 
-  console.log(`[dedupe] "${candidate.title}" → key="${candidateKey}", checked ${recentPosts.length} recent post(s), ${matches.length} match(es)`);
+  for (const seen of seenThisRun) {
+    if (seen.key === candidateKey) {
+      matches.push({ postId: '(same-run, not yet published)', title: seen.title, matchedKey: seen.key });
+    }
+  }
+
+  console.log(
+    `[dedupe] "${candidate.title}" → key="${candidateKey}", checked ${recentPosts.length} recent post(s) + ${seenThisRun.length} same-run candidate(s), ${matches.length} match(es)`
+  );
   return { candidateKey, isDuplicate: matches.length > 0, matches };
 }
 
