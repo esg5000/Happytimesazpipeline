@@ -94,7 +94,7 @@ function normalizeDate(raw: string): string | undefined {
  */
 const AZ_CITY_HINTS = [
   'Phoenix', 'Scottsdale', 'Tempe', 'Mesa', 'Chandler', 'Gilbert', 'Glendale', 'Peoria', 'Surprise',
-  'Flagstaff', 'Sedona', 'Prescott', 'Kingman', 'Tucson', 'Sierra Vista', 'Yuma', 'Lake Havasu City',
+  'Flagstaff', 'Sedona', 'Cottonwood', 'Prescott', 'Kingman', 'Tucson', 'Sierra Vista', 'Yuma', 'Lake Havasu City',
   'Show Low', 'Safford',
 ] as const;
 
@@ -111,22 +111,48 @@ function extractCityHint(text: string): string | undefined {
 // Key generation
 // ---------------------------------------------------------------------------
 
+function buildEntityCityParts(input: DedupeCandidateInput): { entity: string; city: string } {
+  const entity = normalizeEntityName(input.entityName || input.title);
+  const city = normalizeCity(input.city || extractCityHint(input.title) || '');
+  return { entity, city };
+}
+
 /**
  * Normalized entity + city + date key — NOT slug or title string. Two
  * candidates about the same entity in different cities (or on different
  * dates) get different keys and are correctly treated as distinct, not
  * duplicates; two candidates about the same entity, same city, same date
  * (even from different outlets/URLs) get the same key and are flagged.
+ *
+ * Used for the same-run (`seenThisRun`) comparison, which is symmetric —
+ * candidateKey vs. candidateKey — so the date segment is meaningful there
+ * (it's what keeps e.g. the same recurring venue/entity discovered twice
+ * in one run, on two different dates, from colliding). NOT used for the
+ * Sanity cross-run comparison — see buildDedupeKeyNoDate.
  */
 export function buildDedupeKey(input: DedupeCandidateInput): string {
-  const entity = normalizeEntityName(input.entityName || input.title);
-  const city = normalizeCity(input.city || extractCityHint(input.title) || '');
+  const { entity, city } = buildEntityCityParts(input);
   const date = input.date ? normalizeDate(input.date) || input.date.toLowerCase().trim() : '';
   const key = [entity, city, date].filter(Boolean).join('::');
   if (!city) {
     console.warn(`[dedupe] No city available for "${input.title}" (entity="${entity}") — key built without a city component, which weakens distinctness for same-entity/different-city cases.`);
   }
   return key;
+}
+
+/**
+ * Same as buildDedupeKey but WITHOUT the date segment — kept symmetric
+ * with deriveDedupeKeyFromExistingPost, which deliberately never includes
+ * date (an existing post's publishedAt is a publish timestamp, not
+ * necessarily the event date). buildDedupeKey's candidate-side key always
+ * carries a date segment whenever the source article has one, so comparing
+ * it directly against deriveDedupeKeyFromExistingPost's dateless key could
+ * never match by design — this is the key used for the Sanity
+ * recent-posts comparison instead.
+ */
+export function buildDedupeKeyNoDate(input: DedupeCandidateInput): string {
+  const { entity, city } = buildEntityCityParts(input);
+  return [entity, city].filter(Boolean).join('::');
 }
 
 /**
@@ -139,7 +165,7 @@ export function buildDedupeKey(input: DedupeCandidateInput): string {
  * false negatives, not just false positives, so it's safer to compare on
  * entity+city only for existing posts).
  */
-function deriveDedupeKeyFromExistingPost(title: string, tags: string[]): string {
+export function deriveDedupeKeyFromExistingPost(title: string, tags: string[]): string {
   const city = extractCityHint(`${title} ${tags.join(' ')}`);
   const entity = normalizeEntityName(title);
   return [entity, city ? normalizeCity(city) : ''].filter(Boolean).join('::');
@@ -203,12 +229,13 @@ export async function checkForDuplicates(
     console.warn(`[dedupe] Empty dedupe key for "${candidate.title}" — cannot check for duplicates, treating as not-a-duplicate.`);
     return { candidateKey, isDuplicate: false, matches: [] };
   }
+  const candidateKeyNoDate = buildDedupeKeyNoDate(candidate);
 
   const recentPosts = await fetchRecentPosts();
   const matches: DedupeMatch[] = [];
   for (const post of recentPosts) {
     const key = deriveDedupeKeyFromExistingPost(post.title, post.tags || []);
-    if (key && key === candidateKey) {
+    if (key && key === candidateKeyNoDate) {
       matches.push({ postId: post._id, title: post.title, matchedKey: key });
     }
   }
@@ -312,10 +339,65 @@ function runHandBuiltKeyTests(): void {
   console.log(`Week 2 → "${keyWeek2}"`);
   console.log(`RESULT: keys distinct → ${keyWeek1 !== keyWeek2} (expected: true — different date, distinct occurrences)`);
 
+  // Case D: reconstruction of the confirmed Queen B Sushi miss — same
+  // outlet, same story, identical title, 3 days apart (per the confirmed
+  // report: title was byte-identical on both posts, so entityName here is
+  // deliberately identical too — this case isolates the date-asymmetry
+  // bug specifically, not specificSubject wording drift across runs,
+  // which is a separate, still-open risk this fix does not address).
+  // "existing post" side (Aug 20, already in Sanity) is re-derived via
+  // deriveDedupeKeyFromExistingPost, which never has a date. Must collide
+  // on the dateless key.
+  const queenBTitle = 'Queen B Sushi set to open in Cottonwood on Sept. 4';
+  const queenBExistingPost = {
+    title: queenBTitle,
+    tags: ['food', 'cottonwood'],
+  };
+  const queenBCandidate: DedupeCandidateInput = {
+    title: queenBTitle,
+    entityName: queenBTitle,
+    date: '2026-08-23T09:00:00.000Z',
+  };
+  const queenBDerivedPostKey = deriveDedupeKeyFromExistingPost(queenBExistingPost.title, queenBExistingPost.tags);
+  const queenBCandidateFullKey = buildDedupeKey(queenBCandidate);
+  const queenBCandidateNoDateKey = buildDedupeKeyNoDate(queenBCandidate);
+  console.log('\n--- Case D: Queen B Sushi reconstruction (same outlet, cross-run, 3 days apart) ---');
+  console.log(`Existing Aug 20 post, derived key → "${queenBDerivedPostKey}"`);
+  console.log(`Aug 23 candidate, full key (date-inclusive, used for seenThisRun) → "${queenBCandidateFullKey}"`);
+  console.log(`Aug 23 candidate, no-date key (used for Sanity comparison)        → "${queenBCandidateNoDateKey}"`);
+  const queenBCollides = queenBDerivedPostKey === queenBCandidateNoDateKey;
+  console.log(`RESULT: no-date keys match → ${queenBCollides} (expected: true — this is the fix; full keys would NOT have matched: ${queenBDerivedPostKey === queenBCandidateFullKey})`);
+
+  // Case E: reconstruction of Sunday's Ketel Marte same-run miss — two
+  // different outlets, same event, discovered in the SAME run (so neither
+  // is in Sanity yet when the other's Stage 9 check runs). This is the
+  // seenThisRun path, which must stay on the full (date-inclusive) key —
+  // confirms the primary fix didn't regress it.
+  const ketelMarteOutletA: DedupeCandidateInput = {
+    title: 'Ketel Marte spotted at Talking Stick Resort casino',
+    entityName: 'Ketel Marte casino sighting',
+    city: 'Scottsdale',
+    date: '2026-08-17',
+  };
+  const ketelMarteOutletB: DedupeCandidateInput = {
+    title: 'Diamondbacks star Ketel Marte seen gambling at Valley casino',
+    entityName: 'Ketel Marte casino sighting',
+    city: 'Scottsdale',
+    date: '2026-08-17',
+  };
+  const keyKetelA = buildDedupeKey(ketelMarteOutletA);
+  const keyKetelB = buildDedupeKey(ketelMarteOutletB);
+  console.log('\n--- Case E: Ketel Marte reconstruction (same-run, two outlets, seenThisRun path) ---');
+  console.log(`Outlet A (seenThisRun entry) → "${keyKetelA}"`);
+  console.log(`Outlet B (candidate)         → "${keyKetelB}"`);
+  console.log(`RESULT: full keys match → ${keyKetelA === keyKetelB} (expected: true — same-run comparison still symmetric/date-inclusive, no regression)`);
+
   console.log('\n\n########## HAND-BUILT KEY TEST SUMMARY ##########');
   console.log(`Case A (Trulieve x3 distinct cities, must be distinct): ${allDistinct ? 'PASS' : 'FAIL'}`);
   console.log(`Case B (same event, two outlets, must collide): ${keyA === keyB ? 'PASS' : 'FAIL'}`);
   console.log(`Case C (same venue/entity, different week, must be distinct): ${keyWeek1 !== keyWeek2 ? 'PASS' : 'FAIL'}`);
+  console.log(`Case D (Queen B Sushi cross-run reconstruction, must collide on no-date key): ${queenBCollides ? 'PASS' : 'FAIL'}`);
+  console.log(`Case E (Ketel Marte same-run reconstruction, must collide on full key): ${keyKetelA === keyKetelB ? 'PASS' : 'FAIL'}`);
   console.log('[dedupe] ========== HAND-BUILT KEY TESTS end ==========');
 }
 
