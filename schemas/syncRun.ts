@@ -27,6 +27,12 @@ export default defineType({
       description: 'A few example error messages from this run, not all of them',
     }),
     defineField({
+      name: 'actionsSample',
+      type: 'array',
+      of: [{ type: 'string' }],
+      description: 'A few example actions taken by this run (e.g. hero image re-fixed, duplicate unpublished), not all of them',
+    }),
+    defineField({
       name: 'triggeredBy',
       type: 'string',
       options: { list: ['cron', 'manual'] },

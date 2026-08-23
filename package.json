@@ -15,6 +15,8 @@
     "scrape-dispensaries": "ts-node src/agents/dispensaryScraper.ts",
     "audit-dispensaries": "ts-node src/agents/dispensaryUrlAudit.ts",
     "backfill-hero-images": "ts-node scripts/backfillHeroImages.ts",
+    "audit-content": "ts-node scripts/auditContent.ts",
+    "backfill-ad-size": "ts-node scripts/backfillAdSize.ts",
     "generate-hero-images-for-slugs": "ts-node scripts/generateHeroImagesForSlugs.ts",
     "fetch-restaurants": "ts-node scripts/fetchRestaurants.ts",
     "fetch-restaurants:node": "node scripts/fetchRestaurants.js",

@@ -18,6 +18,7 @@ import { ingestToTopic } from './agents/ingestAgent';
 import { writeArticle } from './agents/writerAgent';
 import { ensureUniqueSlug } from './utils/slug';
 import { appendActivityLog, getPipelineStatusSnapshot } from './pipelineStatus';
+import { recordSyncRun } from './syncRunLogger';
 import { syncNightlifeToSanity } from './agents/syncNightlife';
 import { runFetchRestaurants } from './scripts/fetchRestaurants';
 import { runPipelineJob } from './pipelineRunner';
@@ -673,16 +674,34 @@ function registerDaemonApiRoutes(app: express.Application): void {
       console.log('[api] /api/command syncNews → syncNewsApiToSanity (SerpApi Google News)');
       res.json({ ok: true, status: 'started', command: 'syncNews', source: resolveApiClientSource(req) });
       void (async () => {
+        const startedAt = new Date().toISOString();
         try {
           const result = await syncNewsApiToSanity();
           appendActivityLog(
             `syncNews: complete — fetched=${result.fetched}, published=${result.published}, skipped=${result.skipped}, errors=${result.errors}`,
             'syncNews'
           );
+          await recordSyncRun({
+            syncType: 'news',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            itemsSynced: result.published,
+            errors: result.errors + result.serpApiErrors,
+            errorSample: result.serpApiErrorSample,
+            triggeredBy: 'manual',
+          });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command syncNews failed:', msg);
           appendActivityLog(`syncNews: failed — ${msg}`, 'syncNews');
+          await recordSyncRun({
+            syncType: 'news',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            errors: 1,
+            errorSample: [msg],
+            triggeredBy: 'manual',
+          });
         }
       })();
       return;
@@ -698,16 +717,34 @@ function registerDaemonApiRoutes(app: express.Application): void {
       console.log('[api] /api/command syncNewsV2 → runOrchestratorV2AndPublish (new Stage 0-9 pipeline, real publish)');
       res.json({ ok: true, status: 'started', command: 'syncNewsV2', source: resolveApiClientSource(req) });
       void (async () => {
+        const startedAt = new Date().toISOString();
         try {
           const result = await runOrchestratorV2AndPublish();
           appendActivityLog(
             `syncNewsV2: complete — kept=${result.stage1Kept.length}, published=${result.realPublishes.length}, publishFailures=${result.realPublishFailures.length}`,
             'syncNewsV2'
           );
+          await recordSyncRun({
+            syncType: 'newsV2',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            itemsSynced: result.realPublishes.length,
+            errors: result.realPublishFailures.length,
+            errorSample: result.realPublishFailures.map((f) => f.message),
+            triggeredBy: 'manual',
+          });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command syncNewsV2 failed:', msg);
           appendActivityLog(`syncNewsV2: failed — ${msg}`, 'syncNewsV2');
+          await recordSyncRun({
+            syncType: 'newsV2',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            errors: 1,
+            errorSample: [msg],
+            triggeredBy: 'manual',
+          });
         }
       })();
       return;

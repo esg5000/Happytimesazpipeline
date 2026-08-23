@@ -9,10 +9,13 @@ export type SyncRunRecord = {
   itemsSynced?: number;
   errors: number;
   errorSample?: string[];
+  /** A few example actions this run took (e.g. hero re-fixed, duplicate unpublished) — not all of them. */
+  actionsSample?: string[];
   triggeredBy: 'cron' | 'manual';
 };
 
 const ERROR_SAMPLE_MAX = 5;
+const ACTIONS_SAMPLE_MAX = 5;
 
 /**
  * Writes one syncRun document. Best-effort: a failure to write this record
@@ -31,6 +34,9 @@ export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
       errors: record.errors,
       ...(record.errorSample && record.errorSample.length > 0
         ? { errorSample: record.errorSample.slice(0, ERROR_SAMPLE_MAX) }
+        : {}),
+      ...(record.actionsSample && record.actionsSample.length > 0
+        ? { actionsSample: record.actionsSample.slice(0, ACTIONS_SAMPLE_MAX) }
         : {}),
       triggeredBy: record.triggeredBy,
     });
