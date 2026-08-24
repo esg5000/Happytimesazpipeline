@@ -27,7 +27,7 @@ import { config, validateConfig } from '../config';
 import { getSanityClient, uploadImageBufferToSanity } from '../agents/sanityPublisher';
 import { fetchUnsplashHeroImageResult } from '../agents/unsplashHero';
 import { generateImage, generateImagePrompt } from '../agents/imageAgent';
-import { deriveDedupeKeyFromExistingPost } from '../src/agents/dedupeFeature';
+import { deriveDedupeKeyFromExistingPost, normalizeSourceUrl } from '../src/agents/dedupeFeature';
 import { recordSyncRun } from '../syncRunLogger';
 import { VisualStyleSchema } from '../utils/validator';
 
@@ -54,6 +54,7 @@ type AuditPost = {
   publishedAt: string;
   disclaimer?: string;
   visualStyle?: string;
+  originalSourceUrl?: string;
 };
 
 /**
@@ -72,7 +73,7 @@ async function getAuditWindowStart(): Promise<string> {
 async function fetchPostsInWindow(since: string): Promise<AuditPost[]> {
   const client = getSanityClient();
   const query = `*[_type == "post" && defined(publishedAt) && publishedAt >= $since]{
-    _id, title, section, categories, tags, publishedAt, disclaimer, visualStyle
+    _id, title, section, categories, tags, publishedAt, disclaimer, visualStyle, originalSourceUrl
   } | order(publishedAt asc)`;
   const rows = await client.fetch<AuditPost[]>(query, { since });
   return rows || [];
@@ -83,7 +84,7 @@ async function fetchDuplicateCheckPool(): Promise<AuditPost[]> {
   const client = getSanityClient();
   const since = new Date(Date.now() - DUPLICATE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const query = `*[_type == "post" && defined(publishedAt) && publishedAt >= $since && isActive == true]{
-    _id, title, section, categories, tags, publishedAt, disclaimer, visualStyle
+    _id, title, section, categories, tags, publishedAt, disclaimer, visualStyle, originalSourceUrl
   } | order(publishedAt asc)`;
   const rows = await client.fetch<AuditPost[]>(query, { since });
   return rows || [];
@@ -237,7 +238,33 @@ async function auditImageRelevance(
 type DedupeGroup = { key: string; posts: AuditPost[] };
 
 /**
- * Groups posts by deriveDedupeKeyFromExistingPost's entity+city key.
+ * Recovers a source URL for a post published before originalSourceUrl was
+ * populated by the pipeline_v2 path (see publishAssembly.ts) — those older
+ * posts only ever had the URL embedded in the disclaimer's free text via
+ * buildDisclaimer's "Sourced from: Outlet (https://...)." pattern. Belt-
+ * and-suspenders only: going forward, originalSourceUrl is the real field
+ * and this fallback is never needed for new posts.
+ */
+const DISCLAIMER_SOURCE_URL_RE = /Sourced from:.*?\((https?:\/\/[^)]+)\)/;
+
+function extractSourceUrlFromDisclaimer(disclaimer: string | undefined): string | undefined {
+  if (!disclaimer) return undefined;
+  const m = disclaimer.match(DISCLAIMER_SOURCE_URL_RE);
+  return m?.[1];
+}
+
+function resolvePostSourceUrl(post: AuditPost): string | undefined {
+  return post.originalSourceUrl || extractSourceUrlFromDisclaimer(post.disclaimer);
+}
+
+/**
+ * Groups posts by (1) normalized source URL, when resolvable — very high
+ * confidence, catches the confirmed gap where entity-key matching missed a
+ * feature/listicle article rediscovered under a fresh (LLM-regenerated)
+ * specificSubject on each run — and (2) deriveDedupeKeyFromExistingPost's
+ * entity+city key, the pre-existing behavior, unchanged. A post that lands
+ * in a URL group is excluded from also being entity-grouped, so it isn't
+ * double-processed by auditDuplicates.
  *
  * Runs over fetchDuplicateCheckPool()'s DUPLICATE_LOOKBACK_DAYS pool, NOT
  * the narrow image-freshness audit window — a post already processed by a
@@ -254,17 +281,38 @@ type DedupeGroup = { key: string; posts: AuditPost[] };
  * already happened at publish time (dedupeFeature.ts's checkForDuplicates).
  */
 function findDuplicateGroups(posts: AuditPost[]): DedupeGroup[] {
+  const byUrl = new Map<string, AuditPost[]>();
+  const urlGrouped = new Set<AuditPost>();
+  for (const post of posts) {
+    const rawUrl = resolvePostSourceUrl(post);
+    const url = rawUrl ? normalizeSourceUrl(rawUrl) : undefined;
+    if (!url) continue;
+    const list = byUrl.get(url) || [];
+    list.push(post);
+    byUrl.set(url, list);
+  }
+
+  const groups: DedupeGroup[] = [];
+  for (const [url, group] of byUrl.entries()) {
+    if (group.length <= 1) continue;
+    groups.push({ key: `url:${url}`, posts: group });
+    for (const p of group) urlGrouped.add(p);
+  }
+
   const byKey = new Map<string, AuditPost[]>();
   for (const post of posts) {
+    if (urlGrouped.has(post)) continue;
     const key = deriveDedupeKeyFromExistingPost(post.title, post.tags || []);
     if (!key) continue;
     const list = byKey.get(key) || [];
     list.push(post);
     byKey.set(key, list);
   }
-  return [...byKey.entries()]
-    .filter(([, group]) => group.length > 1)
-    .map(([key, group]) => ({ key, posts: group }));
+  for (const [key, group] of byKey.entries()) {
+    if (group.length > 1) groups.push({ key, posts: group });
+  }
+
+  return groups;
 }
 
 /** Keeps the earliest publishedAt in each duplicate group; unpublishes the rest. Returns count unpublished. */

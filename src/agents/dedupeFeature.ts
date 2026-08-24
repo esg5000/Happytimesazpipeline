@@ -43,12 +43,25 @@ export type DedupeCandidateInput = {
   city?: string;
   /** Raw date string in whatever form the source gave it — normalized best-effort; left out of the key entirely if it can't be parsed, rather than guessed. */
   date?: string;
+  /**
+   * The source article's canonical URL (Stage 0's `link`), when known.
+   * Confirmed gap this fixes: entity-key matching is structurally
+   * unreliable for feature/listicle content, since specificSubject is
+   * fresh LLM-generated free text on every run and rarely produces the
+   * same normalized key twice for the same article (see
+   * checkForDuplicates' URL check below, which runs alongside — not
+   * instead of — the entity check for exactly this reason). Optional
+   * because not every caller has a URL (e.g. the hand-built key tests).
+   */
+  sourceUrl?: string;
 };
 
 export type DedupeMatch = {
   postId: string;
   title: string;
   matchedKey: string;
+  /** 'url' = exact canonical-URL match (very high confidence, short-circuits entity matching for that post); 'entity' = existing entity+city(+date) key match. */
+  matchType: 'url' | 'entity';
 };
 
 export type DedupeCheckResult = {
@@ -85,6 +98,25 @@ function normalizeDate(raw: string): string | undefined {
     return d.toISOString().slice(0, 10);
   }
   return undefined;
+}
+
+/**
+ * Normalizes a source URL for exact-match comparison: strips protocol,
+ * leading "www.", trailing slash, query string, and fragment. Deliberately
+ * simple/conservative — no path canonicalization beyond that, since this is
+ * meant to catch "the same article fetched again" (same host+path, maybe a
+ * different ?utm= param or http vs https), not to fuzzy-match different
+ * URLs. Returns undefined (never a guess) if the input isn't a parseable URL.
+ */
+export function normalizeSourceUrl(raw: string): string | undefined {
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase().replace(/^www\./, '');
+    const path = u.pathname.replace(/\/+$/, '');
+    return `${host}${path}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -177,14 +209,14 @@ export function deriveDedupeKeyFromExistingPost(title: string, tags: string[]): 
 
 const RECENT_WINDOW_DAYS = 7;
 
-type RecentPost = { _id: string; title: string; tags?: string[]; publishedAt?: string };
+type RecentPost = { _id: string; title: string; tags?: string[]; publishedAt?: string; originalSourceUrl?: string };
 
 async function fetchRecentPosts(): Promise<RecentPost[]> {
   const client = getSanityClient();
   const since = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   try {
     return await client.fetch<RecentPost[]>(
-      `*[_type == "post" && defined(publishedAt) && publishedAt >= $since]{ _id, title, tags, publishedAt }`,
+      `*[_type == "post" && defined(publishedAt) && publishedAt >= $since]{ _id, title, tags, publishedAt, originalSourceUrl }`,
       { since }
     );
   } catch (err: unknown) {
@@ -197,7 +229,7 @@ async function fetchRecentPosts(): Promise<RecentPost[]> {
  * One entry per topic that has already passed Stage 9 THIS RUN — see
  * `seenThisRun` on checkForDuplicates below for why this exists.
  */
-export type SeenThisRunEntry = { key: string; title: string };
+export type SeenThisRunEntry = { key: string; title: string; sourceUrl?: string };
 
 /**
  * Stage 9 entry point. Read-only — never writes. Builds the candidate's
@@ -230,19 +262,50 @@ export async function checkForDuplicates(
     return { candidateKey, isDuplicate: false, matches: [] };
   }
   const candidateKeyNoDate = buildDedupeKeyNoDate(candidate);
+  const candidateNormalizedUrl = candidate.sourceUrl ? normalizeSourceUrl(candidate.sourceUrl) : undefined;
 
   const recentPosts = await fetchRecentPosts();
   const matches: DedupeMatch[] = [];
   for (const post of recentPosts) {
+    // URL check runs first and alongside the entity check (not instead of
+    // it) — an exact canonical-URL match is very high confidence on its
+    // own, and doesn't depend on entity/city/date extraction being
+    // consistent run to run, which is exactly what the entity key can't
+    // guarantee for feature/listicle content (see DedupeCandidateInput's
+    // sourceUrl doc comment).
+    if (candidateNormalizedUrl && post.originalSourceUrl) {
+      const postNormalizedUrl = normalizeSourceUrl(post.originalSourceUrl);
+      if (postNormalizedUrl && postNormalizedUrl === candidateNormalizedUrl) {
+        matches.push({ postId: post._id, title: post.title, matchedKey: candidateNormalizedUrl, matchType: 'url' });
+        continue;
+      }
+    }
     const key = deriveDedupeKeyFromExistingPost(post.title, post.tags || []);
     if (key && key === candidateKeyNoDate) {
-      matches.push({ postId: post._id, title: post.title, matchedKey: key });
+      matches.push({ postId: post._id, title: post.title, matchedKey: key, matchType: 'entity' });
     }
   }
 
   for (const seen of seenThisRun) {
+    if (candidateNormalizedUrl && seen.sourceUrl) {
+      const seenNormalizedUrl = normalizeSourceUrl(seen.sourceUrl);
+      if (seenNormalizedUrl && seenNormalizedUrl === candidateNormalizedUrl) {
+        matches.push({
+          postId: '(same-run, not yet published)',
+          title: seen.title,
+          matchedKey: candidateNormalizedUrl,
+          matchType: 'url',
+        });
+        continue;
+      }
+    }
     if (seen.key === candidateKey) {
-      matches.push({ postId: '(same-run, not yet published)', title: seen.title, matchedKey: seen.key });
+      matches.push({
+        postId: '(same-run, not yet published)',
+        title: seen.title,
+        matchedKey: seen.key,
+        matchType: 'entity',
+      });
     }
   }
 

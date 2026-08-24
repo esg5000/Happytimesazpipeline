@@ -134,16 +134,17 @@ async function runTopicThroughPipeline(
       title: topic.title,
       entityName: topic.specificSubject || topic.subjectTag,
       date: topic.publishedDate ?? undefined,
+      sourceUrl: topic.link,
     },
     buckets.seenThisRun
   );
   if (dedupeCheck.isDuplicate) {
-    const reason = `Stage 9: likely duplicate — key "${dedupeCheck.candidateKey}" matches ${dedupeCheck.matches.length} recent post(s): ${dedupeCheck.matches.map((m) => `"${m.title}"`).join('; ')}`;
+    const reason = `Stage 9: likely duplicate (${dedupeCheck.matches[0]?.matchType ?? 'entity'} match) — key "${dedupeCheck.candidateKey}" matches ${dedupeCheck.matches.length} recent post(s): ${dedupeCheck.matches.map((m) => `"${m.title}"`).join('; ')}`;
     console.log(`[orchestrator-v2] DROP (Stage 9 dedupe): ${reason}`);
     buckets.droppedAtDedupe.push({ title: topic.title, link: topic.link, reason });
     return;
   }
-  buckets.seenThisRun.push({ key: dedupeCheck.candidateKey, title: topic.title });
+  buckets.seenThisRun.push({ key: dedupeCheck.candidateKey, title: topic.title, sourceUrl: topic.link });
 
   // --- STAGE 3: source gathering ---
   const sourcing = await gatherSources(topic);

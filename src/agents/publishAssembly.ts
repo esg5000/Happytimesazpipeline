@@ -83,6 +83,8 @@ export type ImageResultInput = {
 export type TopicMetadataInput = {
   title: string;
   section: string;
+  /** Source article's canonical URL (Stage 0's `link`) — written to the document's originalSourceUrl field so Stage 9/the auditor can dedupe on it. */
+  link?: string;
   [key: string]: unknown;
 };
 
@@ -241,6 +243,13 @@ export function assemblePublishDocument(
           downloadTriggerFired: image.downloadTriggerFired,
         }
       : null,
+    // Confirmed gap fix: schemas/post.ts's originalSourceUrl field already
+    // exists and is populated by the legacy pipeline (agents/sanityPublisher.ts)
+    // but was never written here — the source URL previously only existed
+    // buried in the disclaimer's free text, unusable for exact-match dedupe.
+    // Written unconditionally when the topic has a link; Stage 9/the auditor
+    // both now compare on this field.
+    ...(topic.link ? { originalSourceUrl: topic.link } : {}),
     // Provisional value — schemas/post.ts's `contentSource` options list is
     // currently only manual | newsapi | google_news; this pipeline isn't a
     // registered option yet. Flagged in the build report, not silently
