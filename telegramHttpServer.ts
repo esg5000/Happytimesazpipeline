@@ -25,6 +25,7 @@ import { runPipelineJob } from './pipelineRunner';
 import { getTelegramSession, persistTelegramSessions } from './telegramSessionStore';
 import { extractArticleStyleFromBody } from './utils/articleStyle';
 import { runResearchAndWrite } from './agents/researchAndWritePipeline';
+import { run as runContentAuditor } from './scripts/auditContent';
 
 const RENDER_HOST = '0.0.0.0';
 
@@ -623,7 +624,8 @@ function registerDaemonApiRoutes(app: express.Application): void {
       | 'syncNewsV2'
       | 'syncDispensaries'
       | 'syncRestaurants'
-      | 'syncNightlife' =>
+      | 'syncNightlife'
+      | 'runAuditor' =>
       s === '/publish' ||
       s === 'runWriter' ||
       s === 'syncEvents' ||
@@ -631,11 +633,12 @@ function registerDaemonApiRoutes(app: express.Application): void {
       s === 'syncNewsV2' ||
       s === 'syncDispensaries' ||
       s === 'syncRestaurants' ||
-      s === 'syncNightlife';
+      s === 'syncNightlife' ||
+      s === 'runAuditor';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor.',
       });
       return;
     }
@@ -879,6 +882,23 @@ function registerDaemonApiRoutes(app: express.Application): void {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command syncNightlife failed:', msg);
           appendActivityLog(`syncNightlife: failed — ${msg}`, 'syncNightlife');
+        }
+      })();
+      return;
+    }
+
+    if (command === 'runAuditor') {
+      console.log('[api] /api/command runAuditor → auditContent.run() (hero-image relevance + duplicate cleanup)');
+      appendActivityLog('runAuditor: started', 'runAuditor');
+      res.json({ ok: true, status: 'started', command: 'runAuditor', source: resolveApiClientSource(req) });
+      void (async () => {
+        try {
+          await runContentAuditor();
+          appendActivityLog('runAuditor: complete', 'runAuditor');
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command runAuditor failed:', msg);
+          appendActivityLog(`runAuditor: failed — ${msg}`, 'runAuditor');
         }
       })();
       return;

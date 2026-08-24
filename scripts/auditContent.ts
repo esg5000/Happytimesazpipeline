@@ -311,7 +311,7 @@ async function auditDuplicates(
 // Entry point
 // ---------------------------------------------------------------------------
 
-async function run(): Promise<void> {
+export async function run(): Promise<void> {
   validateConfig();
 
   if (!config.unsplash.accessKey) {
@@ -403,7 +403,9 @@ async function run(): Promise<void> {
   });
 }
 
-run().catch((err) => {
-  console.error('Fatal:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  run().catch((err) => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
+}
