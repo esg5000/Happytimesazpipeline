@@ -26,6 +26,7 @@ const CITY_BOUNDS: Record<string, { lat: number; lng: number; radiusMiles: numbe
   'Apache Junction': { lat: 33.4151, lng: -111.5495, radiusMiles: 8 },
   Avondale: { lat: 33.4356, lng: -112.3496, radiusMiles: 8 },
   Bisbee: { lat: 31.4482, lng: -109.9284, radiusMiles: 6 },
+  Buckeye: { lat: 33.3703, lng: -112.5838, radiusMiles: 12 },
   'Bullhead City': { lat: 35.1478, lng: -114.5683, radiusMiles: 10 },
   'Cave Creek': { lat: 33.8331, lng: -111.9509, radiusMiles: 8 },
   Chandler: { lat: 33.3062, lng: -111.8413, radiusMiles: 10 },

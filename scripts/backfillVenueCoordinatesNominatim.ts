@@ -39,21 +39,41 @@ type NominatimResult = {
 };
 
 /**
- * Nominatim's free-text matcher frequently fails on suite/unit/apt designators
- * ("#117", "Suite 23", "Ste 9", "Unit B") mixed into a street address — confirmed
- * during the dispensary backfill, where stripping the designator recovered several
- * otherwise-failed addresses.
+ * Nominatim's free-text matcher frequently fails on suite/unit/apt designators mixed
+ * into a street address. Two distinct patterns, both handled here:
+ *
+ * 1. Keyword-led ("Suite #1", "Suite A&B", "Suite C 3-4", "Ste #119") — everything from
+ *    the keyword to the end of the street segment is dropped as one unit. (The original
+ *    version of this function stripped "#1" and the "Suite" keyword as two separate
+ *    passes — for "Suite #1" that left a dangling "Suite " that still failed to geocode,
+ *    confirmed against real retry failures before this fix.)
+ * 2. Bare suffix, no keyword ("B3", "E-100", "f104", trailing lone "b") — a trailing
+ *    token that's letter(s)+digits (with an optional hyphen) or a single bare letter.
+ *    Restricted to tokens containing a digit, or exactly one letter, so real street-type
+ *    abbreviations (St, Ave, Rd, Blvd, Dr, Ln, Way, Pl, Ct, Cir, Pkwy, Hwy) are never
+ *    mistaken for a unit — none of those contain a digit or are a single letter.
  */
 function stripUnitDesignator(address: string): string {
-  return address
-    .replace(/#\s*\w+/g, '')
-    .replace(/\b(?:suite|ste\.?|unit|apt\.?|building|bldg\.?)\s+\w+/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .replace(/\s+,/g, ',')
+  const commaIdx = address.indexOf(',');
+  const street = commaIdx >= 0 ? address.slice(0, commaIdx) : address;
+  const rest = commaIdx >= 0 ? address.slice(commaIdx) : '';
+
+  let cleaned = street
+    .replace(/\b(?:suite|ste\.?|unit|apt\.?|building|bldg\.?)\b.*$/i, '')
+    .replace(/#\s*\S+/g, '')
     .trim();
+
+  cleaned = cleaned.replace(/\s+(?:[A-Za-z]{1,3}-?\d{1,5}|[A-Za-z])$/, '').trim();
+
+  return (cleaned + rest).replace(/\s{2,}/g, ' ').replace(/\s+,/g, ',').trim();
 }
 
-async function fetchVenuesMissingCoordinates(type: string, limit?: number): Promise<VenueRow[]> {
+/** Some addresses abbreviate "Route" as "Rte", which Nominatim's matcher sometimes chokes on. */
+function expandRte(address: string): string {
+  return address.replace(/\bRte\b\.?/gi, 'Route');
+}
+
+async function fetchVenuesMissingCoordinates(type: string, limit?: number, ids?: string[]): Promise<VenueRow[]> {
   const { hasIsActive } = TYPE_CONFIG[type];
   const sanityClient = getSanityClient();
   const query = `*[
@@ -61,12 +81,13 @@ async function fetchVenuesMissingCoordinates(type: string, limit?: number): Prom
     ${hasIsActive ? 'isActive == true &&' : ''}
     !defined(latitude) &&
     defined(address)
+    ${ids && ids.length > 0 ? '&& _id in $ids' : ''}
   ] | order(_id asc)${limit ? `[0...${limit}]` : ''}{
     _id,
     name,
     address
   }`;
-  const rows = await sanityClient.fetch<VenueRow[]>(query);
+  const rows = await sanityClient.fetch<VenueRow[]>(query, ids && ids.length > 0 ? { ids } : {});
   return rows || [];
 }
 
@@ -131,8 +152,11 @@ async function run(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`Fetching ${type} documents missing latitude/longitude from Sanity…`);
-  const rows = await fetchVenuesMissingCoordinates(type, limit);
+  const idsEnv = process.env.BACKFILL_IDS;
+  const ids = idsEnv ? idsEnv.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+
+  console.log(`Fetching ${type} documents missing latitude/longitude from Sanity${ids ? ` (scoped to ${ids.length} explicit id(s))` : ''}…`);
+  const rows = await fetchVenuesMissingCoordinates(type, limit, ids);
   console.log(`Found ${rows.length} ${type}(s) to process${limit ? ` (limit=${limit})` : ''}.\n`);
 
   if (rows.length === 0) {
@@ -150,11 +174,22 @@ async function run(): Promise<void> {
     let result = await geocodeAddress(row.address);
     await new Promise((r) => setTimeout(r, REQUEST_INTERVAL_MS));
 
+    let candidate = row.address;
     if (!result.ok) {
       const stripped = stripUnitDesignator(row.address);
       if (stripped && stripped !== row.address) {
         console.log(`  retrying without unit/suite designator: "${stripped}"`);
         result = await geocodeAddress(stripped);
+        candidate = stripped;
+        await new Promise((r) => setTimeout(r, REQUEST_INTERVAL_MS));
+      }
+    }
+
+    if (!result.ok) {
+      const expanded = expandRte(candidate);
+      if (expanded !== candidate) {
+        console.log(`  retrying with "Rte" expanded to "Route": "${expanded}"`);
+        result = await geocodeAddress(expanded);
         await new Promise((r) => setTimeout(r, REQUEST_INTERVAL_MS));
       }
     }
