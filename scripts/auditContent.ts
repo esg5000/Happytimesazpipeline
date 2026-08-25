@@ -41,17 +41,17 @@ const DEFAULT_LOOKBACK_HOURS = 24;
  * spacing, which is what tipped a 6-post run into a 100% 429 rate on
  * 2026-08-25 (syncRun sESRA9nn5E6yWErUIplHQK).
  */
-const RATE_LIMIT_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
+export const RATE_LIMIT_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 
 /** Be polite between one post's fallback attempt and the next — same spirit as backfillHeroImages.ts's 1.5s Unsplash pacing. */
 const FALLBACK_PACING_MS = 1_500;
 
-function isRateLimitError(err: unknown): boolean {
+export function isRateLimitError(err: unknown): boolean {
   return axios.isAxiosError(err) && err.response?.status === 429;
 }
 
 /** Retries `fn` on a 429 with exponential backoff; any other error (or a 429 past the last attempt) rethrows immediately. */
-async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+export async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
