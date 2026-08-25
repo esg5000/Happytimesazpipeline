@@ -1,0 +1,181 @@
+import axios from 'axios';
+
+import { validateConfig } from '../config';
+import { getSanityClient } from '../agents/sanityPublisher';
+
+const NOMINATIM_SEARCH = 'https://nominatim.openstreetmap.org/search';
+
+/**
+ * Nominatim usage policy (operations.osmfoundation.org/policies/nominatim):
+ * max 1 req/sec for a one-off run (the stricter 4 req/min cap only applies to
+ * scripts that run for >1 day or on a recurring schedule — this isn't one).
+ * A descriptive User-Agent is required in place of an API key.
+ */
+const REQUEST_INTERVAL_MS = 1100;
+const USER_AGENT = 'HappyTimesAZ-DispensaryGeocodeBackfill/1.0 (one-time internal backfill; contact via happytimesaz.com)';
+
+type DispensaryRow = {
+  _id: string;
+  name: string;
+  address: string;
+};
+
+type NominatimResult = {
+  lat?: string;
+  lon?: string;
+  display_name?: string;
+  importance?: number;
+};
+
+/**
+ * Nominatim's free-text matcher frequently fails on suite/unit/apt designators
+ * ("#117", "Suite 23", "Ste 9", "Unit B") mixed into a street address — confirmed
+ * against 5/8 test-batch failures, all of which shared this pattern and geocoded
+ * successfully once the designator was stripped.
+ */
+function stripUnitDesignator(address: string): string {
+  return address
+    .replace(/#\s*\w+/g, '')
+    .replace(/\b(?:suite|ste\.?|unit|apt\.?|building|bldg\.?)\s+\w+/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+,/g, ',')
+    .trim();
+}
+
+async function fetchDispensariesMissingCoordinates(limit?: number): Promise<DispensaryRow[]> {
+  const sanityClient = getSanityClient();
+  const query = `*[
+    _type == "dispensary" &&
+    isActive == true &&
+    !defined(latitude) &&
+    defined(address)
+  ] | order(_id asc)${limit ? `[0...${limit}]` : ''}{
+    _id,
+    name,
+    address
+  }`;
+  const rows = await sanityClient.fetch<DispensaryRow[]>(query);
+  return rows || [];
+}
+
+async function geocodeAddress(
+  address: string
+): Promise<{ ok: true; lat: number; lng: number; matchedName: string } | { ok: false; reason: string }> {
+  let res;
+  try {
+    res = await axios.get<NominatimResult[]>(NOMINATIM_SEARCH, {
+      params: { q: address, format: 'json', limit: 1, countrycodes: 'us' },
+      headers: { 'User-Agent': USER_AGENT },
+      validateStatus: () => true,
+    });
+  } catch (err: unknown) {
+    return { ok: false, reason: `HTTP error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  if (res.status !== 200) {
+    return { ok: false, reason: `HTTP ${res.status}` };
+  }
+
+  const results = Array.isArray(res.data) ? res.data : [];
+  if (results.length === 0) {
+    return { ok: false, reason: 'No results' };
+  }
+
+  const top = results[0];
+  const lat = top.lat !== undefined ? Number.parseFloat(top.lat) : NaN;
+  const lng = top.lon !== undefined ? Number.parseFloat(top.lon) : NaN;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { ok: false, reason: 'Malformed lat/lon in response' };
+  }
+
+  return { ok: true, lat, lng, matchedName: top.display_name || '' };
+}
+
+async function patchCoordinates(id: string, lat: number, lng: number): Promise<void> {
+  const sanityClient = getSanityClient();
+  await sanityClient
+    .patch(id)
+    .set({
+      latitude: lat,
+      longitude: lng,
+      location: { _type: 'geopoint', lat, lng },
+    })
+    .commit();
+}
+
+async function run(): Promise<void> {
+  validateConfig();
+
+  const limitEnv = process.env.BACKFILL_LIMIT;
+  const limit = limitEnv ? Number.parseInt(limitEnv, 10) : undefined;
+  if (limitEnv && (!limit || limit <= 0)) {
+    console.error(`Invalid BACKFILL_LIMIT="${limitEnv}"`);
+    process.exit(1);
+  }
+
+  console.log('Fetching active dispensaries missing latitude/longitude from Sanity…');
+  const rows = await fetchDispensariesMissingCoordinates(limit);
+  console.log(`Found ${rows.length} dispensary(ies) to process${limit ? ` (limit=${limit})` : ''}.\n`);
+
+  if (rows.length === 0) {
+    console.log('Nothing to do.');
+    return;
+  }
+
+  let succeeded = 0;
+  let failed = 0;
+  const failures: { id: string; name: string; address: string; reason: string }[] = [];
+
+  for (const row of rows) {
+    console.log(`[${row._id}] "${row.name}" — ${row.address}`);
+
+    let result = await geocodeAddress(row.address);
+    await new Promise((r) => setTimeout(r, REQUEST_INTERVAL_MS));
+
+    if (!result.ok) {
+      const stripped = stripUnitDesignator(row.address);
+      if (stripped && stripped !== row.address) {
+        console.log(`  retrying without unit/suite designator: "${stripped}"`);
+        result = await geocodeAddress(stripped);
+        await new Promise((r) => setTimeout(r, REQUEST_INTERVAL_MS));
+      }
+    }
+
+    if (!result.ok) {
+      console.log(`  FAIL — ${result.reason}`);
+      failed++;
+      failures.push({ id: row._id, name: row.name, address: row.address, reason: result.reason });
+      continue;
+    }
+
+    try {
+      await patchCoordinates(row._id, result.lat, result.lng);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  FAIL — Sanity patch threw: ${msg}`);
+      failed++;
+      failures.push({ id: row._id, name: row.name, address: row.address, reason: `Sanity patch threw: ${msg}` });
+      continue;
+    }
+
+    console.log(`  OK — lat=${result.lat}, lng=${result.lng}`);
+    console.log(`  matched: ${result.matchedName}`);
+    succeeded++;
+  }
+
+  console.log('\n--- Backfill complete ---');
+  console.log(`  Succeeded: ${succeeded}`);
+  console.log(`  Failed:    ${failed}`);
+  console.log(`  Total:     ${rows.length}`);
+  if (failures.length > 0) {
+    console.log('\nFailures (needs manual review):');
+    for (const f of failures) {
+      console.log(`  [${f.id}] "${f.name}" — "${f.address}" — ${f.reason}`);
+    }
+  }
+}
+
+run().catch((err) => {
+  console.error('Fatal:', err);
+  process.exit(1);
+});
