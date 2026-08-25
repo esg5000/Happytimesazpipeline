@@ -23,6 +23,7 @@
  * Never deletes anything — duplicates are unpublished (isActive: false,
  * status: 'draft'), same convention as eventCleanup.ts's deactivatePastEvents.
  */
+import axios from 'axios';
 import { config, validateConfig } from '../config';
 import { getSanityClient, uploadImageBufferToSanity } from '../agents/sanityPublisher';
 import { fetchUnsplashHeroImageResult } from '../agents/unsplashHero';
@@ -32,6 +33,37 @@ import { recordSyncRun } from '../syncRunLogger';
 import { VisualStyleSchema } from '../utils/validator';
 
 const DEFAULT_LOOKBACK_HOURS = 24;
+
+/**
+ * Backoff schedule for OpenAI 429s hit while generating a fallback hero
+ * (gpt-5.4-mini prompt enhancement and/or gpt-image-1 itself). A run that
+ * needs several fallbacks fires these calls back-to-back with no natural
+ * spacing, which is what tipped a 6-post run into a 100% 429 rate on
+ * 2026-08-25 (syncRun sESRA9nn5E6yWErUIplHQK).
+ */
+const RATE_LIMIT_RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
+
+/** Be polite between one post's fallback attempt and the next — same spirit as backfillHeroImages.ts's 1.5s Unsplash pacing. */
+const FALLBACK_PACING_MS = 1_500;
+
+function isRateLimitError(err: unknown): boolean {
+  return axios.isAxiosError(err) && err.response?.status === 429;
+}
+
+/** Retries `fn` on a 429 with exponential backoff; any other error (or a 429 past the last attempt) rethrows immediately. */
+async function withRateLimitRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      if (!isRateLimitError(err) || attempt >= RATE_LIMIT_RETRY_DELAYS_MS.length) throw err;
+      const delay = RATE_LIMIT_RETRY_DELAYS_MS[attempt]!;
+      console.warn(`[audit] ${label} hit a 429 — retrying in ${delay / 1000}s (attempt ${attempt + 1}/${RATE_LIMIT_RETRY_DELAYS_MS.length})`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 /**
  * Duplicate detection needs a wider net than the image-freshness audit
  * window: a post can go multiple audit runs without ever being checked
@@ -151,84 +183,92 @@ async function auditImageRelevance(
     return false;
   }
 
-  const basePrompt = `HappyTimesAZ ${post.section || 'news'} (greater Phoenix, Arizona metro): "${post.title}".\n\nHero scene direction: Photorealistic editorial photograph suited to the headline; Arizona / greater Phoenix context where appropriate.\n\nNo overlaid text, watermarks, third-party logos, or identifiable news outlet branding in the image.`;
-
-  const visualStyleCheck = VisualStyleSchema.safeParse(post.visualStyle);
-  const visualStyle = visualStyleCheck.success ? visualStyleCheck.data : 'editorial_realistic';
-
-  let imageBuf: Buffer | null;
   try {
-    const enhanced = await generateImagePrompt(basePrompt, visualStyle);
-    imageBuf = await generateImage(enhanced);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[audit] ${label} gpt-image-1 fallback threw: ${msg}`);
-    errorSample.push(`${post._id}: gpt-image-1 fallback threw — ${msg}`);
-    return false;
+    const basePrompt = `HappyTimesAZ ${post.section || 'news'} (greater Phoenix, Arizona metro): "${post.title}".\n\nHero scene direction: Photorealistic editorial photograph suited to the headline; Arizona / greater Phoenix context where appropriate.\n\nNo overlaid text, watermarks, third-party logos, or identifiable news outlet branding in the image.`;
+
+    const visualStyleCheck = VisualStyleSchema.safeParse(post.visualStyle);
+    const visualStyle = visualStyleCheck.success ? visualStyleCheck.data : 'editorial_realistic';
+
+    let imageBuf: Buffer | null;
+    try {
+      const enhanced = await withRateLimitRetry(`${label} generateImagePrompt`, () =>
+        generateImagePrompt(basePrompt, visualStyle)
+      );
+      imageBuf = await withRateLimitRetry(`${label} generateImage`, () => generateImage(enhanced));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[audit] ${label} gpt-image-1 fallback threw: ${msg}`);
+      errorSample.push(`${post._id}: gpt-image-1 fallback threw — ${msg}`);
+      return false;
+    }
+
+    if (!imageBuf) {
+      console.warn(`[audit] ${label} gpt-image-1 fallback returned nothing — flagging, heroImage left untouched.`);
+      actions.push(`${post._id}: flagged irrelevant/missing hero image, no better replacement found`);
+      return false;
+    }
+
+    let assetId: string;
+    try {
+      const filename = `${post._id.replace(/[^a-z0-9-]/gi, '-')}-audit-hero.jpg`;
+      assetId = await uploadImageBufferToSanity(imageBuf, filename);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[audit] ${label} Sanity image upload threw: ${msg}`);
+      errorSample.push(`${post._id}: hero re-upload threw — ${msg}`);
+      return false;
+    }
+
+    // The image being replaced is no longer credited to whoever shot the old
+    // Unsplash photo — strip any "Hero photo by X on Unsplash (url)" segment
+    // entirely (same shape written by both publishAssembly.ts's buildDisclaimer
+    // and attachHeroImageDraftMushrooms.ts, with or without a trailing period)
+    // before appending the AI-generated line, so the two don't end up stacked.
+    const UNSPLASH_CREDIT_RE = /\s*Hero photo by [^()]*\([^)]*\)\.?/gi;
+    const aiLine = 'Hero image is AI-generated (gpt-image-1).';
+    const baseDisclaimer = (post.disclaimer || '').replace(UNSPLASH_CREDIT_RE, '').trim();
+    const updatedDisclaimer = baseDisclaimer.includes(aiLine)
+      ? baseDisclaimer
+      : baseDisclaimer
+        ? `${baseDisclaimer} ${aiLine}`
+        : aiLine;
+
+    // AI-generated images have no photographer to credit, so no real alt
+    // text ships with them the way an Unsplash pick's alt_description does
+    // — build one the same way imageSourcing.ts's gpt-image-1 fallback does
+    // (buildAiAltText), ported here rather than imported per this script's
+    // standalone convention.
+    const altSubject = (post.tags && post.tags[0]) || post.section || post.title;
+    const heroAlt = `AI-generated editorial image related to ${altSubject}`;
+
+    try {
+      const client = getSanityClient();
+      await client
+        .patch(post._id)
+        .set({
+          heroImage: {
+            _type: 'image',
+            asset: { _type: 'reference', _ref: assetId },
+            alt: heroAlt,
+          },
+          disclaimer: updatedDisclaimer,
+        })
+        .commit();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[audit] ${label} Sanity patch threw: ${msg}`);
+      errorSample.push(`${post._id}: hero patch threw — ${msg}`);
+      return false;
+    }
+
+    console.log(`[audit] ${label} heroImage fixed — assetId=${assetId}`);
+    actions.push(`${post._id}: heroImage replaced with gpt-image-1 fallback (was irrelevant/missing)`);
+    return true;
+  } finally {
+    // Pace fallback attempts so a run needing several of them doesn't fire
+    // OpenAI calls in a tight burst — same spirit as backfillHeroImages.ts.
+    await new Promise((r) => setTimeout(r, FALLBACK_PACING_MS));
   }
-
-  if (!imageBuf) {
-    console.warn(`[audit] ${label} gpt-image-1 fallback returned nothing — flagging, heroImage left untouched.`);
-    actions.push(`${post._id}: flagged irrelevant/missing hero image, no better replacement found`);
-    return false;
-  }
-
-  let assetId: string;
-  try {
-    const filename = `${post._id.replace(/[^a-z0-9-]/gi, '-')}-audit-hero.jpg`;
-    assetId = await uploadImageBufferToSanity(imageBuf, filename);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[audit] ${label} Sanity image upload threw: ${msg}`);
-    errorSample.push(`${post._id}: hero re-upload threw — ${msg}`);
-    return false;
-  }
-
-  // The image being replaced is no longer credited to whoever shot the old
-  // Unsplash photo — strip any "Hero photo by X on Unsplash (url)" segment
-  // entirely (same shape written by both publishAssembly.ts's buildDisclaimer
-  // and attachHeroImageDraftMushrooms.ts, with or without a trailing period)
-  // before appending the AI-generated line, so the two don't end up stacked.
-  const UNSPLASH_CREDIT_RE = /\s*Hero photo by [^()]*\([^)]*\)\.?/gi;
-  const aiLine = 'Hero image is AI-generated (gpt-image-1).';
-  const baseDisclaimer = (post.disclaimer || '').replace(UNSPLASH_CREDIT_RE, '').trim();
-  const updatedDisclaimer = baseDisclaimer.includes(aiLine)
-    ? baseDisclaimer
-    : baseDisclaimer
-      ? `${baseDisclaimer} ${aiLine}`
-      : aiLine;
-
-  // AI-generated images have no photographer to credit, so no real alt
-  // text ships with them the way an Unsplash pick's alt_description does
-  // — build one the same way imageSourcing.ts's gpt-image-1 fallback does
-  // (buildAiAltText), ported here rather than imported per this script's
-  // standalone convention.
-  const altSubject = (post.tags && post.tags[0]) || post.section || post.title;
-  const heroAlt = `AI-generated editorial image related to ${altSubject}`;
-
-  try {
-    const client = getSanityClient();
-    await client
-      .patch(post._id)
-      .set({
-        heroImage: {
-          _type: 'image',
-          asset: { _type: 'reference', _ref: assetId },
-          alt: heroAlt,
-        },
-        disclaimer: updatedDisclaimer,
-      })
-      .commit();
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[audit] ${label} Sanity patch threw: ${msg}`);
-    errorSample.push(`${post._id}: hero patch threw — ${msg}`);
-    return false;
-  }
-
-  console.log(`[audit] ${label} heroImage fixed — assetId=${assetId}`);
-  actions.push(`${post._id}: heroImage replaced with gpt-image-1 fallback (was irrelevant/missing)`);
-  return true;
 }
 
 // ---------------------------------------------------------------------------
