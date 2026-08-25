@@ -42,6 +42,8 @@ export type SourceGatheringResult = {
   facts: Fact[];
   primarySourceFound: boolean;
   factCount: number;
+  /** Mirrors sourceGathering.ts's SourceGatheringResult.sourceArticleTextSubstantial — see that file for the full comment. Only meaningful alongside a 'sourceArticleText' fact; false means Stage 3 itself only trusted this as a thin last-resort fallback, not real substantial content. */
+  sourceArticleTextSubstantial?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -81,6 +83,33 @@ const SOURCE_ARTICLE_TEXT_FIELD = 'sourceArticleText';
 const MIN_SOURCE_ARTICLE_TEXT_CHARS = 800;
 const MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES = 5;
 const MIN_SUBSTANTIAL_SENTENCE_CHARS = 40;
+
+/**
+ * Content-quality floor for sourceArticleText at the 'blurb' tier — see
+ * hasSubstantialSourceArticleText below for the (much higher) 'full-article'
+ * bar, which this doesn't touch. Confirmed gap: a 2026-08-25 topic whose
+ * only fact was mshale.com's own placeholder text ("No game recap available
+ * from the provided source") passed the old blurb check trivially — any
+ * non-empty value + a named source qualified, with no floor on whether the
+ * text was actually about anything. 150 chars is well under
+ * MIN_SOURCE_ARTICLE_TEXT_CHARS (800) — this only needs to reject one-line
+ * placeholders, not demand full-article-length text for a blurb.
+ */
+const MIN_BLURB_SOURCE_TEXT_CHARS = 150;
+/** Catches the placeholder/meta-statement pattern regardless of length (a padded error page could clear MIN_BLURB_SOURCE_TEXT_CHARS on boilerplate alone). Deliberately conservative — false negatives (an unrecognized phrasing) are expected and acceptable; this is one layer of defense-in-depth, not the only one (see sourceArticleTextSubstantial below). */
+const META_UNAVAILABLE_RE =
+  /\bno\s+(game\s+)?(recap|report|preview|article|coverage|content|summary)\s+(is\s+|was\s+)?available\b|\bcontent\s+(is\s+)?(currently\s+)?unavailable\b|\bno\s+(report|recap|article)\s+found\b|\bpage\s+not\s+found\b|\baccess\s+denied\b|\b404\s+error\b/i;
+/**
+ * Injected unconditionally by sourceGathering.ts's gatherDefaultSources
+ * alongside every sourceArticleText fact (WRITING_GUIDANCE_FACT) — a fixed
+ * editorial instruction, not real-world information about the topic. It
+ * always has a non-empty value + a named source, so isValidFact alone
+ * always counted it as qualifying — meaning even a fully-disqualified
+ * sourceArticleText left qualifyingFactCount at 1 (this field alone),
+ * still producing 'blurb'. Excluded here so disqualifying the content
+ * fact actually changes the decision.
+ */
+const NON_INFORMATIONAL_FIELDS = new Set(['writingGuidance']);
 /** See sourceGathering.ts's identical constant/comment — a long run of nav-link labels with one incidental period can otherwise pass as one long "sentence." */
 const MAX_SUBSTANTIAL_SENTENCE_CHARS = 300;
 const MIN_PROSE_STOPWORD_RATIO = 0.2;
@@ -143,6 +172,34 @@ function isValidFact(fact: Fact): boolean {
     typeof fact.source === 'string' &&
     fact.source.trim().length > 0
   );
+}
+
+/**
+ * Content-quality gate — separate from isValidFact's structural check
+ * (non-empty value + named source). A fact can be perfectly well-formed and
+ * still not be real, usable information: a fixed editorial instruction
+ * (writingGuidance) or a source page's own "no content available"
+ * placeholder text (real bytes, real source, zero actual information).
+ * Returns a human-readable reason when the fact should be excluded from
+ * qualifyingFactCount, or undefined when it's fine.
+ */
+function disqualifyContentReason(fact: Fact, sourceArticleTextSubstantial: boolean | undefined): string | undefined {
+  if (NON_INFORMATIONAL_FIELDS.has(fact.field)) {
+    return 'editorial instruction, not real-world information about the topic — never counts toward qualifying facts';
+  }
+  if (fact.field === SOURCE_ARTICLE_TEXT_FIELD) {
+    if (sourceArticleTextSubstantial === false) {
+      return 'Stage 3 only trusted this as a thin last-resort fallback (sourceArticleTextSubstantial=false), not substantial content';
+    }
+    const value = fact.value.trim();
+    if (value.length < MIN_BLURB_SOURCE_TEXT_CHARS) {
+      return `below the ${MIN_BLURB_SOURCE_TEXT_CHARS}-char blurb-eligible floor (${value.length} chars)`;
+    }
+    if (META_UNAVAILABLE_RE.test(value)) {
+      return 'matches a known "no content available" meta-statement pattern';
+    }
+  }
+  return undefined;
 }
 
 function groupByField(facts: Fact[]): Map<string, Fact[]> {
@@ -282,9 +339,30 @@ function buildReasoning(params: {
  * Stage 4 entry point. Pure function, no I/O.
  */
 export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyResult {
-  const validFacts = result.facts.filter(isValidFact);
-  const disqualified = result.facts.filter((f) => !isValidFact(f));
-  const disqualifiedFields = disqualified.map((f) => f.field || '(no field name)');
+  const structurallyValid = result.facts.filter(isValidFact);
+  const structurallyInvalid = result.facts.filter((f) => !isValidFact(f));
+
+  // Second pass, content-quality — see disqualifyContentReason. Runs only
+  // over facts that already passed the structural check above; a fact
+  // disqualified here is content-worthless (editorial instruction, or a
+  // source placeholder), not malformed, but is folded into the same
+  // disqualified bucket since either way it must not count toward
+  // qualifyingFactCount.
+  const validFacts: Fact[] = [];
+  const contentDisqualifiedFields: string[] = [];
+  for (const f of structurallyValid) {
+    const reason = disqualifyContentReason(f, result.sourceArticleTextSubstantial);
+    if (reason) {
+      contentDisqualifiedFields.push(`${f.field} (${reason})`);
+    } else {
+      validFacts.push(f);
+    }
+  }
+
+  const disqualifiedFields = [
+    ...structurallyInvalid.map((f) => f.field || '(no field name)'),
+    ...contentDisqualifiedFields,
+  ];
 
   const byField = groupByField(validFacts);
   const qualifyingFields = [...byField.keys()];
@@ -315,7 +393,7 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
     hasCoreWhat,
     hasCoreWhen,
     conflicts,
-    disqualifiedFactCount: disqualified.length,
+    disqualifiedFactCount: structurallyInvalid.length + contentDisqualifiedFields.length,
     disqualifiedFields,
     reasoning,
   };

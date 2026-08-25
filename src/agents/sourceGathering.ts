@@ -109,6 +109,22 @@ export type SourceGatheringResult = {
   factCount: number;
   /** Set when nothing could be gathered — no checker for this category, or the checker ran but found no match. Additive to the core shape; Stage 4/5 can ignore it. */
   checkerNote?: string;
+  /**
+   * Only meaningful when gatherDefaultSources produced a sourceArticleText
+   * fact. true = the fetched text cleared isMeaningfulProseText (the
+   * `chosen` path below); false = nothing cleared that bar and the text
+   * used is the thin last-resort `fallbackChoice` — real bytes came back,
+   * but the default checker itself didn't trust it as substantial.
+   * Undefined for every other checker / when no sourceArticleText fact
+   * exists. primarySourceFound deliberately keeps its existing meaning
+   * ("did we get any real source at all, vs. SerpAPI-only") and is NOT
+   * repurposed for this — this is a separate, narrower signal so Stage 4
+   * can tell the two `final` branches apart instead of both collapsing
+   * into primarySourceFound=true (the gap that let a thin placeholder
+   * page's text reach Stage 4 looking identical to real substantial
+   * content — see 2026-08-25's "No game recap available" incident).
+   */
+  sourceArticleTextSubstantial?: boolean;
 };
 
 type CategoryChecker = (topic: TopicInput) => Promise<SourceGatheringResult>;
@@ -1314,7 +1330,13 @@ async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringR
   console.log(
     `[source-gathering] default: fetched via ${final.pageResult.method} (${final.pageResult.text.length} chars) from ${outlet} — ${final.url}${chosen ? '' : ' (fallback: not substantial, used as best available)'}`
   );
-  return { topic, facts, primarySourceFound: true, factCount: facts.length };
+  return {
+    topic,
+    facts,
+    primarySourceFound: true,
+    factCount: facts.length,
+    sourceArticleTextSubstantial: chosen != null,
+  };
 }
 
 // ---------------------------------------------------------------------------
