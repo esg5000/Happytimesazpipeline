@@ -59,6 +59,7 @@ const CITY_BOUNDS: Record<string, { lat: number; lng: number; radiusMiles: numbe
   Tempe: { lat: 33.4255, lng: -111.94, radiusMiles: 8 },
   Tolleson: { lat: 33.45, lng: -112.2585, radiusMiles: 5 },
   Tucson: { lat: 32.2226, lng: -110.9747, radiusMiles: 15 },
+  Williams: { lat: 35.2494, lng: -112.1901, radiusMiles: 6 },
   Youngtown: { lat: 33.6017, lng: -112.3007, radiusMiles: 4 },
 };
 
