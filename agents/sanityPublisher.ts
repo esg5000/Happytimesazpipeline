@@ -475,6 +475,19 @@ export async function publishArticleToSanity(
     body: portableTextBody, // This MUST be an array
     section: primarySection,
     publishedAt: null, // Draft by default
+    // isActive/status were never set here (this function predates the
+    // isActive frontend filter fix). Sanity's schema `initialValue` (true /
+    // 'draft') only applies to documents created through Studio's own UI,
+    // not to documents created via the API like this one — so every post
+    // through this path was left with isActive/status entirely undefined,
+    // which fails the frontend's `isActive == true` filter once a human
+    // later publishes it (confirmed: 45 existing posts affected). isActive
+    // is unconditionally true here (matches every stage of the pipeline_v2
+    // publish path in src/agents/publishAssembly.ts — it's an
+    // active/superseded flag, orthogonal to draft/publish state); status
+    // is 'draft' to match this function's own publishedAt: null default.
+    isActive: true,
+    status: 'draft',
     _id: `post-${article.slug}-${Date.now()}`,
   };
 
