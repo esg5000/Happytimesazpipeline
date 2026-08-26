@@ -153,7 +153,28 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * exists in SECTION_VALUES — event-shaped topics discovered here still
  * land under whichever real section fits (food/nightlife/news), same as
  * every other class; this only guarantees they get *discovered* into the
- * candidate pool, not a forced section.
+ * candidate pool, not a forced section. Expanded 2026-08-26 with 3 queries
+ * targeting specific real, active Phoenix-area food sources that were
+ * previously only caught opportunistically via the general restaurant/food
+ * queries above: "Phoenix restaurant openings and closings" (worded close
+ * to Phoenix Magazine's actual recurring column title — verified via
+ * diagnostic: went from 4 to 6 direct hits on that column specifically) and
+ * "Mouth By Southwest Phoenix restaurant" (name-mention query — verified:
+ * 0 to 10 hits from mouthbysouthwest.com, all genuine restaurant-opening
+ * content). A `site:mouthbysouthwest.com` variant was also tried but
+ * dropped: it timed out on Bright Data both times it was tested (30s each,
+ * reproducible, independent of the separate SerpAPI-quota issue seen the
+ * same day) and never returned data, so it was pure dead weight given the
+ * name-mention query already covers that source. "Scottsdale restaurant
+ * dining new" was added for scottsdale.com/blog specifically — verified:
+ * that exact domain still didn't surface, but the query does reliably pull
+ * genuine Scottsdale-specific restaurant coverage from other outlets
+ * (Phoenix New Times, Patch, Modern Luxury), so it stayed. No new noise
+ * pattern was introduced by any of the three (spot-checked the full raw
+ * pool against the pre-expansion baseline); the existing "Valley"-query
+ * noise (Silicon/Napa/Hudson Valley content leaking in via
+ * "Valley nightlife..."/"Valley concert...") predates this change and is
+ * unrelated to it.
  * `sports-az`: Arizona team sports discovery (Cardinals, Suns, Diamondbacks,
  * ASU Sun Devils, Mercury) — added alongside SPORTS_RESERVED_SLOTS after
  * confirming there was no dedicated sports query lane at all, so real
@@ -205,6 +226,9 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'Arizona food festival event', queryClass: 'lifestyle-az' },
   { query: 'Phoenix happy hour nightlife guide', queryClass: 'lifestyle-az' },
   { query: 'Valley concert festival event announcement', queryClass: 'lifestyle-az' },
+  { query: 'Phoenix restaurant openings and closings', queryClass: 'lifestyle-az' },
+  { query: 'Mouth By Southwest Phoenix restaurant', queryClass: 'lifestyle-az' },
+  { query: 'Scottsdale restaurant dining new', queryClass: 'lifestyle-az' },
   { query: 'Arizona Cardinals game recap', queryClass: 'sports-az' },
   { query: 'Phoenix Suns game recap', queryClass: 'sports-az' },
   { query: 'Arizona Diamondbacks news', queryClass: 'sports-az' },
