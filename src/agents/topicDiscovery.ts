@@ -163,13 +163,22 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * "recap"/"news" phrasing to bias toward real articles over raw schedule
  * listings, though the actual stub exclusion is the domain filter below,
  * not the query wording.
- * `health-wellness-az`: Arizona fitness/mental-health/spa/healthcare
- * discovery — added alongside HEALTH_WELLNESS_RESERVED_SLOTS after
+ * `health-wellness-az`: added alongside HEALTH_WELLNESS_RESERVED_SLOTS after
  * confirming zero health-wellness-section topics survived across two
  * consecutive runs; there was no dedicated wellness query lane at all
- * (unlike lifestyle-az, which is 100% food/nightlife/events-worded).
- * Feeds the same pool/dedupe/cap pipeline as the other classes, no
- * special-casing (see runStage0Discovery, unchanged).
+ * (unlike lifestyle-az, which is 100% food/nightlife/events-worded). Retargeted
+ * 2026-08-26 (diagnostic showed ~1/3 of raw results were national travel/spa
+ * listicles — Condé Nast Traveler / Islands.com / Sunset Magazine "best
+ * wellness retreats" content that happens to contain the word "wellness" but
+ * is never publishable) into two deliberate sub-types, each half the query
+ * set: local AZ health/wellness/fitness (mental health, hospitals, food
+ * recalls, gym/studio openings, local runs/charity events) and evergreen
+ * national health/nutrition/medical content that needs no AZ angle
+ * (nutrition/supplement/exercise/sleep research). Deliberately avoids
+ * "spa"/"retreat"/"travel"/"resort"/"luxury"/"hotel" wording, which is the
+ * specific pattern that was pulling in listicle bait. Feeds the same
+ * pool/dedupe/cap pipeline as the other classes, no special-casing (see
+ * runStage0Discovery, unchanged).
  */
 const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'Phoenix news today', queryClass: 'local-native' },
@@ -202,12 +211,16 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'ASU Sun Devils sports news', queryClass: 'sports-az' },
   { query: 'Phoenix Mercury news', queryClass: 'sports-az' },
   { query: 'Arizona sports news today', queryClass: 'sports-az' },
-  { query: 'Phoenix fitness wellness news', queryClass: 'health-wellness-az' },
   { query: 'Arizona mental health news', queryClass: 'health-wellness-az' },
-  { query: 'Valley yoga meditation wellness studio', queryClass: 'health-wellness-az' },
-  { query: 'Phoenix healthcare hospital news', queryClass: 'health-wellness-az' },
-  { query: 'Arizona spa wellness retreat', queryClass: 'health-wellness-az' },
-  { query: 'Phoenix gym fitness trend', queryClass: 'health-wellness-az' },
+  { query: 'Phoenix hospital medical news', queryClass: 'health-wellness-az' },
+  { query: 'Arizona food safety recall alert', queryClass: 'health-wellness-az' },
+  { query: 'Phoenix gym fitness studio opening', queryClass: 'health-wellness-az' },
+  { query: 'Arizona 5k run charity walk event', queryClass: 'health-wellness-az' },
+  { query: 'new nutrition research study', queryClass: 'health-wellness-az' },
+  { query: 'supplement study health benefits research', queryClass: 'health-wellness-az' },
+  { query: 'exercise study weight loss research', queryClass: 'health-wellness-az' },
+  { query: 'high fiber foods list health benefits', queryClass: 'health-wellness-az' },
+  { query: 'sleep health study research findings', queryClass: 'health-wellness-az' },
 ];
 
 export type RawNewsItem = {
