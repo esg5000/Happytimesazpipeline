@@ -737,6 +737,10 @@ function registerDaemonApiRoutes(app: express.Application): void {
             itemsSynced: result.realPublishes.length,
             errors: result.realPublishFailures.length,
             errorSample: result.realPublishFailures.map((f) => f.message),
+            stage0Usage: {
+              brightData: result.stage0Usage.brightData,
+              serpApi: result.stage0Usage.serpApi,
+            },
             triggeredBy: 'manual',
           });
         } catch (err: unknown) {

@@ -33,6 +33,31 @@ export default defineType({
       description: 'A few example actions taken by this run (e.g. hero image re-fixed, duplicate unpublished), not all of them',
     }),
     defineField({
+      name: 'stage0Usage',
+      type: 'object',
+      description: 'newsV2 runs only — per-provider Stage 0 call accounting, so it is directly queryable which provider (Bright Data vs SerpAPI fallback) actually discovered this run\'s items.',
+      fields: [
+        defineField({
+          name: 'brightData',
+          type: 'object',
+          fields: [
+            defineField({ name: 'calls', type: 'number' }),
+            defineField({ name: 'served', type: 'number' }),
+            defineField({ name: 'errors', type: 'number' }),
+          ],
+        }),
+        defineField({
+          name: 'serpApi',
+          type: 'object',
+          fields: [
+            defineField({ name: 'calls', type: 'number' }),
+            defineField({ name: 'served', type: 'number' }),
+            defineField({ name: 'errors', type: 'number' }),
+          ],
+        }),
+      ],
+    }),
+    defineField({
       name: 'triggeredBy',
       type: 'string',
       options: { list: ['cron', 'manual'] },

@@ -39,7 +39,7 @@
  * production pipeline's immediate-publish behavior. Only call it when a
  * real publish run is actually intended.
  */
-import { runTopicDiscoveryShadow, type TopicDiscoveryResult } from './topicDiscovery';
+import { runTopicDiscoveryShadow, type TopicDiscoveryResult, type Stage0Usage } from './topicDiscovery';
 import { gatherSources } from './sourceGathering';
 import { evaluateSufficiency } from './sufficiencyGate';
 import { writeArticle, type WrittenArticle } from './articleWriter';
@@ -73,6 +73,7 @@ export type OrchestratorV2RunResult = {
   droppedAtVerification: DroppedTopic[];
   published: PublishedTopic[];
   wallClockMs: number;
+  stage0Usage: Stage0Usage;
 };
 
 // ---------------------------------------------------------------------------
@@ -258,6 +259,7 @@ export async function runOrchestratorV2(): Promise<OrchestratorV2RunResult> {
     droppedAtVerification,
     published,
     wallClockMs,
+    stage0Usage: discovery.stage0Usage,
   };
 
   console.log(`[orchestrator-v2] ========== RUN end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);

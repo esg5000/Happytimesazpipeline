@@ -277,10 +277,10 @@ export type RawNewsItem = {
 };
 
 /** Per-provider Stage 0 call accounting — calls attempted, unrecoverable errors, and queries this provider's result was actually used for. */
-type Stage0ProviderUsage = { calls: number; errors: number; served: number };
+export type Stage0ProviderUsage = { calls: number; errors: number; served: number };
 
 /** Counts Stage 0 provider HTTP calls made during this run, and fetch failures distinctly from a normal query with no results. */
-type Stage0Usage = {
+export type Stage0Usage = {
   /** Total provider call attempts across both providers (Bright Data + SerpAPI fallback attempts combined). */
   apiCalls: number;
   /** Queries where BOTH Bright Data and the SerpAPI fallback failed — a query with no usable result at all. */
