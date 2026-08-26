@@ -26,6 +26,7 @@ import { getTelegramSession, persistTelegramSessions } from './telegramSessionSt
 import { extractArticleStyleFromBody } from './utils/articleStyle';
 import { runResearchAndWrite } from './agents/researchAndWritePipeline';
 import { run as runContentAuditor } from './scripts/auditContent';
+import { runEventsRoundup } from './agents/eventsRoundup';
 
 const RENDER_HOST = '0.0.0.0';
 
@@ -625,7 +626,8 @@ function registerDaemonApiRoutes(app: express.Application): void {
       | 'syncDispensaries'
       | 'syncRestaurants'
       | 'syncNightlife'
-      | 'runAuditor' =>
+      | 'runAuditor'
+      | 'generateEventsRoundup' =>
       s === '/publish' ||
       s === 'runWriter' ||
       s === 'syncEvents' ||
@@ -634,11 +636,12 @@ function registerDaemonApiRoutes(app: express.Application): void {
       s === 'syncDispensaries' ||
       s === 'syncRestaurants' ||
       s === 'syncNightlife' ||
-      s === 'runAuditor';
+      s === 'runAuditor' ||
+      s === 'generateEventsRoundup';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup.',
       });
       return;
     }
@@ -899,6 +902,30 @@ function registerDaemonApiRoutes(app: express.Application): void {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command runAuditor failed:', msg);
           appendActivityLog(`runAuditor: failed — ${msg}`, 'runAuditor');
+        }
+      })();
+      return;
+    }
+
+    if (command === 'generateEventsRoundup') {
+      console.log(
+        '[api] /api/command generateEventsRoundup → eventsRoundup.runEventsRoundup() (owned event data, no search/discovery, draft publish)'
+      );
+      appendActivityLog('generateEventsRoundup: started', 'generateEventsRoundup');
+      res.json({
+        ok: true,
+        status: 'started',
+        command: 'generateEventsRoundup',
+        source: resolveApiClientSource(req),
+      });
+      void (async () => {
+        try {
+          const result = await runEventsRoundup();
+          appendActivityLog(`generateEventsRoundup: ${result.status} — ${JSON.stringify(result)}`, 'generateEventsRoundup');
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command generateEventsRoundup failed:', msg);
+          appendActivityLog(`generateEventsRoundup: failed — ${msg}`, 'generateEventsRoundup');
         }
       })();
       return;
