@@ -183,7 +183,22 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * schedule-stub pages (see LOW_VALUE_STUB_DOMAINS). Query wording favors
  * "recap"/"news" phrasing to bias toward real articles over raw schedule
  * listings, though the actual stub exclusion is the domain filter below,
- * not the query wording.
+ * not the query wording. Expanded 2026-08-26 with 4 queries covering AZ
+ * programs that had zero coverage before: Arizona Wildcats (University of
+ * Arizona — the single biggest gap, a major D-I program with no query at
+ * all previously), Grand Canyon University (GCU), NAU Lumberjacks, and
+ * Arizona Rattlers/Phoenix Rising FC (bundled into one query — both are
+ * real, currently-active pro teams). Arizona Coyotes deliberately excluded:
+ * the NHL franchise relocated to Salt Lake City in 2024 and no longer plays
+ * in Arizona, so a "Coyotes" query today would risk pulling in Utah Hockey
+ * Club/Utah Mammoth national coverage under an AZ-labeled class. Verified
+ * via diagnostic: all four target gaps confirmed covered (~10 items each
+ * for Wildcats/GCU/NAU, ~5-6 for Rattlers/Rising via a recurring "Arizona
+ * Digest" wire-column format that bundles both teams), zero Coyotes/Utah
+ * leakage, no new noise pattern beyond the pre-existing opponent-team names
+ * that "recap"-style queries always surface (Cowboys/Thunder/Cubs/Mystics
+ * etc. showing up as the other side of an AZ team's game — unrelated to and
+ * unaffected by this expansion).
  * `health-wellness-az`: added alongside HEALTH_WELLNESS_RESERVED_SLOTS after
  * confirming zero health-wellness-section topics survived across two
  * consecutive runs; there was no dedicated wellness query lane at all
@@ -235,6 +250,10 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'ASU Sun Devils sports news', queryClass: 'sports-az' },
   { query: 'Phoenix Mercury news', queryClass: 'sports-az' },
   { query: 'Arizona sports news today', queryClass: 'sports-az' },
+  { query: 'Arizona Wildcats sports news', queryClass: 'sports-az' },
+  { query: 'Grand Canyon University GCU sports news', queryClass: 'sports-az' },
+  { query: 'NAU Lumberjacks sports news', queryClass: 'sports-az' },
+  { query: 'Arizona Rattlers Phoenix Rising sports news', queryClass: 'sports-az' },
   { query: 'Arizona mental health news', queryClass: 'health-wellness-az' },
   { query: 'Phoenix hospital medical news', queryClass: 'health-wellness-az' },
   { query: 'Arizona food safety recall alert', queryClass: 'health-wellness-az' },
