@@ -162,6 +162,15 @@ export type WriteArticleOptions = {
   authorName?: string;
   /** Opt-in for section-based personality auto-select (autonomous path only). */
   enablePersonality?: boolean;
+  /**
+   * Raw prompt append for a caller-specific voice, independent of
+   * PERSONALITY_BY_SECTION (which only covers food/nightlife/cannabis/
+   * health-wellness auto-select by section). For a caller like
+   * agents/eventsRoundup.ts that needs its own voice regardless of section
+   * and without it being an auto-selected persona applied to every article
+   * in that section — just this one caller's system prompt.
+   */
+  voiceAppend?: string;
 };
 
 /**
@@ -189,10 +198,14 @@ export async function writeArticle(
       ? PERSONALITY_BY_SECTION[topic.section]
       : undefined;
   const personalityAppend = personality ? buildPersonalityPromptAppend(personality) : '';
+  const voiceAppend =
+    typeof options?.voiceAppend === 'string' && options.voiceAppend.trim().length > 0
+      ? `\n\n${options.voiceAppend.trim()}`
+      : '';
 
   const systemPrompt = applyStyle
-    ? `${basePrompt.trim()}${sectionAppend}${personalityAppend}${buildWriterArticleStyleAppend(length, tone)}`
-    : `${basePrompt.trim()}${sectionAppend}${personalityAppend}`;
+    ? `${basePrompt.trim()}${sectionAppend}${personalityAppend}${voiceAppend}${buildWriterArticleStyleAppend(length, tone)}`
+    : `${basePrompt.trim()}${sectionAppend}${personalityAppend}${voiceAppend}`;
 
   const notesBlock =
     options?.sourceNotes && options.sourceNotes.trim().length > 0

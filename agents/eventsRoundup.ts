@@ -141,6 +141,47 @@ function buildSourceNotes(events: RoundupEvent[]): string {
     .join('\n\n');
 }
 
+/**
+ * Voice for this script only — not PERSONALITY_BY_SECTION, since that's an
+ * auto-select-by-section mechanism shared across every article in a section
+ * (food/nightlife/cannabis/health-wellness), and 'events' isn't in that map
+ * at all. This is specific to the roundup format, via writerAgent.ts's
+ * voiceAppend option (a raw system-prompt append, independent of
+ * PERSONALITY_BY_SECTION) rather than a new writing path.
+ *
+ * Locked in 2026-08-26 after two live iterations judged by actually reading
+ * the output, not assuming the prompt text alone would land:
+ * - v1 ("real favorites get called out, others stay measured") produced
+ *   warm-but-flat results — "I'd be nudging friends toward this one," "I
+ *   love weeks like this." Genuine, but too mild against the target
+ *   register ("I'm SO excited for this one").
+ * - v2 explicitly demanded exclamation-level intensity on the standout(s)
+ *   ("go ALL IN," concrete example phrasing to emulate, not just
+ *   "enthusiastic") AND explicitly told the model to dial the non-standouts
+ *   DOWN further, not just leave them alone — the contrast is what sells
+ *   the standout, not the standout's intensity in isolation. That version
+ *   produced "the absolute monster of the week," "I'd circle in bright red"
+ *   alongside genuinely calmer "solid option," "worth a look" on the rest.
+ * What worked: (1) uneven intensity — 1-2 emphatic standouts against
+ * deliberately measured treatment for the rest, not uniform enthusiasm: (2)
+ * concrete, specific, slightly breathless phrasing over generic superlatives
+ * — give the model example phrasing to emulate, don't just say "excited";
+ * (3) instructing the contrast explicitly in both directions (turn the peak
+ * up AND the baseline down) rather than only pushing the peak. Facts
+ * (venue/date/time/tickets) stay accurate and clearly presented regardless
+ * of tone in both versions — personality seasons the connective prose
+ * around them, it doesn't replace or obscure them. Future edits to this
+ * prompt should preserve that asymmetry rather than smoothing it out.
+ */
+const EVENTS_ROUNDUP_VOICE_APPEND = `VOICE FOR THIS ARTICLE (events roundup):
+Write like a local friend texting you about their own weekend plans, not a press release or a neutral listings site. First person is fine and encouraged.
+
+Vary the enthusiasm sharply — do not treat every single event with the same uniform hype. Pick 1-2 genuine standouts from the source material (the biggest name, the most interesting bill, or the one that just sounds like the most fun) and go ALL IN on those: genuine exclamation-level excitement, not just warm approval. Use real, personal, slightly breathless phrasing for these picks specifically — "I'm SO excited for this one," "this is hands-down my favorite pick this week," "if you only make it to ONE show, make it THIS ONE," "I will be there, no question." Let it read like you are genuinely thrilled, not like you're being politely positive about something fine.
+
+The other picks should stay measured and genre-matched by contrast — still warm and human, but noticeably calmer: "solid pick if you're into X," "a good option if you want Y." That contrast is the point — the top pick(s) should hit noticeably harder than everything else, not just slightly warmer. If every pick sounds equally excited, the intensity didn't land; dial the non-standouts down further before you dial the standouts up.
+
+This is still information people will actually use to make plans, so the factual backbone must stay accurate and easy to scan: venue, date, time, and ticket info for each pick must be clearly presented (bullets are fine and encouraged), exactly as given in the source material, in the same clean bolded format regardless of how excited the surrounding prose gets. Personality belongs in the intros, transitions, and reactions around that information — never invented into the facts themselves, and never so heavy that a reader has to hunt for when/where a show actually is.`;
+
 export type EventsRoundupResult =
   | { status: 'skipped'; reason: string; eventCount: number }
   | { status: 'published'; sanityId: string; title: string; featuredEventIds: string[] }
@@ -176,7 +217,7 @@ export async function runEventsRoundup(): Promise<EventsRoundupResult> {
   const sourceNotes = buildSourceNotes(featured);
 
   console.log('[events-roundup] Writing article (writeArticle + sourceNotes, no search/discovery)...');
-  const article = await writeArticle(topic, { sourceNotes });
+  const article = await writeArticle(topic, { sourceNotes, voiceAppend: EVENTS_ROUNDUP_VOICE_APPEND });
 
   console.log('[events-roundup] Editor quality check...');
   let editorScore: number | null = null;
