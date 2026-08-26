@@ -392,6 +392,43 @@ function buildGoogleNewsSearchUrl(query: string): string {
 }
 
 /**
+ * Google's news SERP (as unblocked by Bright Data) started returning every
+ * item's `link` as an opaque click-tracking redirect path — e.g.
+ * `/goto?url=CAESewH...` — instead of the flat absolute URL the live test
+ * on 2026-08-19 observed. Investigated 2026-08-26: (1) no other field in the
+ * news item carries the real destination (only title/source/date/image/rank);
+ * (2) the `url=` token is NOT the real URL base64-encoded — decoding it
+ * yields raw protobuf-tag bytes, an opaque Google-internal payload, not a
+ * recoverable string; (3) issuing a plain, unauthenticated GET to
+ * `https://www.google.com` + that relative path DOES work — Google responds
+ * with a stateless 302 whose `Location` header is the real article URL, no
+ * session/cookies required (confirmed on live samples, ~50ms each). This
+ * resolves relative links via that redirect; already-absolute links (the
+ * pre-2026-08-26 shape, or any other provider) pass through untouched.
+ */
+const GOOGLE_REDIRECT_RESOLVE_TIMEOUT_MS = 8_000;
+
+async function resolveGoogleRedirectLink(link: string): Promise<string | undefined> {
+  if (link.startsWith('http')) return link;
+  if (!link.startsWith('/')) return undefined;
+
+  try {
+    const res = await axios.get(`https://www.google.com${link}`, {
+      maxRedirects: 0,
+      validateStatus: () => true,
+      timeout: GOOGLE_REDIRECT_RESOLVE_TIMEOUT_MS,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const location = res.headers.location;
+    return res.status >= 300 && res.status < 400 && typeof location === 'string' && location.startsWith('http')
+      ? location
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Adapter: Bright Data's flat news[] item shape → RawNewsItem, the same
  * internal shape flattenStage0Results produces from SerpAPI, so nothing
  * downstream of Stage 0 needs to change. Per the live test: `source` is
@@ -405,30 +442,51 @@ function buildGoogleNewsSearchUrl(query: string): string {
  * (which also branches on an iso_date field Bright Data doesn't provide).
  * image/image_base64/source_logo/rank/global_rank are dropped — unused by
  * anything downstream of Stage 0.
+ *
+ * Async (unlike its SerpAPI counterpart) because `link` resolution may need
+ * a redirect round-trip per item — see resolveGoogleRedirectLink. Resolved
+ * in parallel across the batch; items whose link can't be resolved to an
+ * absolute URL are dropped and counted, not silently passed through with a
+ * relative/unusable link.
  */
-function flattenBrightDataNewsResults(
+async function flattenBrightDataNewsResults(
   raw: unknown[] | undefined,
   queryClass: QueryClass,
   query: string
-): RawNewsItem[] {
-  const out: RawNewsItem[] = [];
+): Promise<{ items: RawNewsItem[]; unresolvedLinkCount: number }> {
+  const candidates: { title: string; e: Record<string, unknown> }[] = [];
   for (const entry of raw || []) {
     if (!entry || typeof entry !== 'object') continue;
     const e = entry as Record<string, unknown>;
     const title = e.title;
     const link = e.link;
-    if (typeof title !== 'string' || typeof link !== 'string' || !link.startsWith('http')) continue;
+    if (typeof title !== 'string' || typeof link !== 'string') continue;
+    candidates.push({ title, e });
+  }
+
+  const resolvedLinks = await Promise.all(
+    candidates.map((c) => resolveGoogleRedirectLink(c.e.link as string))
+  );
+
+  const out: RawNewsItem[] = [];
+  let unresolvedLinkCount = 0;
+  candidates.forEach((c, i) => {
+    const link = resolvedLinks[i];
+    if (!link) {
+      unresolvedLinkCount += 1;
+      return;
+    }
     out.push({
-      title,
+      title: c.title,
       link,
-      snippet: typeof e.description === 'string' ? e.description : undefined,
-      sourceOutlet: typeof e.source === 'string' && e.source.trim() ? e.source.trim() : undefined,
-      publishedDate: typeof e.date === 'string' ? parseRelativeNewsDate(e.date) : undefined,
+      snippet: typeof c.e.description === 'string' ? c.e.description : undefined,
+      sourceOutlet: typeof c.e.source === 'string' && c.e.source.trim() ? c.e.source.trim() : undefined,
+      publishedDate: typeof c.e.date === 'string' ? parseRelativeNewsDate(c.e.date) : undefined,
       queryClass,
       matchedQuery: query,
     });
-  }
-  return out;
+  });
+  return { items: out, unresolvedLinkCount };
 }
 
 async function fetchBrightDataNewsForQuery(
@@ -478,7 +536,12 @@ async function fetchBrightDataNewsForQuery(
     throw new Error(`Bright Data body JSON.parse failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  const items = flattenBrightDataNewsResults(parsedBody.news, q.queryClass, q.query);
+  const { items, unresolvedLinkCount } = await flattenBrightDataNewsResults(parsedBody.news, q.queryClass, q.query);
+  if (unresolvedLinkCount > 0) {
+    console.log(
+      `[topic-discovery] Stage 0: Bright Data "${q.query}" — ${unresolvedLinkCount} item(s) dropped (redirect link didn't resolve to an absolute URL)`
+    );
+  }
   console.log(`[topic-discovery] Stage 0: Bright Data "${q.query}" → ${items.length} result(s)`);
   return items;
 }
