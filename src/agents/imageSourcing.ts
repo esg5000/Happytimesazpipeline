@@ -28,8 +28,8 @@
  * gpt-image-1 FALLBACK: matches the old pipeline's real, confirmed
  * behavior (agents/imageAgent.ts's generateImage — POST
  * https://api.openai.com/v1/images/generations, model: 'gpt-image-1',
- * size: '1024x1024', n: 1, response is b64_json decoded to a Buffer; read
- * read-only for reference, not modified/imported). Fires only when the
+ * size: '1024x1024', quality: 'medium', n: 1, response is b64_json decoded
+ * to a Buffer; read-only for reference, not modified/imported). Fires only when the
  * Unsplash query ladder is genuinely exhausted with zero results across
  * every rung — a rate-limit/quota response or network error from
  * Unsplash still stops immediately without trying gpt-image-1, same as
@@ -470,7 +470,7 @@ function buildAiAltText(input: ImageSourcingInput): string {
   return `AI-generated editorial image related to ${subject}`;
 }
 
-/** Same endpoint/model/size/n/b64_json shape as agents/imageAgent.ts's generateImage — ported, not imported, per this file's standalone pattern. */
+/** Same endpoint/model/size/quality/n/b64_json shape as agents/imageAgent.ts's generateImage — ported, not imported, per this file's standalone pattern. */
 async function generateImageWithGptImage1(prompt: string): Promise<Buffer | null> {
   const key = config.openai.apiKey;
   if (!key) {
@@ -480,7 +480,7 @@ async function generateImageWithGptImage1(prompt: string): Promise<Buffer | null
   try {
     const res = await axios.post(
       OPENAI_IMAGES_URL,
-      { model: GPT_IMAGE_MODEL, prompt, size: '1024x1024', n: 1 },
+      { model: GPT_IMAGE_MODEL, prompt, size: '1024x1024', quality: 'medium', n: 1 },
       {
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
         timeout: 120_000,

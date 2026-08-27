@@ -59,6 +59,7 @@ export async function generateImage(prompt: string): Promise<Buffer | null> {
         model: 'gpt-image-1',
         prompt: prompt,
         size: '1024x1024',
+        quality: 'medium',
         n: 1,
       },
       {
