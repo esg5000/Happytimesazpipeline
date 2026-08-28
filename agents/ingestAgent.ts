@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { config } from '../config';
 import { validateTopic, Topic } from '../utils/validator';
+import { geminiChatJson, withGeminiFallback } from './geminiAgent';
 import {
   type ArticleLength,
   type ArticleTone,
@@ -45,26 +46,33 @@ export async function ingestToTopic(input: IngestInput): Promise<Topic> {
   }
   userParts.push(`NOTES:\n${input.notes}`);
 
-  const response = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model: config.openai.model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userParts.join('\n\n') },
-      ],
-      temperature: 0.6,
-      response_format: { type: 'json_object' },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${config.openai.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    }
-  );
+  const userContent = userParts.join('\n\n');
 
-  const content = response.data.choices[0].message.content;
+  const content = await withGeminiFallback(
+    'ingestAgent.ingestToTopic',
+    async () => {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model: config.openai.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
+          ],
+          temperature: 0.6,
+          response_format: { type: 'json_object' },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${config.openai.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      return response.data.choices[0].message.content as string;
+    },
+    () => geminiChatJson(systemPrompt, userContent, { temperature: 0.6 })
+  );
   let parsedContent: unknown;
 
   try {

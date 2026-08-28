@@ -3,6 +3,7 @@ import { config } from '../config';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { validateTopic, Topic } from '../utils/validator';
+import { geminiChatJson, withGeminiFallback } from './geminiAgent';
 import {
   type ArticleLength,
   type ArticleTone,
@@ -212,32 +213,37 @@ async function generateSingleTopic(
     userPrompt += `\n\nIMPORTANT: Avoid generating topics similar to these already generated topics:\n${existingTitles}\n\nEnsure your new topic is unique, different in angle, and ideally in a different section when possible.`;
   }
 
-  const response = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model: TOPIC_OPENAI_MODEL,
-      messages: [
+  const content = await withGeminiFallback(
+    'topicAgent.generateSingleTopic',
+    async () => {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
         {
-          role: 'system',
-          content: systemContent,
+          model: TOPIC_OPENAI_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: systemContent,
+            },
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+          temperature: 0.9, // Increased from 0.8 to 0.9 for more variety
+          response_format: { type: 'json_object' },
         },
         {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-      temperature: 0.9, // Increased from 0.8 to 0.9 for more variety
-      response_format: { type: 'json_object' },
+          headers: {
+            'Authorization': `Bearer ${config.openai.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      return response.data.choices[0].message.content as string;
     },
-    {
-      headers: {
-        'Authorization': `Bearer ${config.openai.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    }
+    () => geminiChatJson(systemContent, userPrompt, { temperature: 0.9 })
   );
-
-  const content = response.data.choices[0].message.content;
   let parsedContent: unknown;
 
   try {

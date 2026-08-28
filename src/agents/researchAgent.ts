@@ -10,6 +10,7 @@ import axios from 'axios';
 import { chromium } from 'playwright';
 
 import { config } from '../../config';
+import { geminiChatJson, withGeminiFallback } from '../../agents/geminiAgent';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 /** Cost-conscious model; web search is enabled only on research turns that need it. */
@@ -403,13 +404,20 @@ ${notes.slice(0, 12000)}
 ---`;
 
   const runExtract = async (): Promise<string | null> => {
-    const raw = await openaiResponses({
-      instructions,
-      input: user,
-      max_output_tokens: 600,
-      temperature: 0.2,
-    });
-    return extractOutputTextFromResponse(raw);
+    const text = await withGeminiFallback(
+      'researchAgent.extractSearchQueries',
+      async () => {
+        const raw = await openaiResponses({
+          instructions,
+          input: user,
+          max_output_tokens: 600,
+          temperature: 0.2,
+        });
+        return extractOutputTextFromResponse(raw);
+      },
+      () => geminiChatJson(instructions, user, { temperature: 0.2, maxOutputTokens: 600 })
+    );
+    return text || null;
   };
 
   let text = await runExtract();
@@ -572,14 +580,20 @@ Rules:
 - Prefer the shortest distinctive substring that contains the unsupported claim.
 - Do not repeat overlapping strings; longer substrings preferred over many tiny ones.`;
 
-  const raw = await openaiResponses({
-    instructions,
-    input: user,
-    max_output_tokens: 4096,
-    temperature: 0.1,
-  });
+  const text = await withGeminiFallback(
+    'researchAgent.factCheckArticleMarkdownAnthropic',
+    async () => {
+      const raw = await openaiResponses({
+        instructions,
+        input: user,
+        max_output_tokens: 4096,
+        temperature: 0.1,
+      });
+      return extractOutputTextFromResponse(raw);
+    },
+    () => geminiChatJson(instructions, user, { temperature: 0.1, maxOutputTokens: 4096 })
+  );
 
-  const text = extractOutputTextFromResponse(raw);
   const obj = tryParseJsonObject(text);
   const rawWarnings = obj?.warnings;
   if (!Array.isArray(rawWarnings) || rawWarnings.length === 0) return bodyMarkdown;

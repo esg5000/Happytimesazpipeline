@@ -9,7 +9,13 @@ export const config = {
   },
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
-    model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    /**
+     * 'gemini-2.5-flash' was the prior default but is now retired (HTTP 404 "no longer
+     * available to new users" — confirmed live 2026-08-27). 'gemini-3.6-flash' is Google's own
+     * suggested replacement and was empirically the most reliable of gemini-3.5/3.6/3.7-flash
+     * and 'gemini-flash-latest' when tested live that day.
+     */
+    model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
   },
   /** Unsplash — Dig & Write hero on `POST /api/command/researchAndWrite` only. */
   unsplash: {

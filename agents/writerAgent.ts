@@ -5,6 +5,7 @@ import { join } from 'path';
 import { validateArticle, Article } from '../utils/validator';
 import { Topic } from '../utils/validator';
 import { generateSlug } from '../utils/slug';
+import { geminiChatJson, withGeminiFallback } from './geminiAgent';
 import {
   type ArticleLength,
   type ArticleTone,
@@ -227,32 +228,37 @@ Generate a complete article following all guidelines${
   }.
 Remember: seoDescription must be at most 155 characters (count spaces).`;
 
-  const response = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model: WRITER_OPENAI_MODEL,
-      messages: [
+  const content = await withGeminiFallback(
+    'writerAgent.writeArticle',
+    async () => {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
         {
-          role: 'system',
-          content: systemPrompt,
+          model: WRITER_OPENAI_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt,
+            },
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+          temperature: 0.7,
+          response_format: { type: 'json_object' },
         },
         {
-          role: 'user',
-          content: userPrompt,
-        },
-      ],
-      temperature: 0.7,
-      response_format: { type: 'json_object' },
+          headers: {
+            'Authorization': `Bearer ${config.openai.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      return response.data.choices[0].message.content as string;
     },
-    {
-      headers: {
-        'Authorization': `Bearer ${config.openai.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    }
+    () => geminiChatJson(systemPrompt, userPrompt, { temperature: 0.7 })
   );
-
-  const content = response.data.choices[0].message.content;
   let parsedContent: unknown;
 
   try {
