@@ -26,6 +26,7 @@ import { join } from 'path';
 import axios from 'axios';
 
 import { config } from '../../config';
+import { geminiChatJson, withGeminiFallback } from '../../agents/geminiAgent';
 
 const STAGE5_PROMPT_PATH = join(process.cwd(), 'prompts', 'stage5Write.prompt.txt');
 const OPENAI_MODEL_STAGE5_WRITE = 'gpt-5.4-mini';
@@ -142,27 +143,34 @@ This story is fundamentally national/global, not a Valley-native event. Structur
 // ---------------------------------------------------------------------------
 
 async function openAiJson<T>(system: string, user: string, model: string): Promise<T> {
-  const response = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
-    {
-      model,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature: 0.3,
-      response_format: { type: 'json_object' },
+  const content = await withGeminiFallback(
+    'articleWriter.openAiJson',
+    async () => {
+      const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          temperature: 0.3,
+          response_format: { type: 'json_object' },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${config.openai.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+      const c = response.data.choices[0]?.message?.content;
+      if (!c) throw new Error('OpenAI returned empty content');
+      return c as string;
     },
-    {
-      headers: {
-        Authorization: `Bearer ${config.openai.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    }
+    () => geminiChatJson(system, user, { temperature: 0.3 })
   );
 
-  const content = response.data.choices[0]?.message?.content;
-  if (!content) throw new Error('OpenAI returned empty content');
   const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
   return JSON.parse(cleaned) as T;
 }

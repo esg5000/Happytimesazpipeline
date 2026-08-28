@@ -49,6 +49,7 @@ import { join } from 'path';
 
 import { config } from '../../config';
 import { getSanityClient } from '../../agents/sanityPublisher';
+import { geminiChatJson, withGeminiFallback } from '../../agents/geminiAgent';
 
 const SERPAPI_SEARCH = 'https://serpapi.com/search.json';
 const BRIGHTDATA_REQUEST_URL = 'https://api.brightdata.com/request';
@@ -1603,15 +1604,21 @@ TASK
 Return ONLY this JSON shape, no markdown fences, no prose before or after, and no "sources" field (you have no search access, so don't fabricate one):
 {"confidence":"high"|"low","verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","specificSubject":"<what actually happened, ~3-8 words, e.g. \"Ketel Marte casino sighting\">","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>"}`;
 
-  const raw = await openaiResponsesCall({
-    instructions,
-    input: user,
-    // Deliberately no `tools` — this is the entire point of the cheap pass.
-    max_output_tokens: 1024,
-    temperature: 0.2,
-  });
+  const text = await withGeminiFallback(
+    'topicDiscovery.runStage1QuickPassForCandidate',
+    async () => {
+      const raw = await openaiResponsesCall({
+        instructions,
+        input: user,
+        // Deliberately no `tools` — this is the entire point of the cheap pass.
+        max_output_tokens: 1024,
+        temperature: 0.2,
+      });
+      return extractOutputTextFromResponse(raw);
+    },
+    () => geminiChatJson(instructions, user, { temperature: 0.2, maxOutputTokens: 1024 })
+  );
 
-  const text = extractOutputTextFromResponse(raw);
   const obj = tryParseJsonObject(text);
   if (!obj) return null;
 

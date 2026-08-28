@@ -3,6 +3,7 @@ import { config } from '../config';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { VisualStyle } from '../utils/validator';
+import { generateImageGemini } from './geminiAgent';
 
 // Resolve prompt path - works in both dev and compiled dist
 const IMAGE_PROMPT_PATH = join(process.cwd(), 'prompts', 'image.prompt.txt');
@@ -71,15 +72,18 @@ export async function generateImage(prompt: string): Promise<Buffer | null> {
     );
 
     const b64 = response.data.data[0].b64_json;
-    if (typeof b64 !== 'string' || !b64) return null;
+    if (typeof b64 !== 'string' || !b64) {
+      console.warn('[imageAgent] gpt-image-1 returned no image data; trying Gemini fallback…');
+      return await generateImageGemini(prompt);
+    }
     return Buffer.from(b64, 'base64');
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn('[imageAgent] gpt-image-1 image generation failed; continuing without image:', msg);
+    console.warn('[imageAgent] gpt-image-1 image generation failed; trying Gemini fallback:', msg);
     if (err instanceof Error && err.stack) {
       console.warn('[imageAgent] stack:\n', err.stack);
     }
-    return null;
+    return await generateImageGemini(prompt);
   }
 }
 

@@ -64,6 +64,61 @@ export async function geminiChatJson(
 }
 
 /**
+ * Image-generation fallback for agents/imageAgent.ts's generateImage / src/agents/imageSourcing.ts's
+ * generateImageWithGptImage1. Uses 'gemini-3.1-flash-lite-image' — the flagship
+ * 'gemini-3.1-flash-image' timed out 5/5 in live testing (same capacity crunch as the flagship
+ * text models), while the lite variant got 12/15 (80%, all remaining failures were timeouts, not
+ * 503s — image generation is just slower/heavier than text, not capacity-shed). A longer timeout
+ * here reduces those spurious timeout failures. Returns null on any failure (never throws),
+ * matching generateImage's existing contract — callers already handle a null hero image.
+ */
+export async function generateImageGemini(prompt: string): Promise<Buffer | null> {
+  try {
+    const key = config.gemini.apiKey;
+    if (!key) return null;
+
+    const res = await axios.post(
+      GEMINI_GENERATE_CONTENT_URL('gemini-3.1-flash-lite-image'),
+      {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'] },
+      },
+      {
+        headers: {
+          'x-goog-api-key': key,
+          'Content-Type': 'application/json',
+        },
+        timeout: 90_000,
+        validateStatus: () => true,
+      }
+    );
+
+    if (res.status >= 400) {
+      const data = res.data;
+      const msg =
+        typeof data === 'object' && data && 'error' in (data as object)
+          ? JSON.stringify((data as { error?: unknown }).error)
+          : res.statusText || String(res.status);
+      console.warn(`[geminiAgent] generateImageGemini failed: HTTP ${res.status} — ${msg}`);
+      return null;
+    }
+
+    const parts = res.data?.candidates?.[0]?.content?.parts;
+    const imgPart = Array.isArray(parts) ? parts.find((p: any) => p?.inlineData?.data) : undefined;
+    const b64 = imgPart?.inlineData?.data;
+    if (typeof b64 !== 'string' || !b64) {
+      console.warn('[geminiAgent] generateImageGemini: no image data in response');
+      return null;
+    }
+    return Buffer.from(b64, 'base64');
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn('[geminiAgent] generateImageGemini threw:', msg);
+    return null;
+  }
+}
+
+/**
  * True for errors worth retrying on Gemini: network/timeout errors and HTTP 429/5xx. False for
  * other 4xx — those are real request bugs (bad prompt/schema), not transient outages, and
  * falling back would just mask them.

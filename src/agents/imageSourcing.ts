@@ -42,6 +42,7 @@
 import axios from 'axios';
 
 import { config } from '../../config';
+import { generateImageGemini } from '../../agents/geminiAgent';
 
 const UNSPLASH_SEARCH = 'https://api.unsplash.com/search/photos';
 const MAX_QUERY_TERMS = 5;
@@ -474,8 +475,8 @@ function buildAiAltText(input: ImageSourcingInput): string {
 async function generateImageWithGptImage1(prompt: string): Promise<Buffer | null> {
   const key = config.openai.apiKey;
   if (!key) {
-    console.warn('[image-sourcing] gpt-image-1 fallback skipped — OPENAI_API_KEY not set.');
-    return null;
+    console.warn('[image-sourcing] gpt-image-1 fallback skipped — OPENAI_API_KEY not set. Trying Gemini…');
+    return await generateImageGemini(prompt);
   }
   try {
     const res = await axios.post(
@@ -493,18 +494,18 @@ async function generateImageWithGptImage1(prompt: string): Promise<Buffer | null
         typeof data === 'object' && data && 'error' in (data as object)
           ? JSON.stringify((data as { error?: unknown }).error)
           : res.statusText || String(res.status);
-      console.warn(`[image-sourcing] gpt-image-1 call failed: HTTP ${res.status} — ${msg}`);
-      return null;
+      console.warn(`[image-sourcing] gpt-image-1 call failed: HTTP ${res.status} — ${msg}; trying Gemini…`);
+      return await generateImageGemini(prompt);
     }
     const b64 = res.data?.data?.[0]?.b64_json;
     if (typeof b64 !== 'string' || !b64) {
-      console.warn('[image-sourcing] gpt-image-1 response had no usable b64_json.');
-      return null;
+      console.warn('[image-sourcing] gpt-image-1 response had no usable b64_json; trying Gemini…');
+      return await generateImageGemini(prompt);
     }
     return Buffer.from(b64, 'base64');
   } catch (err: unknown) {
-    console.warn('[image-sourcing] gpt-image-1 call threw:', err instanceof Error ? err.message : String(err));
-    return null;
+    console.warn('[image-sourcing] gpt-image-1 call threw:', err instanceof Error ? err.message : String(err), '; trying Gemini…');
+    return await generateImageGemini(prompt);
   }
 }
 
