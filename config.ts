@@ -10,12 +10,18 @@ export const config = {
   gemini: {
     apiKey: process.env.GEMINI_API_KEY || '',
     /**
-     * 'gemini-2.5-flash' was the prior default but is now retired (HTTP 404 "no longer
-     * available to new users" — confirmed live 2026-08-27). 'gemini-3.6-flash' is Google's own
-     * suggested replacement and was empirically the most reliable of gemini-3.5/3.6/3.7-flash
-     * and 'gemini-flash-latest' when tested live that day.
+     * 'gemini-2.5-flash' was the original default but is retired (HTTP 404 "no longer available
+     * to new users" — confirmed live 2026-08-27). The flagship 3.x flash/pro line
+     * (gemini-3.5/3.6/3.7-flash, gemini-pro-latest, gemini-3.1-pro-preview) all showed real,
+     * live 503 "high demand" capacity shedding that day (roughly 25-75% failure rate across
+     * dozens of live attempts) — every response carried `x-gemini-service-tier: standard`
+     * regardless of model, consistent with those being the highest-traffic, most
+     * capacity-constrained models available to this account right now.
+     * 'gemini-3.1-flash-lite' tested 21/21 (100%) successful across two separate live runs
+     * that same day — a smaller/cheaper model with evidently far more headroom. Use it as the
+     * default until the flagship line's capacity crunch resolves; re-test the others later.
      */
-    model: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+    model: process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
   },
   /** Unsplash — Dig & Write hero on `POST /api/command/researchAndWrite` only. */
   unsplash: {
