@@ -301,7 +301,7 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
   const title = typeof doc.title === 'string' ? doc.title : '(untitled)';
 
   try {
-    const { getSanityClient, getExistingSlugs, markdownToPortableText, uploadImageBufferToSanity } = await import(
+    const { getSanityClient, getExistingSlugs, markdownToPortableText, uploadImageBufferToSanity, autoFeatureIfStale } = await import(
       '../../agents/sanityPublisher'
     );
     const { ensureUniqueSlug } = await import('../../utils/slug');
@@ -382,6 +382,7 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
 
     const result = await client.create(realDoc as Parameters<typeof client.create>[0]);
     console.log(`[publish-assembly] REAL WRITE — "${title}" → published, _id=${result._id}, slug=${uniqueSlug}`);
+    await autoFeatureIfStale(client, result._id as string, { logLabel: 'pipeline-v2' });
     return { status: 'published', id: result._id as string, slug: uniqueSlug };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

@@ -50,8 +50,12 @@ function isFeaturedOlderThanHours(featuredAt: string | null | undefined, hours: 
 /**
  * If there is no currently featured post (or it's older than 4 hours), feature `newPostId`
  * and un-feature the previously featured post (if any).
+ *
+ * This is the single shared post-publish hook — every real publish path (writer,
+ * Google News, pipeline_v2) must call this after creating a post document. Do not
+ * reimplement this logic elsewhere; import and call this function instead.
  */
-async function autoFeatureIfStale(
+export async function autoFeatureIfStale(
   sanityClient: SanityClient,
   newPostId: string,
   opts?: { hours?: number; logLabel?: string }
