@@ -375,6 +375,7 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
       disclaimer: doc.disclaimer,
       ...(heroImage ? { heroImage } : {}),
       contentSource: doc.contentSource,
+      ...(typeof doc.originalSourceUrl === 'string' ? { originalSourceUrl: doc.originalSourceUrl } : {}),
       isActive: true,
       status: 'published',
       publishedAt: new Date().toISOString(),
