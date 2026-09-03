@@ -1529,6 +1529,35 @@ function parseStage1Fields(obj: Record<string, unknown>): Stage1ParsedFields {
  * Single OpenAI Responses API call with the hosted `web_search` tool — the
  * expensive, evidence-backed pass. Only reached for candidates the cheap
  * quick pass (below) didn't resolve with high confidence.
+ *
+ * Gemini fallback (added 2026-09-03): previously this call site had NO
+ * fallback at all — the 2026-08-27 Batch 2 pass deliberately excluded it
+ * ("the tool-augmented full pass stays excluded per the documented prior
+ * 503 incident", see 2026-08-15's 3c947cc, from when Gemini itself was the
+ * *primary* Stage 1 provider and its own search-grounded calls hit a real
+ * Google-side capacity issue). That's a different failure shape than what's
+ * wired in here: geminiChatJson below uses NO search/grounding tool at
+ * all — it's the same plain-generation primitive the no-search quick pass
+ * already uses successfully as its fallback — so it doesn't reintroduce
+ * that specific tool-augmented reliability problem.
+ *
+ * Confirmed root cause (2026-09-02/03 investigation): this call site's
+ * total lack of fallback meant that whenever OpenAI was down and the quick
+ * pass fell through here (quick pass resolved via Gemini but only at "low
+ * confidence" — a low-confidence result always falls through to this full
+ * pass, see runStage1Batched), the candidate hit the same OpenAI outage
+ * with nothing to fall back to and was dropped outright as a stage1-error,
+ * even though isFallbackWorthyError already correctly recognizes 429/5xx
+ * (including OpenAI's credit_balance_exhausted, which is served as HTTP
+ * 429) as fallback-worthy — the gap was purely "this site was never
+ * wrapped in withGeminiFallback," not a gap in what errors are recognized.
+ *
+ * Gemini has no equivalent hosted search tool here, so on the fallback
+ * path the model judges from title/snippet only — the same information
+ * the quick pass already has. `sources` is therefore force-emptied
+ * whenever the Gemini path actually ran (see fellBackToGemini below) so a
+ * no-search verdict can never carry a fabricated citation — same
+ * discipline the no-search quick pass already applies to its own output.
  */
 async function runStage1VerdictForCandidate(item: RawNewsItem): Promise<Stage1VerdictResult> {
   const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
@@ -1544,21 +1573,33 @@ TASK
 Return ONLY this JSON shape, no markdown fences, no prose before or after:
 {"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","specificSubject":"<what actually happened, ~3-8 words, e.g. \"Ketel Marte casino sighting\">","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
 
-  const raw = await openaiResponsesCall({
-    instructions,
-    input: user,
-    tools: [{ type: 'web_search' }],
-    max_output_tokens: 8192,
-    temperature: 0.3,
-  });
+  let fellBackToGemini = false;
+  const text = await withGeminiFallback(
+    'topicDiscovery.runStage1VerdictForCandidate',
+    async () => {
+      const raw = await openaiResponsesCall({
+        instructions,
+        input: user,
+        tools: [{ type: 'web_search' }],
+        max_output_tokens: 8192,
+        temperature: 0.3,
+      });
+      return extractOutputTextFromResponse(raw);
+    },
+    () => {
+      fellBackToGemini = true;
+      return geminiChatJson(instructions, user, { temperature: 0.3, maxOutputTokens: 8192 });
+    }
+  );
 
-  const text = extractOutputTextFromResponse(raw);
   const obj = tryParseJsonObject(text);
   if (!obj) throw new Error('Stage 1: model did not return parseable JSON');
 
   const parsed = parseStage1Fields(obj);
 
-  const rawSources = Array.isArray(obj.sources) ? obj.sources : [];
+  // See doc comment above — the Gemini fallback path has no search tool,
+  // so any "sources" it returned would be fabricated, not evidence.
+  const rawSources = fellBackToGemini ? [] : Array.isArray(obj.sources) ? obj.sources : [];
   const sources = mergeSearchSummariesByUrl(
     rawSources
       .map((r) => normalizeSearchSummaryRow(r))
