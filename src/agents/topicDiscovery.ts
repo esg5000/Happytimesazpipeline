@@ -664,6 +664,43 @@ function isLowValueScheduleStub(item: RawNewsItem): boolean {
   }
 }
 
+/**
+ * Gannett (azcentral.com) and TEGNA (12news.com) both run their local-TV/
+ * newspaper "things to do" events listings through the same third-party
+ * events-widget platform (confirmed by both sharing the distinctive
+ * `_evDiscoveryPath=/event/...` query param) — a client-side-rendered
+ * widget with essentially no server-rendered content. Confirmed via live
+ * investigation (2026-09-02/03): two real health-wellness-az candidates
+ * that resolved to these exact paths both failed Stage 3 extraction even
+ * after a full 45s Playwright wait — azcentral yielded 772 chars, 12news
+ * only 324, both well under the 800-char Stage 3 sufficiency floor — and
+ * both had already appeared repeatedly in prior lifestyle-az/health-
+ * wellness-az diagnostic pulls, so this is a structural, recurring
+ * pattern, not a one-off page. Scoped to this specific path prefix, NOT
+ * the whole domain — azcentral.com/12news.com regular articles
+ * (/story/..., /article/..., /picture-gallery/...) are real, frequently-
+ * published sources for News/Sports/Food and are completely unaffected.
+ * Checked here (path, not just hostname) rather than folded into
+ * LOW_VALUE_STUB_DOMAINS above, which only ever does a hostname match.
+ */
+const LOW_VALUE_EVENT_WIDGET_PATH_PREFIXES: Record<string, string[]> = {
+  'www.azcentral.com': ['/things-to-do/events'],
+  'azcentral.com': ['/things-to-do/events'],
+  'www.12news.com': ['/events-calendar'],
+  '12news.com': ['/events-calendar'],
+};
+
+function isLowValueEventWidgetPage(item: RawNewsItem): boolean {
+  try {
+    const url = new URL(item.link);
+    const prefixes = LOW_VALUE_EVENT_WIDGET_PATH_PREFIXES[url.hostname.toLowerCase()];
+    if (!prefixes) return false;
+    return prefixes.some((p) => url.pathname.toLowerCase().startsWith(p));
+  } catch {
+    return false;
+  }
+}
+
 /** Unique by link (exact), then by normalized title (case/whitespace-insensitive) to catch wire-copy dupes under different URLs. */
 function dedupeStage0Pool(items: RawNewsItem[]): RawNewsItem[] {
   const seenLinks = new Set<string>();
@@ -1052,15 +1089,20 @@ export async function runStage0Discovery(): Promise<{
     }
   }
 
-  // Low-value auto-generated stub sources are dropped before dedupe — they
-  // shouldn't consume a dedupe "slot" (near-identical stub pairs sorting into
-  // the same cluster) any more than they should consume a cap slot. Logged
-  // distinctly so a future investigation can see exactly how many were cut.
-  const all = rawAll.filter((it) => !isLowValueScheduleStub(it));
+  // Low-value auto-generated stub sources AND known-unscrapeable events-
+  // widget pages are dropped before dedupe — they shouldn't consume a
+  // dedupe "slot" (near-identical pairs sorting into the same cluster) any
+  // more than they should consume a cap/reserved-quota slot. Cutting these
+  // here (Stage 0, before the reserved-quota fill) rather than at Stage 3
+  // means a doomed candidate never occupies one of health-wellness-az's
+  // only 4 reserved slots in the first place — a different, real candidate
+  // fills it instead. Logged distinctly so a future investigation can see
+  // exactly how many were cut and why.
+  const all = rawAll.filter((it) => !isLowValueScheduleStub(it) && !isLowValueEventWidgetPage(it));
   const lowValueStubExcludedCount = rawAll.length - all.length;
   if (lowValueStubExcludedCount > 0) {
     console.log(
-      `[topic-discovery] Excluded ${lowValueStubExcludedCount} low-value auto-generated schedule-stub item(s) (domain match: ${[...LOW_VALUE_STUB_DOMAINS].join(', ')}) before dedupe.`
+      `[topic-discovery] Excluded ${lowValueStubExcludedCount} low-value item(s) before dedupe — schedule-stub domain match: ${[...LOW_VALUE_STUB_DOMAINS].join(', ')}; events-widget path match: ${Object.entries(LOW_VALUE_EVENT_WIDGET_PATH_PREFIXES).map(([h, ps]) => `${h}${ps.join('|')}`).join(', ')}.`
     );
   }
 
