@@ -420,6 +420,69 @@ export type ImageSourcingOutcome =
   | { status: 'error'; query: string; message: string };
 
 // ---------------------------------------------------------------------------
+// Duplicate-image avoidance (added 2026-09-05)
+//
+// Confirmed root cause: sourceImage() ran per-article with no memory of
+// what any other article — same run or otherwise — had already used, so
+// three separate Diamondbacks/Phillies articles published in the same run
+// (near-identical entity/tags/section → near-identical query ladder →
+// Unsplash's deterministic ranking) all landed on the exact same photo.
+//
+// Scope decision: an in-memory, module-level, run-process-lifetime window
+// of the last RECENT_UNSPLASH_PHOTO_WINDOW Unsplash photo IDs actually
+// used — NOT a Sanity-backed cross-run lookup. Investigated and rejected:
+// publishAssembly.ts's real-write path (publishAssembledDocument) never
+// persists ImageSourcingResult.photoId or imageUrl onto the live Sanity
+// document — only the final uploaded heroImage.asset._ref survives, an
+// opaque Sanity asset id with no traceable link back to which Unsplash
+// photo produced it. Querying Sanity for "recently used images" would
+// therefore have nothing to compare a not-yet-uploaded candidate's
+// Unsplash photo.id against; building that link would mean adding a new
+// persisted field in publishAssembly.ts/schemas/post.ts, which is a
+// write-path change outside sourceImage()'s scope. The confirmed real
+// incident (all 3 duplicate posts) happened within a single
+// orchestratorV2AndPublish() run, calling sourceImage() sequentially in
+// the same Node process — an in-memory Set populated as each article's
+// image is chosen catches exactly that case with zero new dependencies.
+// Capped (not unbounded) so a long-lived server process doesn't grow this
+// forever; sized well past a single run's article count so same-day reuse
+// across separate cron ticks is also caught for as long as the process
+// stays up.
+const RECENT_UNSPLASH_PHOTO_WINDOW = 150;
+
+const recentlyUsedUnsplashPhotoIds: string[] = [];
+const recentlyUsedUnsplashPhotoIdSet = new Set<string>();
+
+function isRecentlyUsedUnsplashPhoto(photoId: string | undefined): boolean {
+  return !!photoId && recentlyUsedUnsplashPhotoIdSet.has(photoId);
+}
+
+function markUnsplashPhotoUsed(photoId: string | undefined): void {
+  if (!photoId || recentlyUsedUnsplashPhotoIdSet.has(photoId)) return;
+  recentlyUsedUnsplashPhotoIds.push(photoId);
+  recentlyUsedUnsplashPhotoIdSet.add(photoId);
+  if (recentlyUsedUnsplashPhotoIds.length > RECENT_UNSPLASH_PHOTO_WINDOW) {
+    const evicted = recentlyUsedUnsplashPhotoIds.shift();
+    if (evicted) recentlyUsedUnsplashPhotoIdSet.delete(evicted);
+  }
+}
+
+/**
+ * Additional filter layered on top of pickRelevantHighestResolutionPhoto —
+ * does not replace or alter its relevance/resolution logic at all. Removing
+ * already-used photos from a rung's result pool BEFORE that function ever
+ * sees them means: (a) a duplicate never wins even if it would otherwise be
+ * the most relevant/highest-resolution pick, (b) a different, still-usable
+ * result in the same rung can win in its place, and (c) a rung whose only
+ * usable results are all duplicates naturally falls through to "no results,
+ * trying next rung" — the exact same existing control flow already used
+ * for a genuinely empty rung, no new branching required.
+ */
+function excludeRecentlyUsedPhotos(results: UnsplashPhotoRow[]): UnsplashPhotoRow[] {
+  return results.filter((p) => !isRecentlyUsedUnsplashPhoto(p.id));
+}
+
+// ---------------------------------------------------------------------------
 // Stage 7 entry point
 // ---------------------------------------------------------------------------
 
@@ -551,7 +614,20 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
       continue;
     }
 
-    const picked = pickRelevantHighestResolutionPhoto(attempt.results, candidate.query, candidate.requiredTerms);
+    const availableResults = excludeRecentlyUsedPhotos(attempt.results);
+    if (availableResults.length === 0) {
+      console.log(
+        `[image-sourcing] rung "${candidate.query}" → all ${attempt.results.length} result(s) already used recently (duplicate-avoidance), trying next rung if any`
+      );
+      continue;
+    }
+    if (availableResults.length < attempt.results.length) {
+      console.log(
+        `[image-sourcing] rung "${candidate.query}" → excluded ${attempt.results.length - availableResults.length} recently-used result(s) before relevance/resolution ranking`
+      );
+    }
+
+    const picked = pickRelevantHighestResolutionPhoto(availableResults, candidate.query, candidate.requiredTerms);
     if (!picked.photo?.urls) {
       console.log(`[image-sourcing] rung "${candidate.query}" → results had no usable photo URLs, trying next rung if any`);
       continue;
@@ -617,6 +693,12 @@ export async function sourceImage(input: ImageSourcingInput): Promise<ImageSourc
   }
 
   const imageUrl = photo.urls?.raw || photo.urls?.full || photo.urls?.regular || '';
+
+  // Committed to this Unsplash photo now (either path above lands here) —
+  // record it so the next sourceImage() call in this process excludes it,
+  // same duplicate-avoidance mechanism regardless of whether this was a
+  // clean relevance-filter match or the irrelevant last-resort pick.
+  markUnsplashPhotoUsed(photo.id);
 
   let downloadTriggerFired = false;
   const downloadLoc = photo.links?.download_location;
