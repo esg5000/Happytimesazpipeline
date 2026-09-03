@@ -2,23 +2,27 @@
  * Stage 3 — Source Gathering (pipeline-redesign-architecture.md).
  *
  * Generic shell: gatherSources(topic) dispatches to a category-specific
- * checker based on the topic's subjectTag/section, falling back to a
+ * checker based on the topic's subjectTag, falling back to a
  * general-purpose default checker (gatherDefaultSources) for anything
  * that doesn't match a more specific one. Event-shaped topics (subjectTag
- * hints, or section=nightlife) go through gatherEventSourcesTiered:
+ * hints only — a bare section=nightlife is NOT enough, see
+ * resolveCategoryForTopic's comment) go through gatherEventSourcesTiered:
  * Ticketmaster's Discovery API first (clean structured JSON straight from
  * the ticketing provider, no scraping), then whatsupeastvalley.com's East
  * Valley Events listing, then dtphx.org's events calendar (both static-HTML
  * listing pages, regex-parsed per card), falling back to the SerpAPI-based
- * gatherEventSources when none of the three has a confident match. The
- * default checker is Stage 3's primary path for everything else —
+ * gatherEventSources when none of the three has a confident match; if that
+ * whole chain still comes back with zero facts, gatherSources() itself
+ * retries the topic through the default checker rather than letting it die
+ * with nothing gathered (see gatherSources's doc comment). The default
+ * checker is Stage 3's primary path for everything else —
  * it fetches the real source article, preferring topic.link but falling
  * back through topic.searchSummaries URLs in order when topic.link
  * doesn't yield substantial content, and returns whichever succeeded as
  * a single long-form fact tagged with its real URL/outlet — rather than
  * the old "no checker implemented" stub. There is no more silent/
- * unhandled category: every topic gets either the events checker or the
- * default checker.
+ * unhandled category: every topic gets either the events checker (with a
+ * default-checker retry on a 0-fact result) or the default checker.
  *
  * STANDALONE. Does not import from or call newsApiSync.ts,
  * sanityPublisher.ts, editorAgent.ts, researchAgent.ts,
@@ -1350,10 +1354,27 @@ const EVENT_SUBJECT_TAG_HINTS = [
   'game', 'tournament', 'film festival',
 ];
 
+/**
+ * Was also: `if (topic.section === 'nightlife') return 'events';` — removed
+ * 2026-09-03. That blanket override sent EVERY nightlife-section topic
+ * through the events-listing-only checker chain (Ticketmaster/WUEV/dtphx/
+ * SerpAPI Events), regardless of subjectTag. Most lifestyle-az nightlife
+ * discovery is ordinary editorial content (venue features, bar/club
+ * openings, nightlife trend pieces) with no calendar-event listing anywhere
+ * to match — gatherEventSourcesTiered has no fallback of its own, so those
+ * topics got factCount=0 and were auto-skipped at Stage 4 every single run
+ * (confirmed: zero nightlife posts across 3 consecutive real pipeline_v2
+ * runs, Aug 31-Sept 2). subjectTag is the only heuristic left, matching
+ * every other section's behavior — a nightlife topic only routes to the
+ * events checker when it actually looks calendar/ticketed-event-shaped
+ * (subjectTag hints like "concert", "festival", "trivia", etc.). See also
+ * the gatherSources() fallback below, which now catches the remaining case
+ * (subjectTag says event-shaped, but none of the four event sources
+ * actually has it) instead of skipping outright.
+ */
 function resolveCategoryForTopic(topic: TopicInput): 'events' | 'default' {
   const tag = (topic.subjectTag || '').toLowerCase();
   if (tag && EVENT_SUBJECT_TAG_HINTS.some((h) => tag.includes(h))) return 'events';
-  if (topic.section === 'nightlife') return 'events';
   return 'default';
 }
 
@@ -1364,14 +1385,32 @@ const CATEGORY_CHECKERS: Record<'events' | 'default', CategoryChecker> = {
 
 /**
  * Generic Stage 3 entry point. Dispatches to a category-specific checker
- * based on the topic's subjectTag (preferred — more precise than section,
- * since Stage 0-2's section enum has no "events" value) or section as a
- * fallback; anything that isn't event-shaped goes to the general-purpose
+ * based on the topic's subjectTag — the only signal that a topic looks
+ * calendar/ticketed-event-shaped, since Stage 0-2's section enum has no
+ * "events" value and section alone says nothing about whether a listing
+ * exists; anything that isn't event-shaped goes to the general-purpose
  * default checker. No topic falls through to an unhandled/silent path.
+ *
+ * Fallback (added 2026-09-03 alongside the nightlife routing fix): the
+ * events checker (Ticketmaster/WUEV/dtphx/SerpAPI Events) only has
+ * anything to return for topics that are literal calendar-event listings;
+ * a subjectTag can look event-shaped ("trivia", "market", "show", ...)
+ * without ever matching one of those four sources, and the events checker
+ * itself has no further fallback — it just returns factCount=0. Retrying
+ * through the default checker (real article-page fetch) here, rather than
+ * letting that 0 flow straight to Stage 4's skip decision, gives every
+ * event-shaped topic the same real chance every other topic gets.
  */
 export async function gatherSources(topic: TopicInput): Promise<SourceGatheringResult> {
   const category = resolveCategoryForTopic(topic);
-  return CATEGORY_CHECKERS[category](topic);
+  const result = await CATEGORY_CHECKERS[category](topic);
+  if (category === 'events' && result.factCount === 0) {
+    console.log(
+      `[source-gathering] events checker found no usable match for "${topic.title}" (${result.checkerNote || 'no reason given'}) — retrying via default checker before giving up.`
+    );
+    return gatherDefaultSources(topic);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
