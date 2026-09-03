@@ -482,6 +482,22 @@ function excludeRecentlyUsedPhotos(results: UnsplashPhotoRow[]): UnsplashPhotoRo
   return results.filter((p) => !isRecentlyUsedUnsplashPhoto(p.id));
 }
 
+/**
+ * Pre-populates the recently-used window from an external list. Only real
+ * caller: scripts/fixDuplicateHeroImages.ts (the historical-duplicate
+ * one-time cleanup) — that script necessarily restarts this module's
+ * process on every Unsplash-rate-limit-forced retry (a single sourceImage()
+ * call chain can outlive one process, unlike the live pipeline's one-run-
+ * one-process model this window was originally sized for), so without this
+ * the in-memory window resets to empty on every restart and photos already
+ * assigned in an earlier retry cycle could be picked again. The live
+ * pipeline (orchestratorV2.ts) never calls this — its normal one-process-
+ * per-run behavior already relies solely on markUnsplashPhotoUsed above.
+ */
+export function seedRecentlyUsedUnsplashPhotoIds(photoIds: string[]): void {
+  for (const id of photoIds) markUnsplashPhotoUsed(id);
+}
+
 // ---------------------------------------------------------------------------
 // Stage 7 entry point
 // ---------------------------------------------------------------------------
