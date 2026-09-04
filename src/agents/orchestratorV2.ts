@@ -378,6 +378,87 @@ async function runTestHarness(): Promise<void> {
   console.log('\n[orchestrator-v2] ========== TEST HARNESS end ==========');
 }
 
+// ---------------------------------------------------------------------------
+// HUMAN-SELECTION PATH — discoverAndPersistTopics(). Fully additive: runs
+// Stage 0-2 (runTopicDiscoveryShadow(), UNCHANGED — same function
+// runOrchestratorV2() already calls) and persists discovery.kept to Sanity
+// as topicCandidate documents for a human to review/select, INSTEAD OF
+// looping into runTopicThroughPipeline(). Does not call
+// runTopicThroughPipeline, runOrchestratorV2, or runOrchestratorV2AndPublish
+// at all — a parallel path alongside the existing automatic syncNewsV2
+// flow, not a replacement for it. Nothing above this point is modified.
+// ---------------------------------------------------------------------------
+
+export type DiscoverAndPersistTopicsResult = {
+  keptCount: number;
+  skippedCount: number;
+  persistedCount: number;
+  persistedIds: string[];
+  wallClockMs: number;
+};
+
+/**
+ * Maps one TopicDiscoveryResult to a topicCandidate document body (no
+ * write). discoveredAt is stamped at persistence time (topicDiscovery.ts's
+ * own publishedDate is a different, optional field — when the source
+ * article was published, not when this pipeline discovered it — and per
+ * schemas/topicCandidate.ts's header comment is deliberately not carried
+ * onto this document).
+ */
+function toTopicCandidateDoc(topic: TopicDiscoveryResult, discoveredAt: string): Record<string, unknown> {
+  return {
+    _type: 'topicCandidate',
+    title: topic.title,
+    sourceUrl: topic.link,
+    snippet: topic.snippet,
+    discoveredAt,
+    section: topic.section,
+    verdict: topic.verdict,
+    relevanceScore: topic.relevanceScore,
+    subjectTag: topic.subjectTag,
+    specificSubject: topic.specificSubject,
+    status: 'pending',
+  };
+}
+
+export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopicsResult> {
+  const startedAt = Date.now();
+  console.log('[orchestrator-v2] ========== discoverAndPersistTopics start ==========');
+
+  const discovery = await runTopicDiscoveryShadow();
+  console.log(
+    `[orchestrator-v2] Stage 0-2 done: kept=${discovery.kept.length}, skipped=${discovery.skipped.length} — persisting kept topics as topicCandidate docs (no Stage 3-8).`
+  );
+
+  const discoveredAt = new Date().toISOString();
+  const persistedIds: string[] = [];
+
+  if (discovery.kept.length > 0) {
+    const { getSanityClient } = await import('../../agents/sanityPublisher');
+    const client = getSanityClient();
+    const tx = client.transaction();
+    const docs = discovery.kept.map((topic) => {
+      const doc = toTopicCandidateDoc(topic, discoveredAt);
+      tx.create(doc as Parameters<typeof client.create>[0]);
+      return doc;
+    });
+    const txResult = await tx.commit();
+    for (const r of txResult.results ?? []) persistedIds.push(r.id);
+    console.log(`[orchestrator-v2] Persisted ${persistedIds.length} topicCandidate doc(s): ${docs.map((d) => `"${(d.title as string).slice(0, 60)}"`).join(', ')}`);
+  }
+
+  const wallClockMs = Date.now() - startedAt;
+  const result: DiscoverAndPersistTopicsResult = {
+    keptCount: discovery.kept.length,
+    skippedCount: discovery.skipped.length,
+    persistedCount: persistedIds.length,
+    persistedIds,
+    wallClockMs,
+  };
+  console.log(`[orchestrator-v2] ========== discoverAndPersistTopics end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
+  return result;
+}
+
 if (require.main === module) {
   runTestHarness().catch((err) => {
     console.error('[orchestrator-v2] Fatal:', safeErrorSummary(err));

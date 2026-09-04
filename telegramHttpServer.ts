@@ -3,7 +3,7 @@ import multer from 'multer';
 
 import { config } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
-import { runOrchestratorV2AndPublish } from './src/agents/orchestratorV2';
+import { runOrchestratorV2AndPublish, discoverAndPersistTopics } from './src/agents/orchestratorV2';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { syncDispensariesToSanity } from './agents/syncDispensaries';
 import { transcribeAudio } from './agents/transcribeAgent';
@@ -627,7 +627,8 @@ function registerDaemonApiRoutes(app: express.Application): void {
       | 'syncRestaurants'
       | 'syncNightlife'
       | 'runAuditor'
-      | 'generateEventsRoundup' =>
+      | 'generateEventsRoundup'
+      | 'discoverTopics' =>
       s === '/publish' ||
       s === 'runWriter' ||
       s === 'syncEvents' ||
@@ -637,11 +638,12 @@ function registerDaemonApiRoutes(app: express.Application): void {
       s === 'syncRestaurants' ||
       s === 'syncNightlife' ||
       s === 'runAuditor' ||
-      s === 'generateEventsRoundup';
+      s === 'generateEventsRoundup' ||
+      s === 'discoverTopics';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup | discoverTopics.',
       });
       return;
     }
@@ -889,6 +891,32 @@ function registerDaemonApiRoutes(app: express.Application): void {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command syncNightlife failed:', msg);
           appendActivityLog(`syncNightlife: failed — ${msg}`, 'syncNightlife');
+        }
+      })();
+      return;
+    }
+
+    if (command === 'discoverTopics') {
+      if (!config.serpApi.apiKey) {
+        res.status(503).json({
+          error: 'SERPAPI_API_KEY is not configured',
+        });
+        return;
+      }
+      console.log('[api] /api/command discoverTopics → discoverAndPersistTopics (Stage 0-2 only, persists topicCandidate docs for human review — does not write/publish posts)');
+      appendActivityLog('discoverTopics: started', 'discoverTopics');
+      res.json({ ok: true, status: 'started', command: 'discoverTopics', source: resolveApiClientSource(req) });
+      void (async () => {
+        try {
+          const result = await discoverAndPersistTopics();
+          appendActivityLog(
+            `discoverTopics: complete — kept=${result.keptCount}, skipped=${result.skippedCount}, persisted=${result.persistedCount}`,
+            'discoverTopics'
+          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command discoverTopics failed:', msg);
+          appendActivityLog(`discoverTopics: failed — ${msg}`, 'discoverTopics');
         }
       })();
       return;
