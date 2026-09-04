@@ -402,6 +402,8 @@ export type DiscoverAndPersistTopicsResult = {
   skippedCount: number;
   persistedCount: number;
   persistedIds: string[];
+  /** Pending topicCandidate docs that already existed (from an earlier run) before this run persisted its own. Not deduped against or blocked on — just surfaced so a stale batch doesn't go unnoticed. */
+  preExistingPendingCount: number;
   wallClockMs: number;
 };
 
@@ -441,9 +443,24 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
   const discoveredAt = new Date().toISOString();
   const persistedIds: string[] = [];
 
+  const { getSanityClient } = await import('../../agents/sanityPublisher');
+  const client = getSanityClient();
+
+  // discoverTopics does not dedupe or block against an existing pending
+  // batch — running it again just adds more 'pending' docs alongside
+  // whatever a previous run left unselected/unrejected, and the dashboard
+  // shows them all mixed together with no batch boundary. Not fixed here;
+  // this count is only surfaced (activity log / dashboard) so a stale
+  // batch doesn't go unnoticed. Use discardTopicCandidates to clear one
+  // out first if a clean slate is wanted.
+  const preExistingPendingCount = await client.fetch<number>(`count(*[_type == "topicCandidate" && status == "pending"])`);
+  if (preExistingPendingCount > 0) {
+    console.warn(
+      `[orchestrator-v2] discoverAndPersistTopics: ${preExistingPendingCount} pending topicCandidate doc(s) already existed from a prior run before this one persists its own — they will mix together in the dashboard's pending pool. Discard or process the old batch first for a clean slate.`
+    );
+  }
+
   if (discovery.kept.length > 0) {
-    const { getSanityClient } = await import('../../agents/sanityPublisher');
-    const client = getSanityClient();
     const tx = client.transaction();
     const docs = discovery.kept.map((topic) => {
       const doc = toTopicCandidateDoc(topic, discoveredAt);
@@ -461,10 +478,47 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
     skippedCount: discovery.skipped.length,
     persistedCount: persistedIds.length,
     persistedIds,
+    preExistingPendingCount,
     wallClockMs,
   };
   console.log(`[orchestrator-v2] ========== discoverAndPersistTopics end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// discardTopicCandidates() — bulk-rejects a batch of pending topicCandidate
+// docs without running them through persona/style selection or the
+// write/publish pipeline. Same status field processSelectedTopics() already
+// uses (status: 'rejected' is a pre-existing option on schemas/topicCandidate.ts),
+// just skipping straight there instead of via 'processed'. Mirrors
+// processSelectedTopics()'s patch-transaction pattern.
+// ---------------------------------------------------------------------------
+
+export type DiscardTopicCandidatesResult = {
+  discardedCount: number;
+  discardedIds: string[];
+};
+
+export async function discardTopicCandidates(candidateIds: string[]): Promise<DiscardTopicCandidatesResult> {
+  console.log(`[orchestrator-v2] discardTopicCandidates: discarding ${candidateIds.length} candidate(s)`);
+
+  const { getSanityClient } = await import('../../agents/sanityPublisher');
+  const client = getSanityClient();
+
+  const existingIds = await client.fetch<string[]>(`*[_type == "topicCandidate" && _id in $ids]._id`, { ids: candidateIds });
+  if (existingIds.length === 0) {
+    console.log('[orchestrator-v2] discardTopicCandidates: none of the requested ids exist — nothing to do.');
+    return { discardedCount: 0, discardedIds: [] };
+  }
+
+  const tx = client.transaction();
+  for (const id of existingIds) {
+    tx.patch(id, (p) => p.set({ status: 'rejected', processingNote: 'Discarded via dashboard "Discard All" — no pipeline run.' }));
+  }
+  await tx.commit();
+
+  console.log(`[orchestrator-v2] discardTopicCandidates: marked ${existingIds.length} topicCandidate doc(s) as status=rejected.`);
+  return { discardedCount: existingIds.length, discardedIds: existingIds };
 }
 
 // ---------------------------------------------------------------------------

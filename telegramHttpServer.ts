@@ -3,7 +3,7 @@ import multer from 'multer';
 
 import { config } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
-import { runOrchestratorV2AndPublish, discoverAndPersistTopics, processSelectedTopics } from './src/agents/orchestratorV2';
+import { runOrchestratorV2AndPublish, discoverAndPersistTopics, processSelectedTopics, discardTopicCandidates } from './src/agents/orchestratorV2';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { syncDispensariesToSanity } from './agents/syncDispensaries';
 import { transcribeAudio } from './agents/transcribeAgent';
@@ -629,7 +629,8 @@ function registerDaemonApiRoutes(app: express.Application): void {
       | 'runAuditor'
       | 'generateEventsRoundup'
       | 'discoverTopics'
-      | 'processSelectedTopics' =>
+      | 'processSelectedTopics'
+      | 'discardTopicCandidates' =>
       s === '/publish' ||
       s === 'runWriter' ||
       s === 'syncEvents' ||
@@ -641,11 +642,12 @@ function registerDaemonApiRoutes(app: express.Application): void {
       s === 'runAuditor' ||
       s === 'generateEventsRoundup' ||
       s === 'discoverTopics' ||
-      s === 'processSelectedTopics';
+      s === 'processSelectedTopics' ||
+      s === 'discardTopicCandidates';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup | discoverTopics | processSelectedTopics.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup | discoverTopics | processSelectedTopics | discardTopicCandidates.',
       });
       return;
     }
@@ -911,8 +913,11 @@ function registerDaemonApiRoutes(app: express.Application): void {
       void (async () => {
         try {
           const result = await discoverAndPersistTopics();
+          const staleBatchNote = result.preExistingPendingCount > 0
+            ? ` — NOTE: ${result.preExistingPendingCount} pending candidate(s) from an earlier run already existed before this run and are now mixed in with the new batch; use "Discard All" on the old ones first for a clean slate.`
+            : '';
           appendActivityLog(
-            `discoverTopics: complete — kept=${result.keptCount}, skipped=${result.skippedCount}, persisted=${result.persistedCount}`,
+            `discoverTopics: complete — kept=${result.keptCount}, skipped=${result.skippedCount}, persisted=${result.persistedCount}${staleBatchNote}`,
             'discoverTopics'
           );
         } catch (err: unknown) {
@@ -987,6 +992,29 @@ function registerDaemonApiRoutes(app: express.Application): void {
           appendActivityLog(`processSelectedTopics: failed — ${msg}`, 'processSelectedTopics');
         }
       })();
+      return;
+    }
+
+    if (command === 'discardTopicCandidates') {
+      const rawIds = req.body?.candidateIds;
+      const candidateIds = Array.isArray(rawIds) ? rawIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0) : [];
+      if (candidateIds.length === 0) {
+        res.status(400).json({
+          error: 'discardTopicCandidates requires a non-empty body.candidateIds array of topicCandidate document IDs.',
+        });
+        return;
+      }
+      console.log(`[api] /api/command discardTopicCandidates → discardTopicCandidates (${candidateIds.length} candidate(s); marks status=rejected, no pipeline run)`);
+      try {
+        const result = await discardTopicCandidates(candidateIds);
+        appendActivityLog(`discardTopicCandidates: discarded ${result.discardedCount}/${candidateIds.length} candidate(s)`, 'discardTopicCandidates');
+        res.json({ ok: true, ...result, source: resolveApiClientSource(req) });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[api] /api/command discardTopicCandidates failed:', msg);
+        appendActivityLog(`discardTopicCandidates: failed — ${msg}`, 'discardTopicCandidates');
+        res.status(500).json({ error: msg });
+      }
       return;
     }
 
