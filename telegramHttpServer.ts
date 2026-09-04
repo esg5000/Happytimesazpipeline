@@ -3,7 +3,7 @@ import multer from 'multer';
 
 import { config } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
-import { runOrchestratorV2AndPublish, discoverAndPersistTopics } from './src/agents/orchestratorV2';
+import { runOrchestratorV2AndPublish, discoverAndPersistTopics, processSelectedTopics } from './src/agents/orchestratorV2';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
 import { syncDispensariesToSanity } from './agents/syncDispensaries';
 import { transcribeAudio } from './agents/transcribeAgent';
@@ -628,7 +628,8 @@ function registerDaemonApiRoutes(app: express.Application): void {
       | 'syncNightlife'
       | 'runAuditor'
       | 'generateEventsRoundup'
-      | 'discoverTopics' =>
+      | 'discoverTopics'
+      | 'processSelectedTopics' =>
       s === '/publish' ||
       s === 'runWriter' ||
       s === 'syncEvents' ||
@@ -639,11 +640,12 @@ function registerDaemonApiRoutes(app: express.Application): void {
       s === 'syncNightlife' ||
       s === 'runAuditor' ||
       s === 'generateEventsRoundup' ||
-      s === 'discoverTopics';
+      s === 'discoverTopics' ||
+      s === 'processSelectedTopics';
     if (!isDaemonCommand(command)) {
       res.status(400).json({
         error:
-          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup | discoverTopics.',
+          'Use JSON or multipart: command, notes (or story/body/…), optional length/tone (only when dashboard: X-Client-Source: dashboard and/or body.source=dashboard). Commands: /publish | runWriter | syncEvents | syncNews | syncNewsV2 | syncDispensaries | syncRestaurants | syncNightlife | runAuditor | generateEventsRoundup | discoverTopics | processSelectedTopics.',
       });
       return;
     }
@@ -917,6 +919,34 @@ function registerDaemonApiRoutes(app: express.Application): void {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command discoverTopics failed:', msg);
           appendActivityLog(`discoverTopics: failed — ${msg}`, 'discoverTopics');
+        }
+      })();
+      return;
+    }
+
+    if (command === 'processSelectedTopics') {
+      const rawIds = req.body?.candidateIds;
+      const candidateIds = Array.isArray(rawIds) ? rawIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0) : [];
+      if (candidateIds.length === 0) {
+        res.status(400).json({
+          error: 'processSelectedTopics requires a non-empty body.candidateIds array of topicCandidate document IDs.',
+        });
+        return;
+      }
+      console.log(`[api] /api/command processSelectedTopics → processSelectedTopics (${candidateIds.length} candidate(s); real publish, same funnel as syncNewsV2)`);
+      appendActivityLog(`processSelectedTopics: started (${candidateIds.length} candidate(s))`, 'processSelectedTopics');
+      res.json({ ok: true, status: 'started', command: 'processSelectedTopics', source: resolveApiClientSource(req) });
+      void (async () => {
+        try {
+          const result = await processSelectedTopics(candidateIds);
+          appendActivityLog(
+            `processSelectedTopics: complete — processed=${result.processedCount}, published=${result.publishedCount}`,
+            'processSelectedTopics'
+          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error('[api] /api/command processSelectedTopics failed:', msg);
+          appendActivityLog(`processSelectedTopics: failed — ${msg}`, 'processSelectedTopics');
         }
       })();
       return;

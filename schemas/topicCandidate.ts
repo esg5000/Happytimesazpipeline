@@ -54,16 +54,38 @@ export default defineType({
       validation: (r) => r.required(),
     }),
     defineField({
+      name: 'processingNote',
+      title: 'Processing Result',
+      type: 'text',
+      rows: 3,
+      readOnly: true,
+      description: 'Set by processSelectedTopics() when status flips to "processed" — what actually happened to this pick (published with a real Sanity id/slug, or the real drop reason from whichever gate caught it). Never left blank on a processed doc, so this is visible in Studio without needing the API response or server logs.',
+    }),
+    defineField({
       name: 'selectedPersona',
       title: 'Selected Persona',
       type: 'string',
-      description: 'Set by the human reviewer at selection time — which writing persona to use when this candidate is later run through the write/publish pipeline.',
+      description: 'Set by the human reviewer at selection time — which writing persona to use when this candidate is later run through the write/publish pipeline. Values match src/agents/articleWriter.ts\'s ArticlePersona exactly (processSelectedTopics() reads this string directly) — update both together if the writer\'s persona set ever changes.',
+      options: {
+        list: [
+          { title: 'Fat Jimmy (food/nightlife)', value: 'fat-jimmy' },
+          { title: 'Sonny Blaze (cannabis)', value: 'sonny-blaze' },
+          { title: 'The Health Nut (health-wellness)', value: 'health-nut' },
+        ],
+      },
     }),
     defineField({
       name: 'selectedStyle',
       title: 'Selected Style',
       type: 'string',
-      description: 'Set by the human reviewer at selection time — which visual/prose style to use when this candidate is later run through the write/publish pipeline.',
+      description: 'Set by the human reviewer at selection time — which format/style to use when this candidate is later run through the write/publish pipeline. Values match src/agents/articleWriter.ts\'s ArticleStyle exactly (processSelectedTopics() reads this string directly) — update both together if the writer\'s style set ever changes.',
+      options: {
+        list: [
+          { title: 'Straight Recap', value: 'straight-recap' },
+          { title: 'Listicle', value: 'listicle' },
+          { title: 'Opinion', value: 'opinion' },
+        ],
+      },
     }),
   ],
   preview: {

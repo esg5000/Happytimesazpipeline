@@ -42,7 +42,7 @@
 import { runTopicDiscoveryShadow, type TopicDiscoveryResult, type Stage0Usage } from './topicDiscovery';
 import { gatherSources } from './sourceGathering';
 import { evaluateSufficiency } from './sufficiencyGate';
-import { writeArticle, type WrittenArticle } from './articleWriter';
+import { writeArticle, type WrittenArticle, type WriteArticleOptions, type ArticlePersona, type ArticleStyle } from './articleWriter';
 import { verifyArticle, type VerificationResult } from './verificationGate';
 import { sourceImage } from './imageSourcing';
 import { assemblePublishDocument, publishAssembledDocument, type AssemblyResult } from './publishAssembly';
@@ -125,7 +125,15 @@ async function runTopicThroughPipeline(
      * Stage 9 this run, checked (not just appended) before the push.
      */
     seenThisRun: SeenThisRunEntry[];
-  }
+  },
+  /**
+   * Undefined for every existing call site (runOrchestratorV2()'s own loop
+   * below never passes this) — writeArticle() then gets no options, exactly
+   * today's behavior. Only processSelectedTopics() (added below) passes a
+   * real value, threading a topicCandidate's selectedPersona/selectedStyle
+   * through to Stage 5.
+   */
+  writerOptions?: WriteArticleOptions
 ): Promise<void> {
   console.log(`\n[orchestrator-v2] === "${topic.title}" (verdict=${topic.verdict}, section=${topic.section}, tag=${topic.subjectTag}) ===`);
 
@@ -161,7 +169,7 @@ async function runTopicThroughPipeline(
   console.log(`[orchestrator-v2] Stage 4: decision=${sufficiency.decision}`);
 
   // --- STAGE 5: write ---
-  const article = await writeArticle(topic, sourcing, sufficiency);
+  const article = await writeArticle(topic, sourcing, sufficiency, writerOptions);
   if (!article) {
     const reason = 'Stage 5: writeArticle() returned null unexpectedly despite a non-skip Stage 4 decision.';
     console.warn(`[orchestrator-v2] DROP (Stage 5): ${reason}`);
@@ -457,6 +465,194 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
   };
   console.log(`[orchestrator-v2] ========== discoverAndPersistTopics end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// HUMAN-SELECTION PATH, part 2 — processSelectedTopics(). Takes topicCandidate
+// IDs a human has already selected (with selectedPersona/selectedStyle set),
+// reconstructs each as a TopicDiscoveryResult, and runs them through the
+// EXISTING runTopicThroughPipeline() (same Stage 9/3/4/6/7/8 as
+// runOrchestratorV2()'s own loop — only the new, optional writerOptions
+// 3rd parameter differs) plus the same real-publish step
+// runOrchestratorV2AndPublish() already uses. Fully additive — does not
+// call runOrchestratorV2/runOrchestratorV2AndPublish/discoverAndPersistTopics.
+// ---------------------------------------------------------------------------
+
+const ARTICLE_PERSONAS = new Set<ArticlePersona>(['fat-jimmy', 'sonny-blaze', 'health-nut']);
+const ARTICLE_STYLES = new Set<ArticleStyle>(['straight-recap', 'listicle', 'opinion']);
+
+function coercePersona(value: unknown): ArticlePersona | undefined {
+  return typeof value === 'string' && (ARTICLE_PERSONAS as Set<string>).has(value) ? (value as ArticlePersona) : undefined;
+}
+function coerceStyle(value: unknown): ArticleStyle | undefined {
+  return typeof value === 'string' && (ARTICLE_STYLES as Set<string>).has(value) ? (value as ArticleStyle) : undefined;
+}
+
+type TopicCandidateDoc = {
+  _id: string;
+  title: string;
+  sourceUrl: string;
+  snippet?: string;
+  section?: string;
+  verdict?: string;
+  relevanceScore?: number;
+  subjectTag?: string;
+  specificSubject?: string;
+  selectedPersona?: string;
+  selectedStyle?: string;
+};
+
+export type ProcessedTopicOutcome = {
+  candidateId: string;
+  title: string;
+  outcome: 'published' | 'dropped-dedupe' | 'dropped-sufficiency' | 'dropped-writing' | 'dropped-verification' | 'publish-failed';
+  /** Human-readable — the real drop reason from whichever stage caught it, or the sanityId/slug on success. Never silent. */
+  detail: string;
+};
+
+export type ProcessSelectedTopicsResult = {
+  processedCount: number;
+  publishedCount: number;
+  outcomes: ProcessedTopicOutcome[];
+  wallClockMs: number;
+};
+
+export async function processSelectedTopics(candidateIds: string[]): Promise<ProcessSelectedTopicsResult> {
+  const startedAt = Date.now();
+  console.log(`[orchestrator-v2] ========== processSelectedTopics start (${candidateIds.length} candidate(s)) ==========`);
+
+  const { getSanityClient } = await import('../../agents/sanityPublisher');
+  const client = getSanityClient();
+
+  const candidates = await client.fetch<TopicCandidateDoc[]>(
+    `*[_type == "topicCandidate" && _id in $ids]{ _id, title, sourceUrl, snippet, section, verdict, relevanceScore, subjectTag, specificSubject, selectedPersona, selectedStyle }`,
+    { ids: candidateIds }
+  );
+  console.log(`[orchestrator-v2] Fetched ${candidates.length}/${candidateIds.length} requested topicCandidate doc(s).`);
+
+  const droppedAtDedupe: DroppedTopic[] = [];
+  const droppedAtSufficiency: DroppedTopic[] = [];
+  const droppedAtWriting: DroppedTopic[] = [];
+  const droppedAtVerification: DroppedTopic[] = [];
+  const published: PublishedTopic[] = [];
+  // Shared across the WHOLE batch, per the earlier decision — topics
+  // selected together get cross-checked against each other, not just
+  // against Sanity's existing posts (same mechanism as
+  // runOrchestratorV2()'s own loop, see runTopicThroughPipeline's doc
+  // comment on seenThisRun).
+  const seenThisRun: SeenThisRunEntry[] = [];
+
+  for (const candidate of candidates) {
+    // Reconstructed from topicCandidate — sourceOutlet/publishedDate/
+    // searchSummaries were deliberately never persisted on that document
+    // (see schemas/topicCandidate.ts's header comment), so those three
+    // fields fall back to null/null/[]. Stage 9's date-based dedupe check
+    // and Stage 3's searchSummaries-based fallback URLs are unavailable
+    // for reconstructed topics as a result — topic.link (the real
+    // sourceUrl) is still Stage 3's primary candidate either way, so this
+    // is a minor degradation, not a break.
+    const topic: TopicDiscoveryResult = {
+      title: candidate.title,
+      snippet: candidate.snippet ?? '',
+      link: candidate.sourceUrl,
+      sourceOutlet: null,
+      publishedDate: null,
+      verdict: (candidate.verdict as TopicDiscoveryResult['verdict']) ?? 'direct-local',
+      section: (candidate.section as TopicDiscoveryResult['section']) ?? 'news',
+      relevanceScore: candidate.relevanceScore ?? 0,
+      subjectTag: candidate.subjectTag ?? '',
+      specificSubject: candidate.specificSubject ?? '',
+      searchSummaries: [],
+    };
+
+    const writerOptions: WriteArticleOptions = {
+      persona: coercePersona(candidate.selectedPersona),
+      style: coerceStyle(candidate.selectedStyle),
+    };
+    console.log(
+      `[orchestrator-v2] Reconstructed "${topic.title}" (candidateId=${candidate._id}) — persona=${writerOptions.persona ?? '(none)'}, style=${writerOptions.style ?? '(none)'}`
+    );
+
+    await runTopicThroughPipeline(
+      topic,
+      { droppedAtDedupe, droppedAtSufficiency, droppedAtWriting, droppedAtVerification, published, seenThisRun },
+      writerOptions
+    );
+  }
+
+  // --- Real publish — same publishAssembledDocument() path
+  // runOrchestratorV2AndPublish() already uses, reused here so selected
+  // topics actually land in Sanity, not just reach a dry-run publish-ready
+  // state. ---
+  const realPublishes: RealPublishRecord[] = [];
+  const realPublishFailures: RealPublishFailure[] = [];
+  for (const p of published) {
+    console.log(`[orchestrator-v2] REAL PUBLISH attempt: "${p.title}"`);
+    const outcome = await publishAssembledDocument({ publishReady: true, document: p.document });
+    if (outcome.status === 'published') {
+      realPublishes.push({ title: p.title, link: p.link, sanityId: outcome.id, slug: outcome.slug });
+      console.log(`[orchestrator-v2] REAL PUBLISH ok: "${p.title}" → _id=${outcome.id}, slug=${outcome.slug}`);
+    } else {
+      const message = outcome.status === 'error' ? outcome.message : outcome.reason;
+      realPublishFailures.push({ title: p.title, link: p.link, message });
+      console.error(`[orchestrator-v2] REAL PUBLISH FAILED: "${p.title}" → ${message}`);
+    }
+  }
+
+  // --- Record what actually happened to each pick, then mark every
+  // candidate status: 'processed' — matched back by sourceUrl/link, unique
+  // per candidate in a batch. ---
+  const outcomes: ProcessedTopicOutcome[] = [];
+  const patchTx = client.transaction();
+  for (const candidate of candidates) {
+    const realPub = realPublishes.find((r) => r.link === candidate.sourceUrl);
+    const realFail = realPublishFailures.find((r) => r.link === candidate.sourceUrl);
+    const dedupeHit = droppedAtDedupe.find((d) => d.link === candidate.sourceUrl);
+    const sufficiencyHit = droppedAtSufficiency.find((d) => d.link === candidate.sourceUrl);
+    const writingHit = droppedAtWriting.find((d) => d.link === candidate.sourceUrl);
+    const verificationHit = droppedAtVerification.find((d) => d.link === candidate.sourceUrl);
+
+    let outcome: ProcessedTopicOutcome;
+    if (realPub) {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'published', detail: `Published — sanityId=${realPub.sanityId}, slug=${realPub.slug}` };
+    } else if (realFail) {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: realFail.message };
+    } else if (dedupeHit) {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-dedupe', detail: dedupeHit.reason };
+    } else if (sufficiencyHit) {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-sufficiency', detail: sufficiencyHit.reason };
+    } else if (writingHit) {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-writing', detail: writingHit.reason };
+    } else if (verificationHit) {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-verification', detail: verificationHit.reason };
+    } else {
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: 'Unexpected — candidate did not land in any known outcome bucket.' };
+    }
+    outcomes.push(outcome);
+    patchTx.patch(candidate._id, (p) => p.set({ status: 'processed', processingNote: outcome.detail }));
+  }
+
+  const missingIds = candidateIds.filter((id) => !candidates.some((c) => c._id === id));
+  for (const id of missingIds) {
+    outcomes.push({ candidateId: id, title: '(not found)', outcome: 'publish-failed', detail: 'topicCandidate document not found — never processed.' });
+  }
+
+  if (candidates.length > 0) {
+    await patchTx.commit();
+    console.log(`[orchestrator-v2] Marked ${candidates.length} topicCandidate doc(s) as status=processed.`);
+  }
+
+  const wallClockMs = Date.now() - startedAt;
+  console.log(
+    `[orchestrator-v2] ========== processSelectedTopics end (${(wallClockMs / 1000).toFixed(1)}s) — published=${realPublishes.length}/${candidates.length} ==========`
+  );
+
+  return {
+    processedCount: candidates.length,
+    publishedCount: realPublishes.length,
+    outcomes,
+    wallClockMs,
+  };
 }
 
 if (require.main === module) {
