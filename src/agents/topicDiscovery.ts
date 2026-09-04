@@ -58,12 +58,20 @@ const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
 
 /**
  * After Stage 0 pool + dedupe, keep at most this many candidates (newest
- * first) before Stage 1. 24 = 4 (cannabis) + 4 (lifestyle) + 4 (sports) +
- * 4 (health-wellness) reserved slots + 8 general pool — raised from 20 to
- * 24 specifically to add the health-wellness reserve without shrinking the
- * general pool or any existing reserve (see HEALTH_WELLNESS_RESERVED_SLOTS).
+ * first) before Stage 1. 36 = 6 (cannabis) + 6 (lifestyle) + 6 (sports) +
+ * 6 (health-wellness) reserved slots + 12 general pool — raised from 24 to
+ * 36 (uniform 1.5x scale of every slot, ratio unchanged) on 2026-09-04 to
+ * lift kept-candidate yield from ~13-15/run toward ~20-22/run. Verified
+ * before raising that the cap itself, not Stage 1's ~56-63% pass rate, was
+ * the bottleneck: all 24 capped slots reliably filled and reached Stage 1
+ * every run across 3 real logged runs, and raw per-category supply was
+ * nowhere near exhausted (55-97 candidates/category before reserve-capping,
+ * 400+ in the general near-deduped pool) — so more raw input predictably
+ * yields proportionally more kept candidates. See STAGE1_CANDIDATE_CAP raise
+ * history: 20→24 added HEALTH_WELLNESS_RESERVED_SLOTS; this raise keeps
+ * every existing reserve's ratio to the general pool unchanged.
  */
-export const STAGE1_CANDIDATE_CAP = 24;
+export const STAGE1_CANDIDATE_CAP = 36;
 /** Stage 1 in-flight concurrency — batches, not one Promise.all across the whole capped list. */
 const STAGE1_BATCH_SIZE = 4;
 /**
@@ -73,9 +81,10 @@ const STAGE1_BATCH_SIZE = 4;
  * same-day breaking local/national news, which it was confirmed to lose
  * entirely on high-news-volume days despite healthy raw volume. Backfilled
  * from the general combined pool if cannabis-az has fewer than this many
- * candidates (see runStage0Discovery).
+ * candidates (see runStage0Discovery). Raised 4→6 on 2026-09-04 alongside
+ * STAGE1_CANDIDATE_CAP's 24→36 raise (uniform 1.5x scale, ratio unchanged).
  */
-const CANNABIS_RESERVED_SLOTS = 4;
+const CANNABIS_RESERVED_SLOTS = 6;
 /**
  * Same mechanism as CANNABIS_RESERVED_SLOTS, mirrored exactly for
  * lifestyle-az (food/nightlife/events discovery) — confirmed the same
@@ -84,9 +93,10 @@ const CANNABIS_RESERVED_SLOTS = 4;
  * pure combined recency, the same symptom that justified the cannabis
  * reserve originally. Filled by recency WITHIN lifestyle-az only,
  * backfilled from the general pool if under-filled (see
- * runStage0Discovery).
+ * runStage0Discovery). Raised 4→6 on 2026-09-04 alongside
+ * STAGE1_CANDIDATE_CAP's 24→36 raise (uniform 1.5x scale, ratio unchanged).
  */
-const LIFESTYLE_RESERVED_SLOTS = 4;
+const LIFESTYLE_RESERVED_SLOTS = 6;
 /**
  * Same mechanism again, mirrored exactly for sports-az (Cardinals/Suns/
  * Diamondbacks/ASU/real game coverage) — added after an investigation
@@ -101,9 +111,11 @@ const LIFESTYLE_RESERVED_SLOTS = 4;
  * coverage doesn't *also* have to win a bare combined-recency race against
  * same-day breaking local/national news, same justification as the other
  * two reserves. Filled by recency WITHIN sports-az only, backfilled from
- * the general pool if under-filled (see runStage0Discovery).
+ * the general pool if under-filled (see runStage0Discovery). Raised 4→6
+ * on 2026-09-04 alongside STAGE1_CANDIDATE_CAP's 24→36 raise (uniform
+ * 1.5x scale, ratio unchanged).
  */
-const SPORTS_RESERVED_SLOTS = 4;
+const SPORTS_RESERVED_SLOTS = 6;
 /**
  * Same mechanism again, mirrored exactly for health-wellness-az —
  * investigation (2026-08-20) found zero health-wellness-section topics
@@ -115,9 +127,10 @@ const SPORTS_RESERVED_SLOTS = 4;
  * WITHIN health-wellness-az only, backfilled from the general pool if
  * under-filled (see runStage0Discovery). STAGE1_CANDIDATE_CAP raised
  * 20→24 alongside this so the general pool and the other three reserves
- * stay exactly the same size.
+ * stay exactly the same size. Raised again 4→6 on 2026-09-04 alongside
+ * STAGE1_CANDIDATE_CAP's 24→36 raise (uniform 1.5x scale, ratio unchanged).
  */
-const HEALTH_WELLNESS_RESERVED_SLOTS = 4;
+const HEALTH_WELLNESS_RESERVED_SLOTS = 6;
 
 const SHADOW_OUTPUT_DIR = join(
   process.env.TEMP || process.env.TMPDIR || '/tmp',
