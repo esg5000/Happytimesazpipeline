@@ -933,6 +933,44 @@ function registerDaemonApiRoutes(app: express.Application): void {
         });
         return;
       }
+      // Optional per-candidate persona/style picks from the dashboard's topic-selection
+      // UI, keyed by candidateId — e.g. { "<id>": { persona: "fat-jimmy", style: "listicle" } }.
+      // processSelectedTopics() itself only takes candidateIds and reads
+      // selectedPersona/selectedStyle off each topicCandidate doc (see
+      // src/agents/orchestratorV2.ts), so when selections are supplied here we patch
+      // them onto Sanity first — server-side, using the existing SANITY_API_TOKEN —
+      // rather than have the browser hold a Sanity write token.
+      const rawSelections = req.body?.selections;
+      const ARTICLE_PERSONAS = new Set(['fat-jimmy', 'sonny-blaze', 'health-nut']);
+      const ARTICLE_STYLES = new Set(['straight-recap', 'listicle', 'opinion']);
+      if (rawSelections && typeof rawSelections === 'object') {
+        const { getSanityClient } = await import('./agents/sanityPublisher');
+        const client = getSanityClient();
+        const tx = client.transaction();
+        let patchCount = 0;
+        for (const id of candidateIds) {
+          const sel = (rawSelections as Record<string, unknown>)[id];
+          if (!sel || typeof sel !== 'object') continue;
+          const persona = (sel as { persona?: unknown }).persona;
+          const style = (sel as { style?: unknown }).style;
+          const setFields: Record<string, string> = {};
+          const unsetFields: string[] = [];
+          if (typeof persona === 'string' && ARTICLE_PERSONAS.has(persona)) setFields.selectedPersona = persona;
+          else unsetFields.push('selectedPersona');
+          if (typeof style === 'string' && ARTICLE_STYLES.has(style)) setFields.selectedStyle = style;
+          else unsetFields.push('selectedStyle');
+          tx.patch(id, (p) => {
+            if (Object.keys(setFields).length > 0) p.set(setFields);
+            if (unsetFields.length > 0) p.unset(unsetFields);
+            return p;
+          });
+          patchCount++;
+        }
+        if (patchCount > 0) {
+          await tx.commit();
+          console.log(`[api] /api/command processSelectedTopics → patched selectedPersona/selectedStyle on ${patchCount} topicCandidate doc(s) from dashboard selections`);
+        }
+      }
       console.log(`[api] /api/command processSelectedTopics → processSelectedTopics (${candidateIds.length} candidate(s); real publish, same funnel as syncNewsV2)`);
       appendActivityLog(`processSelectedTopics: started (${candidateIds.length} candidate(s))`, 'processSelectedTopics');
       res.json({ ok: true, status: 'started', command: 'processSelectedTopics', source: resolveApiClientSource(req) });
