@@ -29,7 +29,61 @@ import { config } from '../../config';
 import { geminiChatJson, withGeminiFallback } from '../../agents/geminiAgent';
 
 const STAGE5_PROMPT_PATH = join(process.cwd(), 'prompts', 'stage5Write.prompt.txt');
+const PERSONALITY_PROMPT_DIR = join(process.cwd(), 'prompts', 'personalities');
+const STYLE_PROMPT_DIR = join(process.cwd(), 'prompts', 'styles');
 const OPENAI_MODEL_STAGE5_WRITE = 'gpt-5.4-mini';
+
+/**
+ * Ported from agents/writerAgent.ts's PERSONALITY_BY_SECTION mechanism —
+ * same prompt files (prompts/personalities/*.prompt.txt), same append shape.
+ * Deliberately NOT ported as an auto-select-by-section map: the legacy
+ * mechanism auto-assigned a persona from topic.section with no explicit
+ * choice (an `enablePersonality` flag). Here the caller passes `persona`
+ * explicitly — this is meant to serve a human's explicit per-topic choice
+ * (e.g. topicCandidate.selectedPersona from the human-selection path), not
+ * an automatic section-wide default. Undefined persona = no append, exactly
+ * today's output.
+ */
+export type ArticlePersona = 'fat-jimmy' | 'sonny-blaze' | 'health-nut';
+
+const PERSONA_PROMPT_FILES: Record<ArticlePersona, { file: string; displayName: string }> = {
+  'fat-jimmy': { file: 'fat-jimmy.prompt.txt', displayName: 'Fat Jimmy' },
+  'sonny-blaze': { file: 'sonny-blaze.prompt.txt', displayName: 'Sonny Blaze' },
+  'health-nut': { file: 'health-nut.prompt.txt', displayName: 'The Health Nut' },
+};
+
+/**
+ * Independent format/structure dimension alongside persona (voice) and the
+ * existing full-article/blurb length decision — e.g. 'listicle' + 'full-
+ * article' means a numbered-list structure at full length. Undefined style
+ * = no append, exactly today's output. straight-recap gets its own explicit
+ * prompt file rather than relying on "no style" to double as the recap
+ * shape — see prompts/styles/straight-recap.prompt.txt's own header
+ * comment for why.
+ */
+export type ArticleStyle = 'straight-recap' | 'listicle' | 'opinion';
+
+const STYLE_PROMPT_FILES: Record<ArticleStyle, string> = {
+  'straight-recap': 'straight-recap.prompt.txt',
+  listicle: 'listicle.prompt.txt',
+  opinion: 'opinion.prompt.txt',
+};
+
+export type WriteArticleOptions = {
+  persona?: ArticlePersona;
+  style?: ArticleStyle;
+};
+
+/** Loads a persona/style prompt file; '' if missing/unreadable — never throws, matches the base prompt's own read pattern. */
+function loadPromptFile(dir: string, filename: string, label: string): string {
+  try {
+    const content = readFileSync(join(dir, filename), 'utf-8').trim();
+    return content ? `\n\n---\n${content}\n` : '';
+  } catch (e) {
+    console.warn(`[article-writer] Failed to load ${label} prompt "${filename}": ${e instanceof Error ? e.message : e}`);
+    return '';
+  }
+}
 
 const TITLE_MAX = 99;
 const SEO_TITLE_MAX = 70;
@@ -116,6 +170,8 @@ export type WrittenArticle = {
   phantomSourceCount: number;
   /** The actual dropped sourceCredits entries, for debugging/visibility. */
   phantomSources: SourceCredit[];
+  /** Set only when a persona was passed to writeArticle() — the persona's display name. Undefined (not written to the post) for the default, no-persona path. */
+  author?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -224,7 +280,8 @@ function deriveOutletLabel(source: string, url: string): string {
 export async function writeArticle(
   topic: TopicInput,
   sourcingResult: SourceGatheringResult,
-  sufficiencyResult: SufficiencyResult
+  sufficiencyResult: SufficiencyResult,
+  options?: WriteArticleOptions
 ): Promise<WrittenArticle | null> {
   if (sufficiencyResult.decision === 'skip') {
     console.log(`[article-writer] decision=skip for "${topic.title}" — returning without calling OpenAI.`);
@@ -234,11 +291,19 @@ export async function writeArticle(
   const lengthBlock = sufficiencyResult.decision === 'full-article' ? FULL_LENGTH_BLOCK : BLURB_LENGTH_BLOCK;
   const needsReframe = topic.verdict === 'national-reframe' || topic.verdict === 'national-verify-local';
 
+  const persona = options?.persona ? PERSONA_PROMPT_FILES[options.persona] : undefined;
+  const personaAppend = persona ? loadPromptFile(PERSONALITY_PROMPT_DIR, persona.file, 'persona') : '';
+  const styleAppend = options?.style
+    ? loadPromptFile(STYLE_PROMPT_DIR, STYLE_PROMPT_FILES[options.style], 'style')
+    : '';
+
   const systemBase = readFileSync(STAGE5_PROMPT_PATH, 'utf-8');
   const system =
     systemBase +
     `\n\n--- LENGTH & STRUCTURE ---\n${lengthBlock}` +
-    (needsReframe ? `\n\n--- REFRAME ---\n${REFRAME_BLOCK}` : '');
+    (needsReframe ? `\n\n--- REFRAME ---\n${REFRAME_BLOCK}` : '') +
+    personaAppend +
+    styleAppend;
 
   const factLines = sourcingResult.facts.map(
     (f) => `- [${factId(f)}] ${f.field} = "${f.value}"${f.sourceUrl ? ` (${f.sourceUrl})` : ''}`
@@ -349,9 +414,10 @@ export async function writeArticle(
     phantomFacts: phantomFactsUsed,
     phantomSourceCount: phantomSources.length,
     phantomSources,
+    ...(persona ? { author: persona.displayName } : {}),
   };
 
-  console.log(`[article-writer] Done — title="${article.title}" (${article.title.length} chars), body=${article.bodyMarkdown.split(/\s+/).filter(Boolean).length} words`);
+  console.log(`[article-writer] Done — title="${article.title}" (${article.title.length} chars), body=${article.bodyMarkdown.split(/\s+/).filter(Boolean).length} words${persona ? `, author=${persona.displayName}` : ''}${options?.style ? `, style=${options.style}` : ''}`);
   return article;
 }
 

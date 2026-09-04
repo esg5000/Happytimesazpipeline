@@ -1,0 +1,5 @@
+Format: Listicle
+
+Structure bodyMarkdown as a numbered list of distinct, real points drawn from the facts provided — not a single flowing narrative. A short (1-2 sentence) intro paragraph before the list is fine to set up why this list matters to a Valley reader; a short outro after it is optional. Each numbered item needs a bolded lead-in (a short name, place, or takeaway) followed by 1-3 sentences of real, fact-grounded context — never a bare, unexplained line.
+
+Every item must still trace to the provided facts the same as any other format — a listicle is a structural choice, not a license to pad with invented items or generic filler entries just to hit a round number. If the fact set only supports 3 solid items, write 3; don't manufacture a 4th or 5th to look more complete.

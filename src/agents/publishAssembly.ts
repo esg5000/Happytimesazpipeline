@@ -52,6 +52,8 @@ export type WrittenArticleInput = {
   sourceCredits: SourceCredit[];
   phantomFactCount: number;
   phantomSourceCount: number;
+  /** Set only when articleWriter.ts's writeArticle() was given a persona — the persona's display name. Undefined for the default, no-persona path (nothing written to schemas/post.ts's existing `author` field, same as today). */
+  author?: string;
 };
 
 export type VerificationInput = {
@@ -212,6 +214,9 @@ export function assemblePublishDocument(
     seoDescription: article.seoDescription,
     visualStyle: article.visualStyle,
     tags: article.tags,
+    // Only present when Stage 5 was given a persona — schemas/post.ts's
+    // existing `author` field, never set by the default no-persona path.
+    ...(article.author ? { author: article.author } : {}),
     // Single source of truth — see file header. article.categories
     // (Stage 5's own free-form pick) is deliberately never read here.
     section,
@@ -368,6 +373,7 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
       seoDescription: doc.seoDescription,
       visualStyle: doc.visualStyle,
       tags: doc.tags,
+      ...(typeof doc.author === 'string' ? { author: doc.author } : {}),
       section: doc.section,
       categories: doc.categories,
       ...(doc.category ? { category: doc.category } : {}),

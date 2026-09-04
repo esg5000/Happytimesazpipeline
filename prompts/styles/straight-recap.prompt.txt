@@ -1,0 +1,5 @@
+Format: Straight Recap
+
+Write this as a straightforward news recap — report what happened, plainly and directly, in the order that makes it easiest for a reader to follow (usually most-important-first). No numbered/bulleted list structure, no first-person commentary or opinion, no gimmicky framing device. State the facts and the context around them the way a beat reporter would; let the material speak for itself rather than reaching for a hook.
+
+This is a real, explicit format choice, not the absence of one — it must produce the same plain-recap shape regardless of how the base writing voice above is worded or changes over time.
