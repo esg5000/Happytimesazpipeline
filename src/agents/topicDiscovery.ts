@@ -189,6 +189,39 @@ type Stage0Query = { query: string; queryClass: QueryClass };
  * noise (Silicon/Napa/Hudson Valley content leaking in via
  * "Valley nightlife..."/"Valley concert...") predates this change and is
  * unrelated to it.
+ * Expanded again 2026-09-05, after an investigation into a missed "Black
+ * Rodeo at WestWorld" candidate found VisitPhoenix.com — long believed to be
+ * an active source — was never actually wired into Stage 0 at all (no
+ * query anywhere referenced it). Root cause of the *missed event itself*
+ * turned out to be different from the "add VisitPhoenix" framing that
+ * investigation started with: a direct `"VisitPhoenix" event OR festival`
+ * query was tested and kept returning low-volume, irrelevant, or stale
+ * results (2 hits total, dated 2017/2025; broader phrasings like
+ * `"Visit Phoenix" Arizona event` pulled almost entirely unrelated Trump/
+ * TPUSA rally coverage) — visitphoenix.com itself never surfaced under any
+ * phrasing tried, consistent with it being a static tourism-board site
+ * Google News doesn't meaningfully index, not a publisher. That query was
+ * dropped rather than added, per the same "don't keep a dead query just
+ * because the source was cleared" precedent as the mouthbysouthwest.com
+ * `site:` attempt above. The query that actually would have caught this
+ * event is the venue-name query below: `"WestWorld of Scottsdale" event`
+ * verified via diagnostic to reliably pull real venue-specific event
+ * coverage (Arizona Bike Week, Maricopa County Home & Garden Show, a
+ * WestWorld management/revenue story) from local outlets that do cover the
+ * venue, even though the venue's own site doesn't surface. Two more
+ * name-mention queries were verified alongside it: `"Experience Scottsdale"
+ * event OR festival` (10/10 relevant hits — Renaissance Festival, a
+ * cowboy-for-a-day feature, Scottsdale arts/culture coverage, no noise) and
+ * `"Visit Mesa" event OR "Visit Tempe" event` (10/10 relevant hits — July
+ * 4th/America 250 events, World Cup training-site coverage, a real "Visit
+ * Mesa" campaign story). All three ran cleanly on Bright Data (2-7s each,
+ * nowhere near the 30s timeout that killed the mouthbysouthwest.com `site:`
+ * attempt) with no new noise pattern introduced. No change to
+ * LIFESTYLE_RESERVED_SLOTS or STAGE1_CANDIDATE_CAP: the reserve is filled
+ * by pure recency across the whole class pool (not per-query), and raw
+ * lifestyle-az supply was already well above the reserve size before this
+ * addition, so more source diversity competing into the same recency-based
+ * pick just raises the quality/variety of what fills those 6 slots.
  * `sports-az`: Arizona team sports discovery (Cardinals, Suns, Diamondbacks,
  * ASU Sun Devils, Mercury) — added alongside SPORTS_RESERVED_SLOTS after
  * confirming there was no dedicated sports query lane at all, so real
@@ -258,6 +291,9 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'Phoenix restaurant openings and closings', queryClass: 'lifestyle-az' },
   { query: 'Mouth By Southwest Phoenix restaurant', queryClass: 'lifestyle-az' },
   { query: 'Scottsdale restaurant dining new', queryClass: 'lifestyle-az' },
+  { query: '"Experience Scottsdale" event OR festival', queryClass: 'lifestyle-az' },
+  { query: '"WestWorld of Scottsdale" event', queryClass: 'lifestyle-az' },
+  { query: '"Visit Mesa" event OR "Visit Tempe" event', queryClass: 'lifestyle-az' },
   { query: 'Arizona Cardinals game recap', queryClass: 'sports-az' },
   { query: 'Phoenix Suns game recap', queryClass: 'sports-az' },
   { query: 'Arizona Diamondbacks news', queryClass: 'sports-az' },
@@ -325,6 +361,29 @@ function parseRelativeNewsDate(s: string): Date | undefined {
   return new Date(t - ms);
 }
 
+/**
+ * Parses a date string that may be RELATIVE ("3 weeks ago") or ABSOLUTE
+ * ("Feb 28, 2026", ISO-8601, etc) — relative is tried first via
+ * parseRelativeNewsDate (unambiguous once matched), absolute via native
+ * `Date` parsing as the fallback, validated against Invalid Date so a
+ * genuinely unparseable string still resolves to `undefined` rather than a
+ * garbage date. Shared by parsePublishedDate (SerpAPI) and
+ * flattenBrightDataNewsResults (Bright Data) — investigation 2026-09-05
+ * found Bright Data returns absolute dates often enough (smaller/regional
+ * outlets, not just the "X hours ago" shape originally observed) that
+ * skipping this fallback there was leaving the majority of lifestyle-az
+ * candidates (76/103 in one real run) with publishedDate=undefined, which
+ * capStage0PoolByRecency sorts last — silently starving genuinely fresh
+ * candidates out of every reserved-slot/cap recency race regardless of
+ * actual freshness.
+ */
+function parseDateStringWithFallback(s: string): Date | undefined {
+  const rel = parseRelativeNewsDate(s);
+  if (rel) return rel;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? undefined : d;
+}
+
 function parsePublishedDate(src: Record<string, unknown>): Date | undefined {
   const iso = src.iso_date;
   if (typeof iso === 'string') {
@@ -333,10 +392,8 @@ function parsePublishedDate(src: Record<string, unknown>): Date | undefined {
   }
   const dStr = src.date;
   if (typeof dStr === 'string') {
-    const rel = parseRelativeNewsDate(dStr);
-    if (rel) return rel;
-    const d2 = new Date(dStr);
-    if (!Number.isNaN(d2.getTime())) return d2;
+    const parsed = parseDateStringWithFallback(dStr);
+    if (parsed) return parsed;
   }
   return undefined;
 }
@@ -507,9 +564,13 @@ async function resolveGoogleRedirectLink(link: string): Promise<string | undefin
  * snippet) was present on only ~35% of items in the sample — left undefined
  * otherwise, which flattenStage0Results's own RawNewsItem shape already
  * tolerates (snippet is optional); `date` was a relative string ("7 hours
- * ago") on every item observed, no iso_date-equivalent field at all, so this
- * reuses parseRelativeNewsDate() directly rather than parsePublishedDate()
- * (which also branches on an iso_date field Bright Data doesn't provide).
+ * ago") on every item in the original sample, but a follow-up investigation
+ * (2026-09-05) found Bright Data also returns absolute dates ("Feb 28,
+ * 2026") often enough for smaller/regional outlets that this now goes
+ * through parseDateStringWithFallback() (relative first, absolute `Date`
+ * parse as fallback) instead of parseRelativeNewsDate() alone — there's
+ * still no iso_date-equivalent field, so parsePublishedDate()'s iso_date
+ * branch doesn't apply here.
  * image/image_base64/source_logo/rank/global_rank are dropped — unused by
  * anything downstream of Stage 0.
  *
@@ -551,7 +612,7 @@ async function flattenBrightDataNewsResults(
       link,
       snippet: typeof c.e.description === 'string' ? c.e.description : undefined,
       sourceOutlet: typeof c.e.source === 'string' && c.e.source.trim() ? c.e.source.trim() : undefined,
-      publishedDate: typeof c.e.date === 'string' ? parseRelativeNewsDate(c.e.date) : undefined,
+      publishedDate: typeof c.e.date === 'string' ? parseDateStringWithFallback(c.e.date) : undefined,
       queryClass,
       matchedQuery: query,
     });
