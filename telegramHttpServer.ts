@@ -917,7 +917,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
             ? ` — NOTE: ${result.preExistingPendingCount} pending candidate(s) from an earlier run already existed before this run and are now mixed in with the new batch; use "Discard All" on the old ones first for a clean slate.`
             : '';
           appendActivityLog(
-            `discoverTopics: complete — kept=${result.keptCount}, skipped=${result.skippedCount}, persisted=${result.persistedCount}${staleBatchNote}`,
+            `discoverTopics: complete — kept=${result.keptCount}, skipped=${result.skippedCount}, already-seen=${result.skippedAsAlreadySeenCount}, persisted=${result.persistedCount}${staleBatchNote}`,
             'discoverTopics'
           );
         } catch (err: unknown) {

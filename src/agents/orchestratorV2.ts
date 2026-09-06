@@ -46,7 +46,7 @@ import { writeArticle, type WrittenArticle, type WriteArticleOptions, type Artic
 import { verifyArticle, type VerificationResult } from './verificationGate';
 import { sourceImage } from './imageSourcing';
 import { assemblePublishDocument, publishAssembledDocument, type AssemblyResult } from './publishAssembly';
-import { checkForDuplicates, type SeenThisRunEntry } from './dedupeFeature';
+import { checkForDuplicates, normalizeSourceUrl, type SeenThisRunEntry } from './dedupeFeature';
 
 // ---------------------------------------------------------------------------
 // Run-log types — every topic that entered, and exactly which stage/gate
@@ -404,8 +404,71 @@ export type DiscoverAndPersistTopicsResult = {
   persistedIds: string[];
   /** Pending topicCandidate docs that already existed (from an earlier run) before this run persisted its own. Not deduped against or blocked on — just surfaced so a stale batch doesn't go unnoticed. */
   preExistingPendingCount: number;
+  /**
+   * Kept Stage 0-2 candidates whose sourceUrl matched something this
+   * pipeline has already seen — an existing topicCandidate doc of ANY
+   * status, or an already-published post — and were skipped rather than
+   * persisted as a new doc. See fetchKnownSourceUrls.
+   */
+  skippedAsAlreadySeenCount: number;
   wallClockMs: number;
 };
+
+/**
+ * Investigation (2026-09-06) into a ~70% repeat-topic rate found
+ * discoverAndPersistTopics had no memory at all of prior runs: re-running
+ * discoverTopics — even same-day — routinely re-persisted 30-67% of a
+ * batch as "new" topicCandidate docs that were byte-identical (same
+ * sourceUrl) to something already sitting in Sanity, including candidates
+ * already explicitly rejected via the dashboard's "Discard All", and at
+ * least one that had already been published. 100% of the measured repeat
+ * cases were literal identical-sourceUrl reappearances, not
+ * same-event-different-outlet or evolving-story cases, so this check is
+ * intentionally URL-only for now — no fuzzy title/entity matching, which
+ * is Stage 9's job downstream (dedupeFeature.ts's checkForDuplicates,
+ * unchanged and unaffected by this — it remains the safety net for
+ * whatever narrower cases this discovery-time check doesn't catch, e.g. a
+ * URL that normalizes differently than expected).
+ *
+ * Pulls every sourceUrl this pipeline has ever seen for candidates —
+ * every topicCandidate doc regardless of status (pending/selected/
+ * rejected/processed — not just pending, since a rejected or processed
+ * doc is exactly as "already seen" as a pending one), plus every
+ * already-published post's originalSourceUrl — into one normalized Set
+ * via two queries total, checked in-memory per candidate afterward.
+ * Deliberately not a per-candidate live query: this run's candidate count
+ * is dozens, the existing-doc count hundreds, so one Set built up front is
+ * far cheaper than N round-trips. Uses dedupeFeature.ts's
+ * normalizeSourceUrl for the exact same protocol/www/trailing-slash/
+ * query-string normalization Stage 9 already applies downstream, so
+ * anything caught here would also have been caught there — this just
+ * catches it before a duplicate topicCandidate doc is ever created, not
+ * only if a human re-selects it.
+ */
+async function fetchKnownSourceUrls(
+  client: import('@sanity/client').SanityClient
+): Promise<Map<string, 'existing-candidate' | 'published-post'>> {
+  const [candidateRows, postRows] = await Promise.all([
+    client.fetch<{ sourceUrl?: string }[]>(`*[_type == "topicCandidate" && defined(sourceUrl)]{ sourceUrl }`),
+    client.fetch<{ originalSourceUrl?: string }[]>(
+      `*[_type == "post" && defined(originalSourceUrl)]{ originalSourceUrl }`
+    ),
+  ]);
+
+  const known = new Map<string, 'existing-candidate' | 'published-post'>();
+  for (const row of candidateRows) {
+    const norm = row.sourceUrl ? normalizeSourceUrl(row.sourceUrl) : undefined;
+    if (norm && !known.has(norm)) known.set(norm, 'existing-candidate');
+  }
+  // Published-post match overwrites an existing-candidate match for the same
+  // normalized URL — a published post is the more informative/actionable
+  // reason to surface in the skip log if both happen to be true.
+  for (const row of postRows) {
+    const norm = row.originalSourceUrl ? normalizeSourceUrl(row.originalSourceUrl) : undefined;
+    if (norm) known.set(norm, 'published-post');
+  }
+  return known;
+}
 
 /**
  * Maps one TopicDiscoveryResult to a topicCandidate document body (no
@@ -446,13 +509,14 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
   const { getSanityClient } = await import('../../agents/sanityPublisher');
   const client = getSanityClient();
 
-  // discoverTopics does not dedupe or block against an existing pending
-  // batch — running it again just adds more 'pending' docs alongside
-  // whatever a previous run left unselected/unrejected, and the dashboard
-  // shows them all mixed together with no batch boundary. Not fixed here;
-  // this count is only surfaced (activity log / dashboard) so a stale
-  // batch doesn't go unnoticed. Use discardTopicCandidates to clear one
-  // out first if a clean slate is wanted.
+  // discoverTopics does not dedupe or block on batch BOUNDARIES — running it
+  // again still just adds more 'pending' docs alongside whatever a previous
+  // run left unselected/unrejected, and the dashboard shows them all mixed
+  // together with no batch boundary. That's still not fixed here — this
+  // count is only surfaced (activity log / dashboard) so a stale batch
+  // doesn't go unnoticed; use discardTopicCandidates to clear one out first
+  // if a clean slate is wanted. What IS fixed here is the sourceUrl-level
+  // repeat within/across those batches — see fetchKnownSourceUrls below.
   const preExistingPendingCount = await client.fetch<number>(`count(*[_type == "topicCandidate" && status == "pending"])`);
   if (preExistingPendingCount > 0) {
     console.warn(
@@ -460,9 +524,30 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
     );
   }
 
-  if (discovery.kept.length > 0) {
+  const knownSourceUrls = await fetchKnownSourceUrls(client);
+  const toPersist: TopicDiscoveryResult[] = [];
+  let skippedAsAlreadySeenCount = 0;
+  for (const topic of discovery.kept) {
+    const norm = normalizeSourceUrl(topic.link);
+    const matchType = norm ? knownSourceUrls.get(norm) : undefined;
+    if (matchType) {
+      skippedAsAlreadySeenCount++;
+      console.log(
+        `[orchestrator-v2] discoverAndPersistTopics: SKIP (already seen — ${matchType}) "${topic.title.slice(0, 80)}" (${topic.link})`
+      );
+      continue;
+    }
+    toPersist.push(topic);
+  }
+  if (skippedAsAlreadySeenCount > 0) {
+    console.log(
+      `[orchestrator-v2] discoverAndPersistTopics: skipped ${skippedAsAlreadySeenCount}/${discovery.kept.length} kept candidate(s) as already-seen (sourceUrl match against existing topicCandidate docs of any status, or an already-published post) — not persisted as new docs.`
+    );
+  }
+
+  if (toPersist.length > 0) {
     const tx = client.transaction();
-    const docs = discovery.kept.map((topic) => {
+    const docs = toPersist.map((topic) => {
       const doc = toTopicCandidateDoc(topic, discoveredAt);
       tx.create(doc as Parameters<typeof client.create>[0]);
       return doc;
@@ -479,6 +564,7 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
     persistedCount: persistedIds.length,
     persistedIds,
     preExistingPendingCount,
+    skippedAsAlreadySeenCount,
     wallClockMs,
   };
   console.log(`[orchestrator-v2] ========== discoverAndPersistTopics end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
