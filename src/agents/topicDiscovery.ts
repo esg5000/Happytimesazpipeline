@@ -1531,14 +1531,23 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
  * both judge every candidate by the same rules and differ ONLY in whether
  * they have real search evidence to back the call. Extracted once to keep
  * the two prompts from drifting out of sync with each other.
+ *
+ * `queryClass` is passed through ONLY to inject the health-wellness-az
+ * locality exception below — every other query class gets byte-identical
+ * wording to before this parameter existed.
  */
-function buildStage1ClassificationCriteria(): string {
+function buildStage1ClassificationCriteria(queryClass: QueryClass): string {
   return `Classify this story into exactly one of:
    - "direct-local": the story is inherently, primarily about the greater Phoenix/Arizona metro area (a local event, local business, local government action, local sports team, local person). No uncertainty about whether it's local — it just is.
    - "national-reframe": the story is fundamentally national/global and does NOT occur locally, but there's a genuine, already-known "here's the Arizona angle or alternative" story to tell. Example: a meteor shower peaks tonight but forecasts show it won't be visible from Arizona due to clouds — the AZ story is "here's what you can see instead" or "here's when it's visible here next." The local angle is known and confirmed, just not the primary event itself.
    - "national-verify-local": the story is national/global AND local relevance itself is the open question — whether it's visible, applicable, or occurring in Arizona is NOT yet known from the headline/snippet alone and needs a follow-up check before you could call it direct-local or national-skip. Example: "Can you see the eclipse from Arizona?" (visibility unconfirmed), "does this federal cannabis rule change apply to Arizona dispensaries?" (applicability unconfirmed), "does this retail chain have Valley locations?" (occurrence unconfirmed). This is NOT a subtype of direct-local or national-reframe — it's a distinct editorial motion: the answer to "is this even a local story" hasn't been established yet, so it's flagged for a dedicated fact-check pass rather than decided now.
    - "national-skip": the story is national/global with no meaningful, addable local hook for Phoenix-metro readers, and nothing about local relevance is even in question — it's just not a local angle at all (e.g. a purely out-of-state incident, national politics with no Arizona tie).
-If direct-local, national-reframe, or national-verify-local, assign the single best section for this site based on what the story is actually about (not on how it was found): one of food, nightlife, cannabis, health-wellness, sports, news.
+${
+  queryClass === 'health-wellness-az'
+    ? `SCOPED EXCEPTION for this candidate — health-wellness-az query lane ONLY: by editorial decision, health-wellness is treated as a lifestyle-interest category here, not local news, and this query lane is deliberately built to include national evergreen health/wellness content (research studies, general nutrition/fitness/sleep/wellness pieces) that has no Arizona-specific tie. For THIS candidate, do NOT classify as "national-skip" solely because it lacks an Arizona connection — if it is genuinely a health/wellness story (not spam, not off-topic for health/wellness), classify it as "direct-local" instead and assign section="health-wellness". This exception changes ONLY the locality/AZ-connection judgment: the crime/tragedy check and editorialFit check below still apply exactly as normal, and if the story actually IS about Arizona specifically (not evergreen national content), classify it normally like any other verdict would — this exception is about not REQUIRING an Arizona tie, not about ignoring one that's genuinely there.
+`
+    : ''
+}If direct-local, national-reframe, or national-verify-local, assign the single best section for this site based on what the story is actually about (not on how it was found): one of food, nightlife, cannabis, health-wellness, sports, news.
 Score overall relevance/value to a Phoenix-metro local lifestyle audience, 1-10.
 Assign a short, freeform subjectTag describing what this story is actually about at a glance (e.g. "weather", "sports", "food", "crime", "culture", "policy", "cannabis-law", "astronomy") — your own words, not a fixed list, but keep it to 1-3 words.
 Separately, assign a specificSubject: a short phrase naming the actual event/occurrence this specific story is about — WHAT HAPPENED, not just who or what category it falls under. This exists so a duplicate-detection step downstream can tell "this exact story, from any outlet" apart from "any other story with the same broad topic or the same person on a different day." A bare person/place/team name alone is NOT enough (e.g. "Ketel Marte" is too broad — two different stories about that same person, days apart, would wrongly look identical); name the specific occurrence too (e.g. "Ketel Marte casino sighting", "Trulieve Chandler dispensary opening", "ASU football season opener"). Keep it to roughly 3-8 words — specific enough to identify this occurrence, not a full sentence.
@@ -1675,7 +1684,8 @@ function parseStage1Fields(obj: Record<string, unknown>): Stage1ParsedFields {
  * no-search verdict can never carry a fabricated citation — same
  * discipline the no-search quick pass already applies to its own output.
  */
-async function runStage1VerdictForCandidate(item: RawNewsItem): Promise<Stage1VerdictResult> {
+/** Exported for verification scripts (scripts/*) — not used by any other module. */
+export async function runStage1VerdictForCandidate(item: RawNewsItem): Promise<Stage1VerdictResult> {
   const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
 
   const user = `You are a locality/relevance classifier for HappyTimesAZ, a Phoenix AZ metro lifestyle & news site.
@@ -1684,7 +1694,7 @@ ${buildCandidateStoryBlock(item)}
 
 TASK
 1. Use search to find 2-3 relevant, credible sources about this story. Prefer sources with concrete local Arizona/Phoenix-metro detail if the story could plausibly have one — dates, venues, addresses, named local businesses, official local statements.
-2. ${buildStage1ClassificationCriteria()}
+2. ${buildStage1ClassificationCriteria(item.queryClass)}
 
 Return ONLY this JSON shape, no markdown fences, no prose before or after:
 {"verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","specificSubject":"<what actually happened, ~3-8 words, e.g. \"Ketel Marte casino sighting\">","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>","sources":[{"title":"string","url":"string starting with http","summary":"1-2 sentence summary of what this source adds as evidence for the classification"}]}`;
@@ -1730,7 +1740,7 @@ type Stage1QuickPassResult = Stage1VerdictResult & { confidence: 'high' | 'low' 
 /** Verdicts eligible to be accepted straight from the quick pass. national-reframe and national-verify-local are excluded on principle, not just by low confidence: both hinge on a fact (a known local angle, or an unconfirmed applicability/visibility question) the model cannot actually know without searching, so a "confident" quick-pass claim of either is not trustworthy no matter how the model phrases it. */
 const QUICK_PASS_ACCEPTABLE_VERDICTS = new Set<Stage1Verdict>(['direct-local', 'national-skip']);
 
-function quickPassIsHighConfidence(qp: Stage1QuickPassResult): boolean {
+export function quickPassIsHighConfidence(qp: Stage1QuickPassResult): boolean {
   return qp.confidence === 'high' && QUICK_PASS_ACCEPTABLE_VERDICTS.has(qp.verdict);
 }
 
@@ -1743,7 +1753,8 @@ function quickPassIsHighConfidence(qp: Stage1QuickPassResult): boolean {
  * pass miss just means "fall through to the expensive pass," never a
  * dropped candidate.
  */
-async function runStage1QuickPassForCandidate(item: RawNewsItem): Promise<Stage1QuickPassResult | null> {
+/** Exported for verification scripts (scripts/*) — not used by any other module. */
+export async function runStage1QuickPassForCandidate(item: RawNewsItem): Promise<Stage1QuickPassResult | null> {
   const instructions = `You output only valid JSON, no markdown fences, no commentary.`;
 
   const user = `You are a FAST, no-search pre-screen for HappyTimesAZ's locality/relevance classifier (a Phoenix AZ metro lifestyle & news site). You have NO web search access for this pass — judge using ONLY the title/snippet/source outlet below, nothing else. Your job is to catch the obvious, high-confidence cases so the expensive verified-search pass can be skipped for them; anything even slightly unclear must be marked low confidence, not guessed.
@@ -1756,7 +1767,7 @@ TASK
    - You are also CERTAIN of the crime/tragedy call and the editorial-fit call below — no doubt on either.
    "national-reframe" and "national-verify-local" can NEVER be marked high confidence in this pass, even if you're sure that's the right verdict category — both inherently depend on a fact (a confirmed local angle, or an unconfirmed applicability/visibility question) that only a search could verify. If you land on either of those, mark confidence "low" and give your best-guess answer anyway; it will be re-verified with search.
    When in doubt at all, choose "low" — a wrong "high" skips real verification, a wrong "low" just costs one extra (already-budgeted) search call.
-2. ${buildStage1ClassificationCriteria()}
+2. ${buildStage1ClassificationCriteria(item.queryClass)}
 
 Return ONLY this JSON shape, no markdown fences, no prose before or after, and no "sources" field (you have no search access, so don't fabricate one):
 {"confidence":"high"|"low","verdict":"direct-local"|"national-reframe"|"national-verify-local"|"national-skip","skipReason":"<short reason, only when verdict is national-skip>","section":"food"|"nightlife"|"cannabis"|"health-wellness"|"sports"|"news"|null,"relevanceScore":<1-10 integer>,"subjectTag":"<short freeform label, 1-3 words>","specificSubject":"<what actually happened, ~3-8 words, e.g. \"Ketel Marte casino sighting\">","excludeAsCrimeTragedy":<true|false>,"excludeReason":"<short reason, only when excludeAsCrimeTragedy is true>","editorialFit":<true|false>,"editorialFitReason":"<short reason>"}`;
@@ -2019,7 +2030,27 @@ async function runStage1Batched(
         continue;
       }
 
-      if (v.verdict === 'national-skip') {
+      // Scoped health-wellness-az locality exception (2026-09-06, Shawn's
+      // call): health-wellness is a lifestyle-interest category here, not
+      // local news, so national evergreen health/wellness content (a
+      // study, a general wellness piece) should NOT be dropped purely for
+      // lacking an Arizona connection. The prompt above (see
+      // buildStage1ClassificationCriteria) already instructs the model not
+      // to return "national-skip" for this reason on health-wellness-az
+      // candidates and to self-assign section="health-wellness" instead —
+      // this is a belt-and-suspenders backstop for the case the model
+      // still returns national-skip anyway (imperfect prompt compliance):
+      // the verdict is let through rather than dropped, and section is
+      // force-corrected to health-wellness since a national-skip verdict's
+      // section is never model-assigned (parseStage1Fields defaults an
+      // unassigned section to 'news', which would be wrong here). Every
+      // other query class is completely unaffected — national-skip still
+      // drops them exactly as before. Crime/tragedy and editorialFit were
+      // already fully enforced above, unconditionally, before this point.
+      const isHealthWellnessLocalityException =
+        v.verdict === 'national-skip' && r.item.queryClass === 'health-wellness-az';
+
+      if (v.verdict === 'national-skip' && !isHealthWellnessLocalityException) {
         skipped.push({
           title: r.item.title,
           link: r.item.link,
@@ -2031,6 +2062,14 @@ async function runStage1Batched(
         continue;
       }
 
+      if (isHealthWellnessLocalityException) {
+        console.log(
+          `[topic-discovery] KEEP override (health-wellness-az locality exception — verdict was national-skip: ${v.skipReason || '(no reason given)'}): "${r.item.title.slice(0, 90)}"`
+        );
+      }
+
+      const section: SectionSlug = isHealthWellnessLocalityException ? 'health-wellness' : v.section;
+
       kept.push({
         title: r.item.title,
         snippet: r.item.snippet ?? '',
@@ -2038,14 +2077,14 @@ async function runStage1Batched(
         sourceOutlet: r.item.sourceOutlet ?? null,
         publishedDate: r.item.publishedDate ? r.item.publishedDate.toISOString() : null,
         verdict: v.verdict,
-        section: v.section,
+        section,
         relevanceScore: v.relevanceScore,
         subjectTag: v.subjectTag,
         specificSubject: v.specificSubject,
         searchSummaries: v.sources,
       });
       console.log(
-        `[topic-discovery] KEEP (${v.verdict}, section=${v.section}, tag=${v.subjectTag}, specificSubject="${v.specificSubject}", score=${v.relevanceScore}): "${r.item.title.slice(0, 90)}"`
+        `[topic-discovery] KEEP (${v.verdict}, section=${section}, tag=${v.subjectTag}, specificSubject="${v.specificSubject}", score=${v.relevanceScore}): "${r.item.title.slice(0, 90)}"`
       );
     }
   }
