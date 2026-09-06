@@ -44,12 +44,33 @@ const OPENAI_MODEL_STAGE5_WRITE = 'gpt-5.4-mini';
  * an automatic section-wide default. Undefined persona = no append, exactly
  * today's output.
  */
-export type ArticlePersona = 'fat-jimmy' | 'sonny-blaze' | 'health-nut';
+/**
+ * 'stephen-a-spliff-unhinged' is a MODE of Stephen A. Spliff, not a
+ * separate person — modeled as its own persona value (its own prompt
+ * file, same displayName) rather than a new selection dimension, since
+ * that fits the existing selectedPersona dropdown/allowlist mechanism
+ * exactly with zero new plumbing (see topicCandidate schema/
+ * processSelectedTopics). If a persona ever needs its own independent
+ * toggle instead of being folded into the persona choice itself, that's a
+ * bigger change than this pattern supports today.
+ */
+export type ArticlePersona =
+  | 'fat-jimmy'
+  | 'sonny-blaze'
+  | 'health-nut'
+  | 'stephen-a-spliff'
+  | 'stephen-a-spliff-unhinged'
+  | 'bill-farr'
+  | 'sloan-rivers';
 
 const PERSONA_PROMPT_FILES: Record<ArticlePersona, { file: string; displayName: string }> = {
   'fat-jimmy': { file: 'fat-jimmy.prompt.txt', displayName: 'Fat Jimmy' },
   'sonny-blaze': { file: 'sonny-blaze.prompt.txt', displayName: 'Sonny Blaze' },
   'health-nut': { file: 'health-nut.prompt.txt', displayName: 'The Health Nut' },
+  'stephen-a-spliff': { file: 'stephen-a-spliff.prompt.txt', displayName: 'Stephen A. Spliff' },
+  'stephen-a-spliff-unhinged': { file: 'stephen-a-spliff-unhinged.prompt.txt', displayName: 'Stephen A. Spliff' },
+  'bill-farr': { file: 'bill-farr.prompt.txt', displayName: 'Bill Farr' },
+  'sloan-rivers': { file: 'sloan-rivers.prompt.txt', displayName: 'Sloan Rivers' },
 };
 
 /**

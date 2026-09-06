@@ -618,7 +618,15 @@ export async function discardTopicCandidates(candidateIds: string[]): Promise<Di
 // call runOrchestratorV2/runOrchestratorV2AndPublish/discoverAndPersistTopics.
 // ---------------------------------------------------------------------------
 
-const ARTICLE_PERSONAS = new Set<ArticlePersona>(['fat-jimmy', 'sonny-blaze', 'health-nut']);
+const ARTICLE_PERSONAS = new Set<ArticlePersona>([
+  'fat-jimmy',
+  'sonny-blaze',
+  'health-nut',
+  'stephen-a-spliff',
+  'stephen-a-spliff-unhinged',
+  'bill-farr',
+  'sloan-rivers',
+]);
 const ARTICLE_STYLES = new Set<ArticleStyle>(['straight-recap', 'listicle', 'opinion']);
 
 function coercePersona(value: unknown): ArticlePersona | undefined {

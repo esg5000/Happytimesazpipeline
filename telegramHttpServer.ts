@@ -946,7 +946,15 @@ function registerDaemonApiRoutes(app: express.Application): void {
       // them onto Sanity first — server-side, using the existing SANITY_API_TOKEN —
       // rather than have the browser hold a Sanity write token.
       const rawSelections = req.body?.selections;
-      const ARTICLE_PERSONAS = new Set(['fat-jimmy', 'sonny-blaze', 'health-nut']);
+      const ARTICLE_PERSONAS = new Set([
+        'fat-jimmy',
+        'sonny-blaze',
+        'health-nut',
+        'stephen-a-spliff',
+        'stephen-a-spliff-unhinged',
+        'bill-farr',
+        'sloan-rivers',
+      ]);
       const ARTICLE_STYLES = new Set(['straight-recap', 'listicle', 'opinion']);
       if (rawSelections && typeof rawSelections === 'object') {
         const { getSanityClient } = await import('./agents/sanityPublisher');
