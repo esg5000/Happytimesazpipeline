@@ -2,7 +2,13 @@ import { createClient } from '@sanity/client';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { config } from '../config';
-import { sourceImage, seedRecentlyUsedUnsplashPhotoIds, type ImageSourcingInput } from '../src/agents/imageSourcing';
+import {
+  sourceImage,
+  seedRecentlyUsedUnsplashPhotoIds,
+  loadCrossRunRecentlyUsedUnsplashPhotoIds,
+  type ImageSourcingInput,
+  type ImageSourcingResult,
+} from '../src/agents/imageSourcing';
 import { uploadImageBufferToSanity } from '../agents/sanityPublisher';
 import { downloadImage } from '../agents/imageAgent';
 
@@ -125,7 +131,12 @@ async function main() {
   seedRecentlyUsedUnsplashPhotoIds(usedPhotoIdsAcrossRuns);
   console.log(`[fix-duplicate-hero-images] Seeded ${usedPhotoIdsAcrossRuns.length} Unsplash photo ID(s) already assigned in earlier retry cycles (cache: ${USED_PHOTO_IDS_CACHE}).`);
 
-  type PatchRow = { id: string; heroImage: Record<string, unknown> };
+  const crossRunSeededCount = await loadCrossRunRecentlyUsedUnsplashPhotoIds();
+  console.log(`[fix-duplicate-hero-images] Cross-run dedup: seeded ${crossRunSeededCount} recently-published Unsplash photo ID(s) from Sanity.`);
+
+  const MAX_ATTEMPTS_PER_POST = 4;
+
+  type PatchRow = { id: string; heroImage: Record<string, unknown>; heroImageUnsplashId?: string };
   const patches: PatchRow[] = [];
   const fixedRows: { id: string; title: string; source: string; matchedRelevanceFilter: boolean }[] = [];
   const failedRows: { id: string; title: string; reason: string }[] = [];
@@ -145,36 +156,72 @@ async function main() {
         entity: p.tags?.[0],
         title: p.title,
       };
-      console.log(`\n[fix-duplicate-hero-images] Re-sourcing image for "${p.title}" (${p._id})...`);
-      const outcome = await sourceImage(input);
 
-      if (outcome.status === 'rate-limited') {
-        console.error(`[fix-duplicate-hero-images] Unsplash rate-limited — stopping further re-sourcing this run. Remaining posts left untouched.`);
-        failedRows.push({ id: p._id, title: p.title, reason: `rate-limited (query="${outcome.query}", httpStatus=${outcome.httpStatus})` });
-        stoppedEarlyOnRateLimit = true;
-        continue;
-      }
-      if (outcome.status !== 'ok') {
-        const reason =
-          outcome.status === 'no-key'
-            ? 'UNSPLASH_ACCESS_KEY not set'
-            : outcome.status === 'no-image'
-              ? `exhausted ladder + generation fallback, query="${outcome.query}"`
-              : `error: ${outcome.message} (query="${outcome.query}")`;
-        console.error(`[fix-duplicate-hero-images] Could not source an image: ${reason}`);
-        failedRows.push({ id: p._id, title: p.title, reason });
-        continue;
-      }
-
-      const result = outcome.result;
       try {
-        const buf = result.imageUrl ? await downloadImage(result.imageUrl) : Buffer.from(result.imageBase64!, 'base64');
-        const ext = result.imageUrl ? 'jpg' : 'png';
-        const filename = `${p._id.replace(/[^a-z0-9-]/gi, '-')}-dedupe-fix.${ext}`;
-        const assetId = await uploadImageBufferToSanity(buf, filename);
+        // Sanity's asset store dedupes uploads by content hash — a re-download of the SAME
+        // underlying Unsplash photo produces the identical asset id (image-<hash>-...) even
+        // via a fresh sourceImage()/upload call, regardless of which Unsplash photo ID gets
+        // reported (the OLD duplicate's own photo ID was never recorded pre-heroImageUnsplashId,
+        // so it can't be pre-excluded by ID). Confirmed live during the Labor Day manual fix.
+        // Retry against the real resulting Sanity asset id, excluding whichever Unsplash photo
+        // ID produced it, until a genuinely different asset comes back.
+        let assetId = '';
+        let result: ImageSourcingResult | undefined;
+        let rateLimitedMidRetry = false;
+
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_POST; attempt++) {
+          console.log(`\n[fix-duplicate-hero-images] Re-sourcing image for "${p.title}" (${p._id}) — attempt ${attempt}/${MAX_ATTEMPTS_PER_POST}...`);
+          const outcome = await sourceImage(input);
+
+          if (outcome.status === 'rate-limited') {
+            console.error(`[fix-duplicate-hero-images] Unsplash rate-limited — stopping further re-sourcing this run. Remaining posts left untouched.`);
+            failedRows.push({ id: p._id, title: p.title, reason: `rate-limited (query="${outcome.query}", httpStatus=${outcome.httpStatus})` });
+            stoppedEarlyOnRateLimit = true;
+            rateLimitedMidRetry = true;
+            break;
+          }
+          if (outcome.status !== 'ok') {
+            const reason =
+              outcome.status === 'no-key'
+                ? 'UNSPLASH_ACCESS_KEY not set'
+                : outcome.status === 'no-image'
+                  ? `exhausted ladder + generation fallback, query="${outcome.query}"`
+                  : `error: ${outcome.message} (query="${outcome.query}")`;
+            console.error(`[fix-duplicate-hero-images] Could not source an image: ${reason}`);
+            failedRows.push({ id: p._id, title: p.title, reason });
+            rateLimitedMidRetry = true; // reuse flag to skip the write-up below, not an actual rate limit
+            break;
+          }
+
+          result = outcome.result;
+          const buf = result.imageUrl ? await downloadImage(result.imageUrl) : Buffer.from(result.imageBase64!, 'base64');
+          const ext = result.imageUrl ? 'jpg' : 'png';
+          const filename = `${p._id.replace(/[^a-z0-9-]/gi, '-')}-dedupe-fix.${ext}`;
+          const candidateAssetId = await uploadImageBufferToSanity(buf, filename);
+
+          if (candidateAssetId !== g.imageRef) {
+            assetId = candidateAssetId;
+            break;
+          }
+
+          console.warn(
+            `[fix-duplicate-hero-images] "${p.title}" — content-hash match with the original duplicate asset (photoId=${result.photoId} IS the duplicate photo). Excluding and retrying...`
+          );
+          if (result.source === 'unsplash') {
+            seedRecentlyUsedUnsplashPhotoIds([result.photoId]);
+          }
+        }
+
+        if (rateLimitedMidRetry) continue;
+        if (!assetId || !result) {
+          failedRows.push({ id: p._id, title: p.title, reason: `every attempt (${MAX_ATTEMPTS_PER_POST}) resolved to the original duplicate asset` });
+          continue;
+        }
+
         patches.push({
           id: p._id,
           heroImage: { _type: 'image', asset: { _type: 'reference', _ref: assetId }, alt: result.altText },
+          ...(result.source === 'unsplash' ? { heroImageUnsplashId: result.photoId } : {}),
         });
         fixedRows.push({ id: p._id, title: p.title, source: result.source, matchedRelevanceFilter: result.matchedRelevanceFilter });
         if (result.source === 'unsplash') {
@@ -199,7 +246,12 @@ async function main() {
     const batch = patches.slice(i, i + PATCH_BATCH_SIZE);
     const tx = client.transaction();
     for (const p of batch) {
-      tx.patch(p.id, (patch) => patch.set({ heroImage: p.heroImage }));
+      tx.patch(p.id, (patch) =>
+        patch.set({
+          heroImage: p.heroImage,
+          ...(p.heroImageUnsplashId ? { heroImageUnsplashId: p.heroImageUnsplashId } : {}),
+        })
+      );
     }
     try {
       await tx.commit();
