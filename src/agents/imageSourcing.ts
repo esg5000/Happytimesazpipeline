@@ -453,8 +453,72 @@ const RECENT_UNSPLASH_PHOTO_WINDOW = 150;
 const recentlyUsedUnsplashPhotoIds: string[] = [];
 const recentlyUsedUnsplashPhotoIdSet = new Set<string>();
 
+// ---------------------------------------------------------------------------
+// Cross-run duplicate-image avoidance (added 2026-09-06)
+//
+// The in-memory window above only ever caught same-process reuse — it resets
+// on every restart, so a photo used weeks ago in an earlier process could
+// still be picked again today. Confirmed live incident: "Scottsdale Rooftop
+// Bars Worth Visiting Before Fall" (Aug 5) and "Labor Day Weekend 2026: The
+// Valley's Best Parties" (Sept 4) — separate runs, same Unsplash asset.
+//
+// Now that schemas/post.ts persists heroImageUnsplashId (written by
+// publishAssembledDocument below) there's finally something to query. Kept
+// as a SEPARATE Set from recentlyUsedUnsplashPhotoIdSet rather than merged
+// into it — that Set's small eviction window (150) exists for same-run
+// efficiency and would be blown out instantly by a Sanity-seeded batch of
+// months of published posts. Loaded once per pipeline run (not per
+// sourceImage() call — see loadCrossRunRecentlyUsedUnsplashPhotoIds) and
+// scoped to CROSS_RUN_DEDUP_LOOKBACK_DAYS: Unsplash's pool is finite, and
+// eventual reuse many months apart is fine — the actual incident was reuse
+// one month apart, i.e. within a season.
+// ---------------------------------------------------------------------------
+
+const CROSS_RUN_DEDUP_LOOKBACK_DAYS = 90;
+
+let crossRunRecentlyPublishedPhotoIdSet = new Set<string>();
+
+/**
+ * Queries Sanity ONCE for every post published in the last `lookbackDays`
+ * days with a heroImageUnsplashId set, and replaces the cross-run Set with
+ * that snapshot. Call this once at the start of a pipeline run
+ * (orchestratorV2.ts's runOrchestratorV2() and processSelectedTopics()) —
+ * NOT per-article; sourceImage() itself makes no Sanity calls and stays
+ * synchronous-lookup-only against whatever this most recently loaded.
+ * Never throws — a failed lookup just means the cross-run check sits out
+ * this run (the same-run window above still works), logged clearly rather
+ * than silently degrading.
+ */
+export async function loadCrossRunRecentlyUsedUnsplashPhotoIds(
+  lookbackDays: number = CROSS_RUN_DEDUP_LOOKBACK_DAYS
+): Promise<number> {
+  try {
+    const { getSanityClient } = await import('../../agents/sanityPublisher');
+    const client = getSanityClient();
+    const cutoffIso = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000).toISOString();
+    const ids = await client.fetch<(string | null)[]>(
+      `*[_type == "post" && defined(heroImageUnsplashId) && publishedAt >= $cutoff].heroImageUnsplashId`,
+      { cutoff: cutoffIso }
+    );
+    crossRunRecentlyPublishedPhotoIdSet = new Set(
+      (ids || []).filter((id): id is string => typeof id === 'string' && id.length > 0)
+    );
+    console.log(
+      `[image-sourcing] Cross-run duplicate-image check: loaded ${crossRunRecentlyPublishedPhotoIdSet.size} Unsplash photo ID(s) from posts published in the last ${lookbackDays} day(s).`
+    );
+    return crossRunRecentlyPublishedPhotoIdSet.size;
+  } catch (err: unknown) {
+    console.warn(
+      '[image-sourcing] Failed to load cross-run recently-used photo IDs from Sanity — cross-run duplicate check sits out this run (same-run check still active):',
+      err instanceof Error ? err.message : String(err)
+    );
+    return 0;
+  }
+}
+
 function isRecentlyUsedUnsplashPhoto(photoId: string | undefined): boolean {
-  return !!photoId && recentlyUsedUnsplashPhotoIdSet.has(photoId);
+  if (!photoId) return false;
+  return recentlyUsedUnsplashPhotoIdSet.has(photoId) || crossRunRecentlyPublishedPhotoIdSet.has(photoId);
 }
 
 function markUnsplashPhotoUsed(photoId: string | undefined): void {

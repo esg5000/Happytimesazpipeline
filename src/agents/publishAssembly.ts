@@ -332,7 +332,7 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
 
     let heroImage: Record<string, unknown> | undefined;
     const heroSource = doc.heroImageSource as
-      | { provider?: string; imageUrl?: string; imageBase64?: string; altText?: string }
+      | { provider?: string; photoId?: string; imageUrl?: string; imageBase64?: string; altText?: string }
       | null
       | undefined;
     if (heroSource?.imageUrl || heroSource?.imageBase64) {
@@ -380,6 +380,13 @@ export async function publishAssembledDocument(assembly: AssemblyResult): Promis
       body: portableTextBody,
       disclaimer: doc.disclaimer,
       ...(heroImage ? { heroImage } : {}),
+      // Persisted so imageSourcing.ts's cross-run duplicate-image check can query recently-
+      // published posts by the actual Unsplash photo used — heroImage.asset._ref alone is an
+      // opaque Sanity asset id with no traceable link back to the source photo. Only meaningful
+      // for the unsplash provider; gpt-image-1's synthetic photoId isn't a reusable identifier.
+      ...(heroImage && heroSource?.provider === 'unsplash' && heroSource.photoId
+        ? { heroImageUnsplashId: heroSource.photoId }
+        : {}),
       contentSource: doc.contentSource,
       ...(typeof doc.originalSourceUrl === 'string' ? { originalSourceUrl: doc.originalSourceUrl } : {}),
       isActive: true,

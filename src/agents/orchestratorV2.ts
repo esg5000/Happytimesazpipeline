@@ -44,7 +44,7 @@ import { gatherSources } from './sourceGathering';
 import { evaluateSufficiency } from './sufficiencyGate';
 import { writeArticle, type WrittenArticle, type WriteArticleOptions, type ArticlePersona, type ArticleStyle } from './articleWriter';
 import { verifyArticle, type VerificationResult } from './verificationGate';
-import { sourceImage } from './imageSourcing';
+import { sourceImage, loadCrossRunRecentlyUsedUnsplashPhotoIds } from './imageSourcing';
 import { assemblePublishDocument, publishAssembledDocument, type AssemblyResult } from './publishAssembly';
 import { checkForDuplicates, normalizeSourceUrl, type SeenThisRunEntry } from './dedupeFeature';
 
@@ -230,6 +230,11 @@ async function runTopicThroughPipeline(
 export async function runOrchestratorV2(): Promise<OrchestratorV2RunResult> {
   const startedAt = Date.now();
   console.log('[orchestrator-v2] ========== RUN start ==========');
+
+  // Cross-run image-dedup: one Sanity read for the whole run, before Stage 7
+  // ever calls sourceImage() for the first article — see imageSourcing.ts's
+  // loadCrossRunRecentlyUsedUnsplashPhotoIds doc comment.
+  await loadCrossRunRecentlyUsedUnsplashPhotoIds();
 
   const discovery = await runTopicDiscoveryShadow();
   console.log(
@@ -668,6 +673,9 @@ export type ProcessSelectedTopicsResult = {
 export async function processSelectedTopics(candidateIds: string[]): Promise<ProcessSelectedTopicsResult> {
   const startedAt = Date.now();
   console.log(`[orchestrator-v2] ========== processSelectedTopics start (${candidateIds.length} candidate(s)) ==========`);
+
+  // Cross-run image-dedup: same one-read-per-run pattern as runOrchestratorV2().
+  await loadCrossRunRecentlyUsedUnsplashPhotoIds();
 
   const { getSanityClient } = await import('../../agents/sanityPublisher');
   const client = getSanityClient();

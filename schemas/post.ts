@@ -45,6 +45,12 @@ export default defineType({
       ],
     }),
     defineField({
+      name: 'heroImageUnsplashId',
+      title: 'Hero Image Unsplash Photo ID (pipeline)',
+      type: 'string',
+      description: 'Unsplash photo ID used for heroImage, when sourced from Unsplash by the AI pipeline. Powers cross-run duplicate-image avoidance (imageSourcing.ts) — not set for AI-generated (gpt-image-1) or manually uploaded hero images.',
+    }),
+    defineField({
       name: 'additionalImages',
       title: 'Additional images',
       type: 'array',
