@@ -64,6 +64,115 @@ export async function geminiChatJson(
 }
 
 /**
+ * Plain-text (non-JSON) fallback primitive for OpenAI Chat Completions call sites that return
+ * freeform prose rather than a JSON object — e.g. agents/imageAgent.ts's generateImagePrompt.
+ * Same shape as geminiChatJson but without responseMimeType: 'application/json', which would
+ * otherwise force Gemini to wrap prose output in a JSON envelope the caller isn't expecting.
+ */
+export async function geminiChatText(
+  systemPrompt: string,
+  userPrompt: string,
+  opts?: { temperature?: number; maxOutputTokens?: number }
+): Promise<string> {
+  const key = config.gemini.apiKey;
+  if (!key) {
+    throw new Error('GEMINI_API_KEY is not set');
+  }
+
+  const body: Record<string, unknown> = {
+    contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+    generationConfig: {
+      // Same thinkingBudget fix as geminiChatJson (see comment there): avoids gemini-3.x
+      // burning the whole response on internal "thinking" and returning empty text.
+      thinkingConfig: { thinkingBudget: 128 },
+      ...(typeof opts?.temperature === 'number' ? { temperature: opts.temperature } : {}),
+      ...(typeof opts?.maxOutputTokens === 'number' ? { maxOutputTokens: opts.maxOutputTokens } : {}),
+    },
+  };
+  if (systemPrompt.trim()) {
+    body.systemInstruction = { parts: [{ text: systemPrompt }] };
+  }
+
+  const res = await axios.post(GEMINI_GENERATE_CONTENT_URL(config.gemini.model), body, {
+    headers: {
+      'x-goog-api-key': key,
+      'Content-Type': 'application/json',
+    },
+    timeout: 180_000,
+    validateStatus: () => true,
+  });
+
+  if (res.status >= 400) {
+    const data = res.data;
+    const msg =
+      typeof data === 'object' && data && 'error' in (data as object)
+        ? JSON.stringify((data as { error?: unknown }).error)
+        : res.statusText || String(res.status);
+    throw new Error(`Gemini generateContent HTTP ${res.status}: ${msg}`);
+  }
+
+  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== 'string' || !text.trim()) {
+    throw new Error('Gemini generateContent returned no text');
+  }
+  return text.trim();
+}
+
+/**
+ * Audio-transcription fallback for agents/transcribeAgent.ts's transcribeAudio (Whisper). Sends the
+ * raw audio bytes as inline data to Gemini's multimodal generateContent and asks for a verbatim
+ * transcript back as plain text — no forced JSON mode, matching Whisper's plain-text return shape
+ * so callers need no changes.
+ */
+export async function transcribeAudioGemini(audioBuffer: Buffer, mimeType: string): Promise<string> {
+  const key = config.gemini.apiKey;
+  if (!key) {
+    throw new Error('GEMINI_API_KEY is not set');
+  }
+
+  const body = {
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: 'Transcribe this audio verbatim. Return ONLY the spoken words as plain text — no summary, no commentary, no timestamps, no speaker labels, no markdown.',
+          },
+          { inlineData: { mimeType, data: audioBuffer.toString('base64') } },
+        ],
+      },
+    ],
+    // Same thinkingBudget fix as geminiChatJson: an unset/dynamic thinking budget on gemini-3.x
+    // models can burn the whole response on internal "thinking" and return empty text.
+    generationConfig: { thinkingConfig: { thinkingBudget: 128 } },
+  };
+
+  const res = await axios.post(GEMINI_GENERATE_CONTENT_URL(config.gemini.model), body, {
+    headers: {
+      'x-goog-api-key': key,
+      'Content-Type': 'application/json',
+    },
+    timeout: 180_000,
+    validateStatus: () => true,
+  });
+
+  if (res.status >= 400) {
+    const data = res.data;
+    const msg =
+      typeof data === 'object' && data && 'error' in (data as object)
+        ? JSON.stringify((data as { error?: unknown }).error)
+        : res.statusText || String(res.status);
+    throw new Error(`Gemini generateContent (audio) HTTP ${res.status}: ${msg}`);
+  }
+
+  const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (typeof text !== 'string') {
+    throw new Error('Gemini generateContent (audio) returned no text');
+  }
+  return text.trim();
+}
+
+/**
  * Image-generation fallback for agents/imageAgent.ts's generateImage / src/agents/imageSourcing.ts's
  * generateImageWithGptImage1. Uses 'gemini-3.1-flash-lite-image' — the flagship
  * 'gemini-3.1-flash-image' timed out 5/5 in live testing (same capacity crunch as the flagship
