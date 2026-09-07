@@ -500,6 +500,30 @@ export async function researchTopicWithProgress(
 
   const accumulated: Source[] = [];
 
+  // Graceful degradation: one research angle's OpenAI web-search call failing (quota,
+  // timeout, outage) should not kill the whole Dig & Write request — that angle just
+  // contributes no sources, same as if the search had legitimately found nothing. Only
+  // surface a hard error when EVERY angle failed, so a real full-outage doesn't silently
+  // produce a source-free article with no explanation.
+  let totalAngleCalls = 0;
+  let failedAngleCalls = 0;
+  const angleFailureReasons: string[] = [];
+
+  const runAngleSafely = async (angleOrQuery: string): Promise<Source[]> => {
+    totalAngleCalls += 1;
+    try {
+      return await runWebResearchForQuery(trimmed, angleOrQuery);
+    } catch (err) {
+      failedAngleCalls += 1;
+      const msg = err instanceof Error ? err.message : String(err);
+      angleFailureReasons.push(msg);
+      console.warn(
+        `[researchAgent] Web research angle failed — degrading to no sources for this angle. angle="${angleOrQuery}" error=${msg}`
+      );
+      return [];
+    }
+  };
+
   const MAX_WEB_SEARCH_CALLS = 2;
   const targetedAngles = extractTargetedResearchAngles(trimmed).slice(0, 1);
   if (targetedAngles.length > 0) {
@@ -508,7 +532,7 @@ export async function researchTopicWithProgress(
     );
     await Promise.all(
       targetedAngles.map(async (angle) => {
-        const batch = await runWebResearchForQuery(trimmed, angle);
+        const batch = await runAngleSafely(angle);
         accumulated.push(...batch);
         if (onProgress) {
           onProgress({ sources: mergeSourcesByUrl(accumulated) });
@@ -521,13 +545,21 @@ export async function researchTopicWithProgress(
   const queries = (await extractSearchQueries(trimmed)).slice(0, remainingGenericSearchCalls);
   await Promise.all(
     queries.map(async (q) => {
-      const batch = await runWebResearchForQuery(trimmed, q);
+      const batch = await runAngleSafely(q);
       accumulated.push(...batch);
       if (onProgress) {
         onProgress({ sources: mergeSourcesByUrl(accumulated) });
       }
     })
   );
+
+  if (totalAngleCalls > 0 && failedAngleCalls === totalAngleCalls) {
+    throw new Error(
+      `researchTopicWithProgress: all ${totalAngleCalls} web-research angle(s) failed — OpenAI web search appears to be unavailable. Last error: ${
+        angleFailureReasons[angleFailureReasons.length - 1] ?? 'unknown error'
+      }`
+    );
+  }
 
   let sources = mergeSourcesByUrl(accumulated);
   sources = await enrichTopSourcesWithFetchedPageText(sources, 2);
