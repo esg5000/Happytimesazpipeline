@@ -1,5 +1,6 @@
 import express from 'express';
 import multer from 'multer';
+import convertHeic from 'heic-convert';
 
 import { config } from './config';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
@@ -29,6 +30,33 @@ import { run as runContentAuditor } from './scripts/auditContent';
 import { runEventsRoundup } from './agents/eventsRoundup';
 
 const RENDER_HOST = '0.0.0.0';
+
+/**
+ * iPhones set to "High Efficiency" (the default) share photos as HEIC. Browsers
+ * and OSes are inconsistent about labeling the multipart file's MIME type for
+ * it (often generic "application/octet-stream" or empty), so sniff the
+ * ISO-BMFF ftyp box brand instead of trusting the reported MIME type/extension.
+ */
+function isHeicUpload(buffer: Buffer, mimeType: string | undefined, filename: string | undefined): boolean {
+  if (mimeType === 'image/heic' || mimeType === 'image/heif') return true;
+  if (filename && /\.hei[cf]$/i.test(filename)) return true;
+
+  if (buffer.length < 12) return false;
+  if (buffer.toString('ascii', 4, 8) !== 'ftyp') return false;
+  const brand = buffer.toString('ascii', 8, 12);
+  return ['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1'].includes(brand);
+}
+
+/** Converts a HEIC/HEIF buffer to JPEG; returns the input unchanged for every other format. */
+async function convertHeicToJpegIfNeeded(
+  buffer: Buffer,
+  mimeType: string | undefined,
+  filename: string
+): Promise<{ buffer: Buffer; filename: string }> {
+  if (!isHeicUpload(buffer, mimeType, filename)) return { buffer, filename };
+  const jpegBuffer = await convertHeic({ buffer, format: 'JPEG', quality: 0.92 });
+  return { buffer: jpegBuffer, filename: filename.replace(/\.hei[cf]$/i, '') + '.jpg' };
+}
 
 const multerUploadImage = multer({
   storage: multer.memoryStorage(),
@@ -432,7 +460,8 @@ function registerDaemonApiRoutes(app: express.Application): void {
         }
         const name = file.originalname || 'upload.jpg';
         const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'upload.jpg';
-        const assetId = await uploadImageBufferToSanity(file.buffer, safeName);
+        const { buffer, filename } = await convertHeicToJpegIfNeeded(file.buffer, file.mimetype, safeName);
+        const assetId = await uploadImageBufferToSanity(buffer, filename);
         const chatId = resolveSessionChatId(req);
         const session = getTelegramSession(chatId);
         const prev = session.recentUploadAssetIds ?? [];
