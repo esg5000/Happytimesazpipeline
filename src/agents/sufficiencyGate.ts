@@ -241,12 +241,44 @@ function countSubstantialSentences(text: string): number {
   return text.split(/(?<=[.!?])\s+/).filter(looksLikeProseSentence).length;
 }
 
+/**
+ * Per-domain override of the full-article substantiality bar — scoped
+ * narrowly to mouthbysouthwest.com. Its house style is short punchy
+ * mini-reviews (confirmed real example: 605 chars, 2 measured substantial
+ * sentences — genuinely useful, specific content that will still rarely
+ * reach MIN_SOURCE_ARTICLE_TEXT_CHARS/SENTENCES's full-article bar even
+ * with this override, and that's the correct outcome: this content depth
+ * should land as 'blurb', not be inflated into 'full-article' treatment).
+ * This override exists so a longer-than-usual mouthbysouthwest piece isn't
+ * needlessly capped at 'blurb' purely for being from this domain. See
+ * sourceGathering.ts's matching DOMAIN_PROSE_OVERRIDES — that's the gate
+ * that actually determines whether this fact survives to be checked here
+ * at all (sourceArticleTextSubstantial=false disqualifies it entirely,
+ * upstream of this function).
+ */
+const DOMAIN_SUFFICIENCY_OVERRIDES: Record<string, { minChars: number; minSentences: number }> = {
+  'mouthbysouthwest.com': { minChars: 400, minSentences: 3 },
+};
+
+function hostnameOf(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
 /** True when a valid sourceArticleText fact exists with enough real length AND enough sentence-shaped content — see the constant block above for why length alone isn't used. */
 function hasSubstantialSourceArticleText(validFacts: Fact[]): boolean {
   const fact = validFacts.find((f) => f.field === SOURCE_ARTICLE_TEXT_FIELD);
   if (!fact) return false;
-  if (fact.value.length < MIN_SOURCE_ARTICLE_TEXT_CHARS) return false;
-  return countSubstantialSentences(fact.value) >= MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES;
+  const host = hostnameOf(fact.sourceUrl);
+  const override = host ? DOMAIN_SUFFICIENCY_OVERRIDES[host] : undefined;
+  const minChars = override?.minChars ?? MIN_SOURCE_ARTICLE_TEXT_CHARS;
+  const minSentences = override?.minSentences ?? MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES;
+  if (fact.value.length < minChars) return false;
+  return countSubstantialSentences(fact.value) >= minSentences;
 }
 
 function decideFormat(

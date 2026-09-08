@@ -231,6 +231,46 @@ function isMeaningfulProseText(text: string): boolean {
   return countSubstantialSentences(text) >= MIN_SUBSTANTIAL_SENTENCES;
 }
 
+// ---------------------------------------------------------------------------
+// Per-domain substantiality overrides (added 2026-09-08) — scoped narrowly,
+// mouthbysouthwest.com only. Confirmed real example ("Zane's Pizza & Ice
+// Cream pairs 32-inch pies with Thrifty"): 605 chars of genuine, specific,
+// usable content (location, hours, menu items) — well past
+// PAGE_FETCH_MEANINGFUL_MIN_CHARS (500) on raw length, but this site's
+// house style is short punchy mini-reviews, one long sentence plus one
+// short one, and the char count alone was NEVER the actual blocker for this
+// example — MIN_SUBSTANTIAL_SENTENCES (3) was: the real fetched text
+// measured only 2 substantial sentences (a nav/sponsor-list blob with no
+// internal punctuation merges with the article's first real sentence,
+// pushing it past MAX_SUBSTANTIAL_SENTENCE_CHARS and losing it from the
+// count — a separate, pre-existing quirk in the sentence splitter, not
+// something this override attempts to fix). Confirmed against a second
+// mouthbysouthwest example (a genuinely paywalled "MXSW Insider" article,
+// all boilerplate, only 1 substantial "sentence" — the paywall notice
+// itself) that a floor of 2 sentences still correctly rejects that case,
+// so this isn't just turning the check off for the domain.
+// ---------------------------------------------------------------------------
+const DOMAIN_PROSE_OVERRIDES: Record<string, { minChars: number; minSentences: number }> = {
+  'mouthbysouthwest.com': { minChars: 400, minSentences: 2 },
+};
+
+function hostnameOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '').toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Same check as isMeaningfulProseText, but applies a per-domain threshold override (see DOMAIN_PROSE_OVERRIDES) when the fetched URL's host has one. */
+function isMeaningfulProseTextForUrl(text: string, url: string): boolean {
+  const host = hostnameOf(url);
+  const override = host ? DOMAIN_PROSE_OVERRIDES[host] : undefined;
+  if (!override) return isMeaningfulProseText(text);
+  if (meaningfulPlainTextLength(text) < override.minChars) return false;
+  return countSubstantialSentences(text) >= override.minSentences;
+}
+
 /** Headless Chromium: rendered DOM text when static HTTP fetch yields little content. Ported from researchAgent.ts's fetchPagePlainTextWithPlaywright. */
 async function fetchPagePlainTextWithPlaywright(url: string): Promise<string | null> {
   console.log(`[source-gathering] Playwright fallback triggered for ${url}`);
@@ -1302,7 +1342,7 @@ async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringR
       console.log(`[source-gathering] default: nothing usable from ${candidate.url}`);
       continue;
     }
-    if (isMeaningfulProseText(pageResult.text)) {
+    if (isMeaningfulProseTextForUrl(pageResult.text, candidate.url)) {
       console.log(`[source-gathering] default: substantial content found at ${candidate.url} — stopping fallback chain here.`);
       chosen = { url: candidate.url, pageResult };
       break;
