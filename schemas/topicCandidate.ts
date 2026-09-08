@@ -7,8 +7,10 @@ import { defineField, defineType } from 'sanity';
  * path alongside (not a replacement for) runOrchestratorV2AndPublish's
  * existing automatic flow. Fields mirror topicDiscovery.ts's
  * TopicDiscoveryResult (the classification fields only; snippet/section/
- * verdict/etc — sourceOutlet, publishedDate, and searchSummaries are
- * deliberately not carried over here, out of scope for this document).
+ * verdict/etc — sourceOutlet and publishedDate are deliberately not
+ * carried over here, out of scope for this document). searchSummaries'
+ * URLs ARE carried over (as alternateSourceUrls, below) — Stage 3 fallback
+ * source URLs for when the primary sourceUrl can't be fetched.
  */
 export default defineType({
   name: 'topicCandidate',
@@ -38,6 +40,14 @@ export default defineType({
     defineField({ name: 'subjectTag', type: 'string' }),
     defineField({ name: 'specificSubject', type: 'string' }),
     defineField({
+      name: 'alternateSourceUrls',
+      title: 'Alternate Source URLs',
+      type: 'array',
+      of: [{ type: 'url' }],
+      description: 'Stage 1 web_search fallback URLs (title/summary text not persisted — only the URL, which is all Stage 3 ever reads). Read back by processSelectedTopics() and threaded into Stage 3 as searchSummaries so a dashboard-selected candidate has a real fallback if sourceUrl itself is unfetchable (bot-blocked, paywalled, redirect loop), the same as the automated pipeline already has.',
+      readOnly: true,
+    }),
+    defineField({
       name: 'status',
       title: 'Status',
       type: 'string',
@@ -60,6 +70,23 @@ export default defineType({
       rows: 3,
       readOnly: true,
       description: 'Set by processSelectedTopics() when status flips to "processed" — what actually happened to this pick (published with a real Sanity id/slug, or the real drop reason from whichever gate caught it). Never left blank on a processed doc, so this is visible in Studio without needing the API response or server logs.',
+    }),
+    defineField({
+      name: 'outcome',
+      title: 'Outcome',
+      type: 'string',
+      readOnly: true,
+      description: 'Set alongside status:"processed" by processSelectedTopics() — the same outcome enum returned in that API call\'s response, now persisted so "processed" can be told apart from an actual publish without reading processingNote\'s free text. Undefined for status "pending"/"rejected" docs (nothing to report yet).',
+      options: {
+        list: [
+          { title: 'Published', value: 'published' },
+          { title: 'Publish failed', value: 'publish-failed' },
+          { title: 'Dropped — duplicate (Stage 9)', value: 'dropped-dedupe' },
+          { title: 'Dropped — insufficient facts (Stage 4)', value: 'dropped-sufficiency' },
+          { title: 'Dropped — writing failed (Stage 5)', value: 'dropped-writing' },
+          { title: 'Dropped — verification failed (Stage 6)', value: 'dropped-verification' },
+        ],
+      },
     }),
     defineField({
       name: 'selectedPersona',
@@ -93,11 +120,12 @@ export default defineType({
     }),
   ],
   preview: {
-    select: { title: 'title', section: 'section', status: 'status' },
-    prepare({ title, section, status }) {
+    select: { title: 'title', section: 'section', status: 'status', outcome: 'outcome' },
+    prepare({ title, section, status, outcome }) {
+      const statusLabel = status === 'processed' && outcome ? `processed — ${outcome}` : status || 'pending';
       return {
         title: title || '(untitled)',
-        subtitle: `${section || 'no section'} — ${status || 'pending'}`,
+        subtitle: `${section || 'no section'} — ${statusLabel}`,
       };
     },
   },

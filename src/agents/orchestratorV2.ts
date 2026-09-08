@@ -484,6 +484,16 @@ async function fetchKnownSourceUrls(
  * onto this document).
  */
 function toTopicCandidateDoc(topic: TopicDiscoveryResult, discoveredAt: string): Record<string, unknown> {
+  // Only the URLs are persisted (not title/summary) — Stage 3's buildFetchCandidates
+  // only ever reads .url from searchSummaries, so the title/summary text Stage 1's
+  // web_search pass gathered would just sit unused on this document. Keeps
+  // topicCandidate docs small while still giving processSelectedTopics() real
+  // fallback URLs to hand back to Stage 3, instead of the single primary link a
+  // reconstructed topic used to be limited to.
+  const alternateSourceUrls = (topic.searchSummaries || [])
+    .map((s) => s.url)
+    .filter((url): url is string => typeof url === 'string' && url.trim().length > 0);
+
   return {
     _type: 'topicCandidate',
     title: topic.title,
@@ -495,6 +505,7 @@ function toTopicCandidateDoc(topic: TopicDiscoveryResult, discoveredAt: string):
     relevanceScore: topic.relevanceScore,
     subjectTag: topic.subjectTag,
     specificSubject: topic.specificSubject,
+    ...(alternateSourceUrls.length > 0 ? { alternateSourceUrls } : {}),
     status: 'pending',
   };
 }
@@ -653,6 +664,8 @@ type TopicCandidateDoc = {
   specificSubject?: string;
   selectedPersona?: string;
   selectedStyle?: string;
+  /** Stage 1's alternate source URLs, persisted at discovery time — see toTopicCandidateDoc. Fallback candidates for Stage 3 if sourceUrl itself is unfetchable. */
+  alternateSourceUrls?: string[];
 };
 
 export type ProcessedTopicOutcome = {
@@ -681,16 +694,11 @@ export async function processSelectedTopics(candidateIds: string[]): Promise<Pro
   const client = getSanityClient();
 
   const candidates = await client.fetch<TopicCandidateDoc[]>(
-    `*[_type == "topicCandidate" && _id in $ids]{ _id, title, sourceUrl, snippet, section, verdict, relevanceScore, subjectTag, specificSubject, selectedPersona, selectedStyle }`,
+    `*[_type == "topicCandidate" && _id in $ids]{ _id, title, sourceUrl, snippet, section, verdict, relevanceScore, subjectTag, specificSubject, selectedPersona, selectedStyle, alternateSourceUrls }`,
     { ids: candidateIds }
   );
   console.log(`[orchestrator-v2] Fetched ${candidates.length}/${candidateIds.length} requested topicCandidate doc(s).`);
 
-  const droppedAtDedupe: DroppedTopic[] = [];
-  const droppedAtSufficiency: DroppedTopic[] = [];
-  const droppedAtWriting: DroppedTopic[] = [];
-  const droppedAtVerification: DroppedTopic[] = [];
-  const published: PublishedTopic[] = [];
   // Shared across the WHOLE batch, per the earlier decision — topics
   // selected together get cross-checked against each other, not just
   // against Sanity's existing posts (same mechanism as
@@ -698,15 +706,25 @@ export async function processSelectedTopics(candidateIds: string[]): Promise<Pro
   // comment on seenThisRun).
   const seenThisRun: SeenThisRunEntry[] = [];
 
+  const outcomes: ProcessedTopicOutcome[] = [];
+  const realPublishes: RealPublishRecord[] = [];
+  const realPublishFailures: RealPublishFailure[] = [];
+
+  // One candidate fully processed — pipeline run through, real-published if
+  // applicable, outcome computed, AND its topicCandidate doc patched — before
+  // moving to the next. Deliberately NOT batched into one shared bucket set +
+  // one shared transaction at the end (the old shape): if a later candidate
+  // in the batch throws, every earlier candidate here is already durably
+  // marked processed/published in Sanity, not stuck at status='pending'
+  // (which risked a human re-selecting and re-publishing a duplicate).
   for (const candidate of candidates) {
-    // Reconstructed from topicCandidate — sourceOutlet/publishedDate/
-    // searchSummaries were deliberately never persisted on that document
-    // (see schemas/topicCandidate.ts's header comment), so those three
-    // fields fall back to null/null/[]. Stage 9's date-based dedupe check
-    // and Stage 3's searchSummaries-based fallback URLs are unavailable
-    // for reconstructed topics as a result — topic.link (the real
-    // sourceUrl) is still Stage 3's primary candidate either way, so this
-    // is a minor degradation, not a break.
+    // Reconstructed from topicCandidate — sourceOutlet/publishedDate are
+    // still not persisted on that document (out of scope; date-based Stage 9
+    // dedupe for reconstructed topics remains a minor degradation). Stage 3's
+    // searchSummaries fallback URLs ARE now available via
+    // candidate.alternateSourceUrls (persisted by discoverAndPersistTopics's
+    // toTopicCandidateDoc) — title/summary aren't stored, only the url,
+    // which is all buildFetchCandidates() in sourceGathering.ts reads.
     const topic: TopicDiscoveryResult = {
       title: candidate.title,
       snippet: candidate.snippet ?? '',
@@ -718,7 +736,7 @@ export async function processSelectedTopics(candidateIds: string[]): Promise<Pro
       relevanceScore: candidate.relevanceScore ?? 0,
       subjectTag: candidate.subjectTag ?? '',
       specificSubject: candidate.specificSubject ?? '',
-      searchSummaries: [],
+      searchSummaries: (candidate.alternateSourceUrls || []).map((url) => ({ title: '', url, summary: '' })),
     };
 
     const writerOptions: WriteArticleOptions = {
@@ -726,76 +744,72 @@ export async function processSelectedTopics(candidateIds: string[]): Promise<Pro
       style: coerceStyle(candidate.selectedStyle),
     };
     console.log(
-      `[orchestrator-v2] Reconstructed "${topic.title}" (candidateId=${candidate._id}) — persona=${writerOptions.persona ?? '(none)'}, style=${writerOptions.style ?? '(none)'}`
+      `[orchestrator-v2] Reconstructed "${topic.title}" (candidateId=${candidate._id}) — persona=${writerOptions.persona ?? '(none)'}, style=${writerOptions.style ?? '(none)'}, alternateSourceUrls=${topic.searchSummaries.length}`
     );
 
-    await runTopicThroughPipeline(
-      topic,
-      { droppedAtDedupe, droppedAtSufficiency, droppedAtWriting, droppedAtVerification, published, seenThisRun },
-      writerOptions
-    );
-  }
-
-  // --- Real publish — same publishAssembledDocument() path
-  // runOrchestratorV2AndPublish() already uses, reused here so selected
-  // topics actually land in Sanity, not just reach a dry-run publish-ready
-  // state. ---
-  const realPublishes: RealPublishRecord[] = [];
-  const realPublishFailures: RealPublishFailure[] = [];
-  for (const p of published) {
-    console.log(`[orchestrator-v2] REAL PUBLISH attempt: "${p.title}"`);
-    const outcome = await publishAssembledDocument({ publishReady: true, document: p.document });
-    if (outcome.status === 'published') {
-      realPublishes.push({ title: p.title, link: p.link, sanityId: outcome.id, slug: outcome.slug });
-      console.log(`[orchestrator-v2] REAL PUBLISH ok: "${p.title}" → _id=${outcome.id}, slug=${outcome.slug}`);
-    } else {
-      const message = outcome.status === 'error' ? outcome.message : outcome.reason;
-      realPublishFailures.push({ title: p.title, link: p.link, message });
-      console.error(`[orchestrator-v2] REAL PUBLISH FAILED: "${p.title}" → ${message}`);
-    }
-  }
-
-  // --- Record what actually happened to each pick, then mark every
-  // candidate status: 'processed' — matched back by sourceUrl/link, unique
-  // per candidate in a batch. ---
-  const outcomes: ProcessedTopicOutcome[] = [];
-  const patchTx = client.transaction();
-  for (const candidate of candidates) {
-    const realPub = realPublishes.find((r) => r.link === candidate.sourceUrl);
-    const realFail = realPublishFailures.find((r) => r.link === candidate.sourceUrl);
-    const dedupeHit = droppedAtDedupe.find((d) => d.link === candidate.sourceUrl);
-    const sufficiencyHit = droppedAtSufficiency.find((d) => d.link === candidate.sourceUrl);
-    const writingHit = droppedAtWriting.find((d) => d.link === candidate.sourceUrl);
-    const verificationHit = droppedAtVerification.find((d) => d.link === candidate.sourceUrl);
+    const droppedAtDedupe: DroppedTopic[] = [];
+    const droppedAtSufficiency: DroppedTopic[] = [];
+    const droppedAtWriting: DroppedTopic[] = [];
+    const droppedAtVerification: DroppedTopic[] = [];
+    const published: PublishedTopic[] = [];
 
     let outcome: ProcessedTopicOutcome;
-    if (realPub) {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'published', detail: `Published — sanityId=${realPub.sanityId}, slug=${realPub.slug}` };
-    } else if (realFail) {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: realFail.message };
-    } else if (dedupeHit) {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-dedupe', detail: dedupeHit.reason };
-    } else if (sufficiencyHit) {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-sufficiency', detail: sufficiencyHit.reason };
-    } else if (writingHit) {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-writing', detail: writingHit.reason };
-    } else if (verificationHit) {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-verification', detail: verificationHit.reason };
-    } else {
-      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: 'Unexpected — candidate did not land in any known outcome bucket.' };
+    try {
+      await runTopicThroughPipeline(
+        topic,
+        { droppedAtDedupe, droppedAtSufficiency, droppedAtWriting, droppedAtVerification, published, seenThisRun },
+        writerOptions
+      );
+
+      if (published.length > 0) {
+        const p = published[0]!;
+        console.log(`[orchestrator-v2] REAL PUBLISH attempt: "${p.title}"`);
+        const publishOutcome = await publishAssembledDocument({ publishReady: true, document: p.document });
+        if (publishOutcome.status === 'published') {
+          realPublishes.push({ title: p.title, link: p.link, sanityId: publishOutcome.id, slug: publishOutcome.slug });
+          console.log(`[orchestrator-v2] REAL PUBLISH ok: "${p.title}" → _id=${publishOutcome.id}, slug=${publishOutcome.slug}`);
+          outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'published', detail: `Published — sanityId=${publishOutcome.id}, slug=${publishOutcome.slug}` };
+        } else {
+          const message = publishOutcome.status === 'error' ? publishOutcome.message : publishOutcome.reason;
+          realPublishFailures.push({ title: p.title, link: p.link, message });
+          console.error(`[orchestrator-v2] REAL PUBLISH FAILED: "${p.title}" → ${message}`);
+          outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: message };
+        }
+      } else if (droppedAtDedupe.length > 0) {
+        outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-dedupe', detail: droppedAtDedupe[0]!.reason };
+      } else if (droppedAtSufficiency.length > 0) {
+        outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-sufficiency', detail: droppedAtSufficiency[0]!.reason };
+      } else if (droppedAtWriting.length > 0) {
+        outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-writing', detail: droppedAtWriting[0]!.reason };
+      } else if (droppedAtVerification.length > 0) {
+        outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'dropped-verification', detail: droppedAtVerification[0]!.reason };
+      } else {
+        outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: 'Unexpected — candidate did not land in any known outcome bucket.' };
+      }
+    } catch (err: unknown) {
+      // Never let one candidate's uncaught exception kill the batch (and
+      // previously would've left it — and every candidate before it —
+      // stuck at status='pending' forever, no trace of what happened).
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[orchestrator-v2] processSelectedTopics: "${candidate.title}" (${candidate._id}) threw unexpectedly:`, msg);
+      outcome = { candidateId: candidate._id, title: candidate.title, outcome: 'publish-failed', detail: `Unexpected error: ${msg}` };
     }
+
     outcomes.push(outcome);
-    patchTx.patch(candidate._id, (p) => p.set({ status: 'processed', processingNote: outcome.detail }));
+
+    try {
+      await client.patch(candidate._id).set({ status: 'processed', outcome: outcome.outcome, processingNote: outcome.detail }).commit();
+    } catch (patchErr: unknown) {
+      console.error(
+        `[orchestrator-v2] processSelectedTopics: failed to persist status/outcome for "${candidate.title}" (${candidate._id}) — it will remain visible as pending despite being processed:`,
+        patchErr instanceof Error ? patchErr.message : String(patchErr)
+      );
+    }
   }
 
   const missingIds = candidateIds.filter((id) => !candidates.some((c) => c._id === id));
   for (const id of missingIds) {
     outcomes.push({ candidateId: id, title: '(not found)', outcome: 'publish-failed', detail: 'topicCandidate document not found — never processed.' });
-  }
-
-  if (candidates.length > 0) {
-    await patchTx.commit();
-    console.log(`[orchestrator-v2] Marked ${candidates.length} topicCandidate doc(s) as status=processed.`);
   }
 
   const wallClockMs = Date.now() - startedAt;
