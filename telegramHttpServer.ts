@@ -940,6 +940,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
       appendActivityLog('discoverTopics: started', 'discoverTopics');
       res.json({ ok: true, status: 'started', command: 'discoverTopics', source: resolveApiClientSource(req) });
       void (async () => {
+        const startedAt = new Date().toISOString();
         try {
           const result = await discoverAndPersistTopics();
           const staleBatchNote = result.preExistingPendingCount > 0
@@ -949,10 +950,43 @@ function registerDaemonApiRoutes(app: express.Application): void {
             `discoverTopics: complete — kept=${result.keptCount}, skipped=${result.skippedCount}, already-seen=${result.skippedAsAlreadySeenCount}, persisted=${result.persistedCount}${staleBatchNote}`,
             'discoverTopics'
           );
+          // Durable counterpart to the log line above — same pattern syncNewsV2 already
+          // uses (see recordSyncRun calls further up this file). Unlike the shadow-mode
+          // JSON log (topicDiscovery.ts's writeShadowLog, full per-query detail but local
+          // to whichever host ran it), this is queryable from Sanity regardless of host,
+          // and survives process restarts — see the 2026-09 low-volume investigation this
+          // was added for.
+          await recordSyncRun({
+            syncType: 'discoverTopics',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            itemsSynced: result.persistedCount,
+            errors: 0,
+            stage0Usage: {
+              brightData: result.stage0Usage.brightData,
+              serpApi: result.stage0Usage.serpApi,
+            },
+            topicDiscoveryUsage: {
+              queriesAttempted: result.queriesAttempted,
+              stage1Kept: result.keptCount,
+              stage1Dropped: result.skippedCount,
+              skippedAsAlreadySeen: result.skippedAsAlreadySeenCount,
+              preExistingPendingCount: result.preExistingPendingCount,
+            },
+            triggeredBy: 'manual',
+          });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command discoverTopics failed:', msg);
           appendActivityLog(`discoverTopics: failed — ${msg}`, 'discoverTopics');
+          await recordSyncRun({
+            syncType: 'discoverTopics',
+            startedAt,
+            finishedAt: new Date().toISOString(),
+            errors: 1,
+            errorSample: [msg],
+            triggeredBy: 'manual',
+          });
         }
       })();
       return;

@@ -13,7 +13,7 @@ export default defineType({
     defineField({
       name: 'syncType',
       type: 'string',
-      description: 'e.g. events, news, eventsCleanup, pipeline',
+      description: 'e.g. events, news, newsV2, discoverTopics, eventsCleanup, pipeline',
       validation: (r) => r.required(),
     }),
     defineField({ name: 'startedAt', type: 'datetime', validation: (r) => r.required() }),
@@ -35,7 +35,7 @@ export default defineType({
     defineField({
       name: 'stage0Usage',
       type: 'object',
-      description: 'newsV2 runs only — per-provider Stage 0 call accounting, so it is directly queryable which provider (Bright Data vs SerpAPI fallback) actually discovered this run\'s items.',
+      description: 'newsV2 and discoverTopics runs — per-provider Stage 0 call accounting, so it is directly queryable which provider (Bright Data vs SerpAPI fallback) actually discovered this run\'s items.',
       fields: [
         defineField({
           name: 'brightData',
@@ -55,6 +55,18 @@ export default defineType({
             defineField({ name: 'errors', type: 'number' }),
           ],
         }),
+      ],
+    }),
+    defineField({
+      name: 'topicDiscoveryUsage',
+      type: 'object',
+      description: 'discoverTopics runs only — Stage 0 query volume, Stage 1 kept/dropped, and cross-run sourceUrl-dedup counts, so a day\'s topic-picker volume is queryable here instead of only in the local shadow-mode JSON log on whichever host ran it.',
+      fields: [
+        defineField({ name: 'queriesAttempted', type: 'number', description: 'STAGE0_QUERIES.length at run time.' }),
+        defineField({ name: 'stage1Kept', type: 'number', description: 'Stage 0-2 kept count, before the cross-run sourceUrl dedup check.' }),
+        defineField({ name: 'stage1Dropped', type: 'number', description: 'Stage 1 skipped count (editorial gate + crime/tragedy + editorial-fit + national-skip verdicts combined).' }),
+        defineField({ name: 'skippedAsAlreadySeen', type: 'number', description: 'Kept candidates whose sourceUrl matched an existing topicCandidate doc (any status) or a published post, and were not persisted as new docs.' }),
+        defineField({ name: 'preExistingPendingCount', type: 'number', description: 'Pending topicCandidate docs already sitting in Sanity from an earlier, unreviewed run before this run persisted its own.' }),
       ],
     }),
     defineField({

@@ -316,6 +316,9 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'sleep health study research findings', queryClass: 'health-wellness-az' },
 ];
 
+/** Exported so callers (e.g. orchestratorV2.ts's discoverAndPersistTopics, for its durable syncRun record) can report query volume without duplicating the list. */
+export const STAGE0_QUERY_COUNT = STAGE0_QUERIES.length;
+
 export type RawNewsItem = {
   title: string;
   link: string;

@@ -11,10 +11,18 @@ export type SyncRunRecord = {
   errorSample?: string[];
   /** A few example actions this run took (e.g. hero re-fixed, duplicate unpublished) — not all of them. */
   actionsSample?: string[];
-  /** Per-provider Stage 0 call accounting for newsV2 runs — which provider actually discovered this run's items. Omitted for sync types with no Stage 0 concept. */
+  /** Per-provider Stage 0 call accounting for newsV2/discoverTopics runs — which provider actually discovered this run's items. Omitted for sync types with no Stage 0 concept. */
   stage0Usage?: {
     brightData: { calls: number; served: number; errors: number };
     serpApi: { calls: number; served: number; errors: number };
+  };
+  /** discoverTopics runs only — Stage 0 query volume, Stage 1 kept/dropped, and cross-run sourceUrl-dedup counts. See schemas/syncRun.ts's topicDiscoveryUsage field. */
+  topicDiscoveryUsage?: {
+    queriesAttempted: number;
+    stage1Kept: number;
+    stage1Dropped: number;
+    skippedAsAlreadySeen: number;
+    preExistingPendingCount: number;
   };
   triggeredBy: 'cron' | 'manual';
 };
@@ -44,6 +52,7 @@ export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
         ? { actionsSample: record.actionsSample.slice(0, ACTIONS_SAMPLE_MAX) }
         : {}),
       ...(record.stage0Usage ? { stage0Usage: record.stage0Usage } : {}),
+      ...(record.topicDiscoveryUsage ? { topicDiscoveryUsage: record.topicDiscoveryUsage } : {}),
       triggeredBy: record.triggeredBy,
     });
   } catch (err: unknown) {

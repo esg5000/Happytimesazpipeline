@@ -39,7 +39,7 @@
  * production pipeline's immediate-publish behavior. Only call it when a
  * real publish run is actually intended.
  */
-import { runTopicDiscoveryShadow, type TopicDiscoveryResult, type Stage0Usage } from './topicDiscovery';
+import { runTopicDiscoveryShadow, STAGE0_QUERY_COUNT, type TopicDiscoveryResult, type Stage0Usage } from './topicDiscovery';
 import { gatherSources } from './sourceGathering';
 import { evaluateSufficiency } from './sufficiencyGate';
 import { writeArticle, type WrittenArticle, type WriteArticleOptions, type ArticlePersona, type ArticleStyle } from './articleWriter';
@@ -417,6 +417,10 @@ export type DiscoverAndPersistTopicsResult = {
    */
   skippedAsAlreadySeenCount: number;
   wallClockMs: number;
+  /** Total Stage 0 queries attempted this run — for the durable syncRun record (see recordSyncRun call in telegramHttpServer.ts). */
+  queriesAttempted: number;
+  /** Stage 0 per-provider call accounting, passed through from runTopicDiscoveryShadow — same shape syncNewsV2 already records on its syncRun docs. */
+  stage0Usage: Stage0Usage;
 };
 
 /**
@@ -582,6 +586,8 @@ export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopi
     preExistingPendingCount,
     skippedAsAlreadySeenCount,
     wallClockMs,
+    queriesAttempted: STAGE0_QUERY_COUNT,
+    stage0Usage: discovery.stage0Usage,
   };
   console.log(`[orchestrator-v2] ========== discoverAndPersistTopics end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
   return result;
