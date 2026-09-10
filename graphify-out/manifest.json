@@ -1,8 +1,8 @@
 {
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\config.ts": {
-    "mtime": 1787122386.4825957,
-    "ast_hash": "b35a334d7d860c8f15fb9b369102e936",
-    "semantic_hash": "b35a334d7d860c8f15fb9b369102e936"
+    "mtime": 1787897588.9181685,
+    "ast_hash": "7e9d483eaaa3213cb5676b2de83515d8",
+    "semantic_hash": "7e9d483eaaa3213cb5676b2de83515d8"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\daemonServer.ts": {
     "mtime": 1786650135.8297014,
@@ -15,9 +15,9 @@
     "semantic_hash": "54ddbb966567505959de0b5a8fa71c2e"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\package.json": {
-    "mtime": 1778874748.3283243,
-    "ast_hash": "7ccb7d9a9be67d618fa4ee7b42688f72",
-    "semantic_hash": "7ccb7d9a9be67d618fa4ee7b42688f72"
+    "mtime": 1788740248.9944398,
+    "ast_hash": "f96cd09f509ed5a6ee57ffe9ea7633ce",
+    "semantic_hash": "f96cd09f509ed5a6ee57ffe9ea7633ce"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\pipelineRunner.ts": {
     "mtime": 1775364013.6186082,
@@ -30,9 +30,9 @@
     "semantic_hash": "b0eade8c3ff95d9d4fde14882ef335bf"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\syncRunLogger.ts": {
-    "mtime": 1786650027.6809523,
-    "ast_hash": "6974ed7bd9ba04108339bffe698a084d",
-    "semantic_hash": "6974ed7bd9ba04108339bffe698a084d"
+    "mtime": 1789054663.8084772,
+    "ast_hash": "1cdc0cf9c4285eb97299a054485ffe48",
+    "semantic_hash": "1cdc0cf9c4285eb97299a054485ffe48"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\telegramBotCore.ts": {
     "mtime": 1778783577.4633021,
@@ -40,9 +40,9 @@
     "semantic_hash": "107bef8b5a0ab988a25e1bdf043eef8c"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\telegramHttpServer.ts": {
-    "mtime": 1786839195.156511,
-    "ast_hash": "a0deac427cfcea017b5f7f42e9abc8d3",
-    "semantic_hash": "a0deac427cfcea017b5f7f42e9abc8d3"
+    "mtime": 1789054681.6721928,
+    "ast_hash": "a3c2a8ab1dc98c03165cd5971e63fff3",
+    "semantic_hash": "a3c2a8ab1dc98c03165cd5971e63fff3"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\telegramPollingDev.ts": {
     "mtime": 1774588574.3157363,
@@ -65,9 +65,9 @@
     "semantic_hash": "c8462296c0ae4da53b894edff01eb2ff"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\editorAgent.ts": {
-    "mtime": 1785975593.2265575,
-    "ast_hash": "861d89a608cd08e75a1bee7fc82224e2",
-    "semantic_hash": "861d89a608cd08e75a1bee7fc82224e2"
+    "mtime": 1787897949.6650608,
+    "ast_hash": "8cf6c7c4bc0b09769f112dd53fe04fd5",
+    "semantic_hash": "8cf6c7c4bc0b09769f112dd53fe04fd5"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\eventCleanup.ts": {
     "mtime": 1786650072.0663016,
@@ -75,19 +75,19 @@
     "semantic_hash": "a4d70fd6e9a532e037ba8cbebe393e26"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\imageAgent.ts": {
-    "mtime": 1778783539.881254,
-    "ast_hash": "991da9fb1f2891b6a52b6acfea2871b5",
-    "semantic_hash": "991da9fb1f2891b6a52b6acfea2871b5"
+    "mtime": 1788742312.6259873,
+    "ast_hash": "7c4f409a7cf652e1666ba28db08b4d59",
+    "semantic_hash": "7c4f409a7cf652e1666ba28db08b4d59"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\ingestAgent.ts": {
-    "mtime": 1776118684.989381,
-    "ast_hash": "e1c1a7afca1e29c7b3cf37a4d45e5992",
-    "semantic_hash": "e1c1a7afca1e29c7b3cf37a4d45e5992"
+    "mtime": 1787875109.4001396,
+    "ast_hash": "ab019406f422c7ccbcfbcc874d2927e8",
+    "semantic_hash": "ab019406f422c7ccbcfbcc874d2927e8"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\newsApiSync.ts": {
-    "mtime": 1786649923.2765486,
-    "ast_hash": "adbd13f69db7bcb90abf6ed2b5f9cd63",
-    "semantic_hash": "adbd13f69db7bcb90abf6ed2b5f9cd63"
+    "mtime": 1787875139.4137025,
+    "ast_hash": "8ff9b926926d40899ad35bc87033d052",
+    "semantic_hash": "8ff9b926926d40899ad35bc87033d052"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\researchAndWritePipeline.ts": {
     "mtime": 1779219978.2270043,
@@ -95,9 +95,9 @@
     "semantic_hash": "6a5987d0d3fa43b6eafcc93cbf823f51"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\sanityPublisher.ts": {
-    "mtime": 1785905120.7614868,
-    "ast_hash": "4e6a62cacdfebc66e188487a168573db",
-    "semantic_hash": "4e6a62cacdfebc66e188487a168573db"
+    "mtime": 1788036726.435175,
+    "ast_hash": "7ac7426633fd5926d2559b9728d297a6",
+    "semantic_hash": "7ac7426633fd5926d2559b9728d297a6"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\serpApiEventsSync.ts": {
     "mtime": 1786931753.5069366,
@@ -115,24 +115,24 @@
     "semantic_hash": "5b6bac1c4fa165ddf07b539f4c0ded16"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\topicAgent.ts": {
-    "mtime": 1785905739.4145763,
-    "ast_hash": "3d1fc3b49267c274ec26f38b2492f2c4",
-    "semantic_hash": "3d1fc3b49267c274ec26f38b2492f2c4"
+    "mtime": 1787875118.1520996,
+    "ast_hash": "99ec8880610105c46a2bac30f7a1b011",
+    "semantic_hash": "99ec8880610105c46a2bac30f7a1b011"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\transcribeAgent.ts": {
-    "mtime": 1775799862.6112964,
-    "ast_hash": "5a5043822928f541dbeb2d74fd5794f8",
-    "semantic_hash": "5a5043822928f541dbeb2d74fd5794f8"
+    "mtime": 1788742196.4026897,
+    "ast_hash": "b5a4c0ec67fb9a85beac1e6480f4ec74",
+    "semantic_hash": "b5a4c0ec67fb9a85beac1e6480f4ec74"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\unsplashHero.ts": {
-    "mtime": 1777695597.882691,
-    "ast_hash": "28ac6291298e06621b540f293aae8ed4",
-    "semantic_hash": "28ac6291298e06621b540f293aae8ed4"
+    "mtime": 1787428825.6509006,
+    "ast_hash": "634097e13d6cb6314c0ed1aa06303720",
+    "semantic_hash": "634097e13d6cb6314c0ed1aa06303720"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\writerAgent.ts": {
-    "mtime": 1785987294.293965,
-    "ast_hash": "a25ddbbf35667bd256c2d1dcca38f5a2",
-    "semantic_hash": "a25ddbbf35667bd256c2d1dcca38f5a2"
+    "mtime": 1787875125.731842,
+    "ast_hash": "3f6f7eb1e82aca7ec6aa9ce5a877be43",
+    "semantic_hash": "3f6f7eb1e82aca7ec6aa9ce5a877be43"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\dispensary.ts": {
     "mtime": 1777533478.6429687,
@@ -145,9 +145,9 @@
     "semantic_hash": "9c84dd0373f4fcca414c3c46a9091b30"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\index.ts": {
-    "mtime": 1787029844.3162732,
-    "ast_hash": "a341d7347d6996875c834143a225f7ef",
-    "semantic_hash": "a341d7347d6996875c834143a225f7ef"
+    "mtime": 1788499891.9606867,
+    "ast_hash": "4673d138a89ede4428ec68b9c16dc379",
+    "semantic_hash": "4673d138a89ede4428ec68b9c16dc379"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\nightlife.ts": {
     "mtime": 1778390298.374042,
@@ -155,9 +155,9 @@
     "semantic_hash": "d37cff6cde19981900da81bf34d65930"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\post.ts": {
-    "mtime": 1786825080.7683692,
-    "ast_hash": "97961f5b149f47c0dd0142444a808868",
-    "semantic_hash": "97961f5b149f47c0dd0142444a808868"
+    "mtime": 1788743060.7978039,
+    "ast_hash": "a1c949ce0617ea3f00852bb234f0fed9",
+    "semantic_hash": "a1c949ce0617ea3f00852bb234f0fed9"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\restaurant.ts": {
     "mtime": 1776117070.9655685,
@@ -165,9 +165,9 @@
     "semantic_hash": "a05e510726120544d3432942141f6f3a"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\syncRun.ts": {
-    "mtime": 1786650014.9108474,
-    "ast_hash": "9108795f9ad64304ddf83825fbc5ca69",
-    "semantic_hash": "9108795f9ad64304ddf83825fbc5ca69"
+    "mtime": 1789054653.216113,
+    "ast_hash": "c804ed9f91f422ca4468eba67e96abe6",
+    "semantic_hash": "c804ed9f91f422ca4468eba67e96abe6"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\backfillHeroImages.ts": {
     "mtime": 1778871370.8600614,
@@ -230,14 +230,14 @@
     "semantic_hash": "e8ceb22905f805339ee2f982d4db3dd6"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\articleWriter.ts": {
-    "mtime": 1786736653.0181458,
-    "ast_hash": "53cc8e7562f55689b2a6800fd97582e5",
-    "semantic_hash": "53cc8e7562f55689b2a6800fd97582e5"
+    "mtime": 1788734888.7878973,
+    "ast_hash": "d932cfeaa3f2bc9035509e0a390ae80b",
+    "semantic_hash": "d932cfeaa3f2bc9035509e0a390ae80b"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\dedupeFeature.ts": {
-    "mtime": 1786766622.7474961,
-    "ast_hash": "fe4b7909fe10a36736d33391c9535113",
-    "semantic_hash": "fe4b7909fe10a36736d33391c9535113"
+    "mtime": 1787586804.3236547,
+    "ast_hash": "42c315eae22393639ec3068f81318fc2",
+    "semantic_hash": "42c315eae22393639ec3068f81318fc2"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\dispensaryScraper.ts": {
     "mtime": 1777625165.556843,
@@ -250,14 +250,14 @@
     "semantic_hash": "e28aa2cc711adffc32a93709ebee6b8b"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\imageSourcing.ts": {
-    "mtime": 1786845243.0913088,
-    "ast_hash": "6e64a28b0de3c1b81ef06e82da0f1761",
-    "semantic_hash": "6e64a28b0de3c1b81ef06e82da0f1761"
+    "mtime": 1788743163.602669,
+    "ast_hash": "c6730eda7ea7693d33b7979a5d59689e",
+    "semantic_hash": "c6730eda7ea7693d33b7979a5d59689e"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\orchestratorV2.ts": {
-    "mtime": 1786839139.5529118,
-    "ast_hash": "e276c4cffc002b65fb4d7ea938c90bea",
-    "semantic_hash": "e276c4cffc002b65fb4d7ea938c90bea"
+    "mtime": 1789054636.4207096,
+    "ast_hash": "6699ec6ae8c5791b277fadff2a376736",
+    "semantic_hash": "6699ec6ae8c5791b277fadff2a376736"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\playwrightBrowsersPath.ts": {
     "mtime": 1777625154.0501728,
@@ -265,24 +265,24 @@
     "semantic_hash": "57149e1fcba4c8385dbd2c1c345fbe7f"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\publishAssembly.ts": {
-    "mtime": 1786845671.0702517,
-    "ast_hash": "97187c935cbaafc700d1f51ff53b2941",
-    "semantic_hash": "97187c935cbaafc700d1f51ff53b2941"
+    "mtime": 1788743146.2820647,
+    "ast_hash": "c41b40e2accac241fc0c8c81177788c9",
+    "semantic_hash": "c41b40e2accac241fc0c8c81177788c9"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\researchAgent.ts": {
-    "mtime": 1777662017.1006682,
-    "ast_hash": "28e559f69eb226521f8ec6095441568a",
-    "semantic_hash": "28e559f69eb226521f8ec6095441568a"
+    "mtime": 1788741976.2964275,
+    "ast_hash": "5cd4021fae61a6339c0a737ec4e0c740",
+    "semantic_hash": "5cd4021fae61a6339c0a737ec4e0c740"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\sourceGathering.ts": {
-    "mtime": 1786983635.0131104,
-    "ast_hash": "753764b1d46ab5e94484975abd5fe660",
-    "semantic_hash": "753764b1d46ab5e94484975abd5fe660"
+    "mtime": 1788903311.9935076,
+    "ast_hash": "80fa2abffdd49830c05aa8feaa9202ff",
+    "semantic_hash": "80fa2abffdd49830c05aa8feaa9202ff"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\sufficiencyGate.ts": {
-    "mtime": 1786771361.924824,
-    "ast_hash": "ad7d37c080b7da5f79a8a6e5fcb2d74f",
-    "semantic_hash": "ad7d37c080b7da5f79a8a6e5fcb2d74f"
+    "mtime": 1789068845.1931202,
+    "ast_hash": "08b867cfaeb13242bef35ef280e48489",
+    "semantic_hash": "08b867cfaeb13242bef35ef280e48489"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\syncNightlife.ts": {
     "mtime": 1778701909.8098886,
@@ -290,14 +290,14 @@
     "semantic_hash": "df6a4748f8a8b0892ff1523ceaed0570"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\topicDiscovery.ts": {
-    "mtime": 1787169997.8136754,
-    "ast_hash": "cf4c43c5db7250d401d0916b6aaca1b8",
-    "semantic_hash": "cf4c43c5db7250d401d0916b6aaca1b8"
+    "mtime": 1789054619.1355703,
+    "ast_hash": "c67019d0d0580d6d690c728be20b8789",
+    "semantic_hash": "c67019d0d0580d6d690c728be20b8789"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\src\\agents\\verificationGate.ts": {
-    "mtime": 1786739218.7969446,
-    "ast_hash": "5111e36f4edb3e7bb9d357dae4b75601",
-    "semantic_hash": "5111e36f4edb3e7bb9d357dae4b75601"
+    "mtime": 1787898535.8844907,
+    "ast_hash": "c93f891b5c8e815be0e543a52977c1e1",
+    "semantic_hash": "c93f891b5c8e815be0e543a52977c1e1"
   },
   "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\utils\\articleStyle.ts": {
     "mtime": 1776118382.3725245,
@@ -404,9 +404,244 @@
     "ast_hash": "7eeabfcab5baf54a2dd4c01dcdd991fb",
     "semantic_hash": "7eeabfcab5baf54a2dd4c01dcdd991fb"
   },
-  "src/agents/sufficiencyGate.ts": {
-    "mtime": 1789068845.1931202,
-    "ast_hash": "08b867cfaeb13242bef35ef280e48489",
-    "semantic_hash": ""
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\eventsRoundup.ts": {
+    "mtime": 1787783626.2153275,
+    "ast_hash": "bd3e7c840041ca4bb03e0a266098123a",
+    "semantic_hash": "bd3e7c840041ca4bb03e0a266098123a"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\agents\\geminiAgent.ts": {
+    "mtime": 1788742297.910745,
+    "ast_hash": "f791aaee80c0e9213c26f706163487a0",
+    "semantic_hash": "f791aaee80c0e9213c26f706163487a0"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\health-wellness-query-diagnostic-after.json": {
+    "mtime": 1787777943.5431688,
+    "ast_hash": "a2211590ce643d5967998b85bc318b92",
+    "semantic_hash": "a2211590ce643d5967998b85bc318b92"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\health-wellness-query-diagnostic-before.json": {
+    "mtime": 1787777827.3379152,
+    "ast_hash": "150711b4f8ab746af41456e1c3daebc2",
+    "semantic_hash": "150711b4f8ab746af41456e1c3daebc2"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\lifestyle-food-query-diagnostic-after.json": {
+    "mtime": 1787778784.7303488,
+    "ast_hash": "70ca1f38d0194a6844e65c979df65583",
+    "semantic_hash": "70ca1f38d0194a6844e65c979df65583"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\lifestyle-food-query-diagnostic-before.json": {
+    "mtime": 1787778414.0087242,
+    "ast_hash": "0dffa4dcac2152b288cf1604abdb275b",
+    "semantic_hash": "0dffa4dcac2152b288cf1604abdb275b"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\lifestyle-food-query-diagnostic-site-retry.json": {
+    "mtime": 1787778840.5815783,
+    "ast_hash": "d2976a2c2601b4817d56488eff499929",
+    "semantic_hash": "d2976a2c2601b4817d56488eff499929"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\sports-query-diagnostic-after.json": {
+    "mtime": 1787780268.2726228,
+    "ast_hash": "29bed5def59e9c09995a502b22a9cade",
+    "semantic_hash": "29bed5def59e9c09995a502b22a9cade"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\sports-query-diagnostic-before.json": {
+    "mtime": 1787780159.995723,
+    "ast_hash": "1122cff11261900925c69df67c1229c0",
+    "semantic_hash": "1122cff11261900925c69df67c1229c0"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\schemas\\topicCandidate.ts": {
+    "mtime": 1788809714.0837154,
+    "ast_hash": "f58d89b051835bc5e19292d980193c9a",
+    "semantic_hash": "f58d89b051835bc5e19292d980193c9a"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\attachHeroImageDraftMushrooms.ts": {
+    "mtime": 1787338073.4090064,
+    "ast_hash": "a0998a6cfa60eef8520aad065bd3df7f",
+    "semantic_hash": "a0998a6cfa60eef8520aad065bd3df7f"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\auditContent.ts": {
+    "mtime": 1787682606.5915425,
+    "ast_hash": "37a99ba105d377292203f792692210db",
+    "semantic_hash": "37a99ba105d377292203f792692210db"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\auditVenueCoordinates.ts": {
+    "mtime": 1787627857.6950579,
+    "ast_hash": "88305884676113f348603709d4c9bdd9",
+    "semantic_hash": "88305884676113f348603709d4c9bdd9"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\backfillAdSize.ts": {
+    "mtime": 1787183816.6432962,
+    "ast_hash": "efe5a40a008288d53d1fcfe7d7efd5a9",
+    "semantic_hash": "efe5a40a008288d53d1fcfe7d7efd5a9"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\backfillDispensaryCoordinates.ts": {
+    "mtime": 1787610885.84187,
+    "ast_hash": "ed184d6c812b6e5d7d516d6567617e1a",
+    "semantic_hash": "ed184d6c812b6e5d7d516d6567617e1a"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\backfillDispensaryCoordinatesNominatim.ts": {
+    "mtime": 1787611714.730621,
+    "ast_hash": "846e2aa53ac159bad41b0a3c608ae0c8",
+    "semantic_hash": "846e2aa53ac159bad41b0a3c608ae0c8"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\backfillOriginalSourceUrl.ts": {
+    "mtime": 1788048630.281444,
+    "ast_hash": "ab2fe1e7e6bd7768403d3b481ccbfb6d",
+    "semantic_hash": "ab2fe1e7e6bd7768403d3b481ccbfb6d"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\backfillVenueCoordinatesNominatim.ts": {
+    "mtime": 1787626773.3934517,
+    "ast_hash": "e36e71921f6ae04f61ce3dc54f44edd8",
+    "semantic_hash": "e36e71921f6ae04f61ce3dc54f44edd8"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\check-by-run.ts": {
+    "mtime": 1788731701.9442403,
+    "ast_hash": "dbf34cedd5fc782995b835119541dffe",
+    "semantic_hash": "dbf34cedd5fc782995b835119541dffe"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\check-pending-pool-status.ts": {
+    "mtime": 1788731646.3264298,
+    "ast_hash": "c65df10baa6e067c911b565f5e1e65f6",
+    "semantic_hash": "c65df10baa6e067c911b565f5e1e65f6"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\check-repeat-fate.ts": {
+    "mtime": 1788731667.0782316,
+    "ast_hash": "a9a97c4113399c26f812cbf0d17d9148",
+    "semantic_hash": "a9a97c4113399c26f812cbf0d17d9148"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\check-within-run.ts": {
+    "mtime": 1788731729.1916625,
+    "ast_hash": "065d433234c4b01d50496587eecf04bd",
+    "semantic_hash": "065d433234c4b01d50496587eecf04bd"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\fixDuplicateHeroImages.ts": {
+    "mtime": 1788743854.2109222,
+    "ast_hash": "f27cebe2e13785f5299831eec56576bc",
+    "semantic_hash": "f27cebe2e13785f5299831eec56576bc"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\fixDuplicateHeroImagesStaleDisclaimers.ts": {
+    "mtime": 1788743963.9661815,
+    "ast_hash": "b9106e38c73c71d97a46a2777ef16f8d",
+    "semantic_hash": "b9106e38c73c71d97a46a2777ef16f8d"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\fixLaborDayDuplicateHeroImage.ts": {
+    "mtime": 1788743566.286889,
+    "ast_hash": "f233146141340fe91d694397e342a523",
+    "semantic_hash": "f233146141340fe91d694397e342a523"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\fixLaborDayStaleDisclaimer.ts": {
+    "mtime": 1788743609.5323231,
+    "ast_hash": "379b3d7448ed6ee1c0cef54f3cf7aa30",
+    "semantic_hash": "379b3d7448ed6ee1c0cef54f3cf7aa30"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\fixLaborDayStaleUnsplashIdField.ts": {
+    "mtime": 1788743547.391682,
+    "ast_hash": "3ae31057a1ba77f26043db7effb1c02d",
+    "semantic_hash": "3ae31057a1ba77f26043db7effb1c02d"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\investigate-repeat-topics.ts": {
+    "mtime": 1788731577.3672955,
+    "ast_hash": "b6682fb6ec4eadcdecce7d911be24b6c",
+    "semantic_hash": "b6682fb6ec4eadcdecce7d911be24b6c"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\probe-batch1-gemini-fallback.ts": {
+    "mtime": 1787875236.9942768,
+    "ast_hash": "4c6ff0c7c2cfe4d25fa4f2e33124f084",
+    "semantic_hash": "4c6ff0c7c2cfe4d25fa4f2e33124f084"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\probe-batch2-gemini-fallback.ts": {
+    "mtime": 1787898608.7830262,
+    "ast_hash": "f7bfbaac99e1f34e9790bd3a94780e8f",
+    "semantic_hash": "f7bfbaac99e1f34e9790bd3a94780e8f"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\probe-gemini-model-versions.ts": {
+    "mtime": 1787875678.894695,
+    "ast_hash": "845296a62ead2cbc6b4d9fce1009faf9",
+    "semantic_hash": "845296a62ead2cbc6b4d9fce1009faf9"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\probe-lifestyle-source-queries.ts": {
+    "mtime": 1788641291.2742498,
+    "ast_hash": "c06eb2258d63cf54a5f72e8a43651ee3",
+    "semantic_hash": "c06eb2258d63cf54a5f72e8a43651ee3"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\probe-visitphoenix-alt.ts": {
+    "mtime": 1788641343.770055,
+    "ast_hash": "2ece1f2e48bdc286c74a49aea628389f",
+    "semantic_hash": "2ece1f2e48bdc286c74a49aea628389f"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\test-discover-and-persist.ts": {
+    "mtime": 1788732238.384943,
+    "ast_hash": "8401770c95a85fb915b35b73a8a26ca5",
+    "semantic_hash": "8401770c95a85fb915b35b73a8a26ca5"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\test-health-wellness-gate-full-cycle.ts": {
+    "mtime": 1788733664.218427,
+    "ast_hash": "9d8baa84cb2be33ce82156a77da86c9f",
+    "semantic_hash": "9d8baa84cb2be33ce82156a77da86c9f"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\test-health-wellness-locality-exception.ts": {
+    "mtime": 1788733411.7209554,
+    "ast_hash": "b6f1d0f3c54b6306477d2df9386ebf66",
+    "semantic_hash": "b6f1d0f3c54b6306477d2df9386ebf66"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\test-new-personas.ts": {
+    "mtime": 1788734963.5104392,
+    "ast_hash": "e0255d1203699c4790badae749564405",
+    "semantic_hash": "e0255d1203699c4790badae749564405"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\verify-known-source-urls.ts": {
+    "mtime": 1788732219.5289083,
+    "ast_hash": "b6347beaf91ca7302f5782c6fcdcae65",
+    "semantic_hash": "b6347beaf91ca7302f5782c6fcdcae65"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\scripts\\verify-new-lifestyle-sources.ts": {
+    "mtime": 1788641943.4220226,
+    "ast_hash": "5b47c40ea381f35825a3e09efb587c40",
+    "semantic_hash": "5b47c40ea381f35825a3e09efb587c40"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\types\\heic-convert.d.ts": {
+    "mtime": 1788740261.6810117,
+    "ast_hash": "5ade05f0ede38ae8233e322b0ce19872",
+    "semantic_hash": "5ade05f0ede38ae8233e322b0ce19872"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\personalities\\bill-farr.prompt.txt": {
+    "mtime": 1788734875.494314,
+    "ast_hash": "2f86422a2fd25819399d357a0bd1fb1f",
+    "semantic_hash": "2f86422a2fd25819399d357a0bd1fb1f"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\personalities\\sloan-rivers.prompt.txt": {
+    "mtime": 1788734879.3869214,
+    "ast_hash": "3aa125c92512c3a16be8b62c79e5413f",
+    "semantic_hash": "3aa125c92512c3a16be8b62c79e5413f"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\personalities\\stephen-a-spliff-unhinged.prompt.txt": {
+    "mtime": 1788734871.5503774,
+    "ast_hash": "7e864528aa5a9dce28cbc157f42574b3",
+    "semantic_hash": "7e864528aa5a9dce28cbc157f42574b3"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\personalities\\stephen-a-spliff.prompt.txt": {
+    "mtime": 1788734867.2438824,
+    "ast_hash": "557507ccd048778cc7e51d3350e8725d",
+    "semantic_hash": "557507ccd048778cc7e51d3350e8725d"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\styles\\listicle.prompt.txt": {
+    "mtime": 1788505754.1514945,
+    "ast_hash": "e3a8cd156e5a1917bf15b2f5000dfa51",
+    "semantic_hash": "e3a8cd156e5a1917bf15b2f5000dfa51"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\styles\\opinion.prompt.txt": {
+    "mtime": 1788505760.4380503,
+    "ast_hash": "b2f0644bb37e97cf0f05448b53924ba3",
+    "semantic_hash": "b2f0644bb37e97cf0f05448b53924ba3"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\prompts\\styles\\straight-recap.prompt.txt": {
+    "mtime": 1788505747.995365,
+    "ast_hash": "fe5a7d70557ee943db8bf04f6ce1563d",
+    "semantic_hash": "fe5a7d70557ee943db8bf04f6ce1563d"
+  },
+  "C:\\Users\\edwar\\Desktop\\Websites\\Happytimesazfull\\Happytimesazpipeline\\reports\\stage0-stage1-diagnostic-2026-08-26T19-29-43-120Z.md": {
+    "mtime": 1787772647.6615698,
+    "ast_hash": "7bac18c50896686a60ae68dee2de7d5e",
+    "semantic_hash": "7bac18c50896686a60ae68dee2de7d5e"
   }
 }
