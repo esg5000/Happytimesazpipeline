@@ -66,6 +66,54 @@ const WHAT_FIELDS = ['venueName'];
 const WHEN_FIELDS = ['date', 'time'];
 
 /**
+ * ONE narrow, additive exception to the venue+date "Core WHAT/WHEN" path
+ * above — business/deal news (confirmed real case: "JARS Cannabis Acquires
+ * Sonoran Roots to Create Arizona's Largest Retail Network", a real
+ * PRNewswire acquisition release covered by 7+ outlets, rich detail —
+ * confirmed substantial by direct web research). An acquisition story has
+ * no venue and no event-shaped date, so it structurally can never satisfy
+ * WHAT_FIELDS/WHEN_FIELDS, even when it's clearly substantial enough to
+ * write from. This does NOT replace or restructure the venue+date path —
+ * it is checked only as an additional way to reach 'full-article', exactly
+ * parallel to hasSubstantialSourceArticleText above. Deliberately NOT
+ * generalized to other topic shapes (science reporting, roundups/
+ * listicles) that showed similar sufficiency-gate friction — those are
+ * left as-is for a future pass if/when they recur.
+ *
+ * Classification signal: an acquisition/merger keyword in the title. Title
+ * phrasing for these press-release-style stories is consistently
+ * "<Company A> Acquires/Buys/Merges with <Company B> ...", which both
+ * flags the story as business/deal-shaped AND (via ENTITY_TITLE_RE below)
+ * is the same regex that extracts the two entities — deliberately not
+ * gated on topic.section, since acquisition stories can land in 'cannabis'
+ * (the confirmed case), 'food', 'nightlife', or 'news' depending on the
+ * industry, and section alone is too broad/narrow a signal either way.
+ */
+const BUSINESS_DEAL_KEYWORD_RE =
+  /\b(acquir(?:es?|ing|ed)|acquisition|to acquire|merge[sd]?|merger|buys|buyout|purchases?)\b/i;
+/**
+ * Captures (primary/acquiring entity, secondary/acquired entity) out of a
+ * title shaped like "<A> Acquires <B> to <verb> ..." or "<A> to Acquire
+ * <B> ..." or "<A> Merges with <B> ...". Non-greedy secondary-entity
+ * capture stops at the first " to "/" for "/comma, which is where these
+ * headlines pivot into the "why" clause (e.g. "... Sonoran Roots to
+ * Create Arizona's Largest Retail Network" correctly yields "Sonoran
+ * Roots", not the whole tail).
+ */
+const ENTITY_TITLE_RE =
+  /^(.+?)\s+(?:acquires?|to\s+acquire|announces?\s+(?:the\s+)?acquisition\s+of|buys|purchases?|merges?\s+with)\s+(.+?)(?:\s+to\b|\s+for\b|,|$)/i;
+/**
+ * At least one concrete, checkable deal detail — a dollar figure, a
+ * store/location count, a completion timeline, or a named executive
+ * change. This is what separates a real acquisition story (JARS/Sonoran
+ * Roots: "27-store combined network", "8 Ponderosa locations", "expected
+ * Q3 2026 closing", CEO quotes) from a thin, merely business-sounding
+ * headline with nothing behind it — the latter must still fail this path.
+ */
+const DEAL_DETAIL_RE =
+  /\$[\d,.]+\s*(?:million|billion|[MB])?\b|\b\d+[\s-]*(?:stores?|locations?|outlets?|dispensar(?:y|ies))\b|\bQ[1-4]\s*20\d{2}\b|\bexpected\s+to\s+close\b|\b(?:CEO|CFO|president|chairman|co-founder)\b[^.]{0,60}\b(?:said|says|will|named|appointed|to lead)\b/i;
+
+/**
  * ADDITIONAL full-article path, independent of the event-field
  * (WHAT/WHEN) check above — for sourceGathering.ts's general-purpose
  * default checker (gatherDefaultSources), whose output has no
@@ -281,16 +329,65 @@ function hasSubstantialSourceArticleText(validFacts: Fact[]): boolean {
   return countSubstantialSentences(fact.value) >= minSentences;
 }
 
+/** Result of the business/deal exception check — see BUSINESS_DEAL_KEYWORD_RE above. */
+type BusinessDealCheck = {
+  qualifies: boolean;
+  isBusinessDealShaped: boolean;
+  primaryEntity?: string;
+  secondaryEntity?: string;
+  hasDealDetail: boolean;
+};
+
+/**
+ * The one additive exception path itself. Only even attempts extraction
+ * when the title matches BUSINESS_DEAL_KEYWORD_RE (classification signal);
+ * otherwise returns immediately so this never affects any non-business-deal
+ * topic. Searches title + every valid fact's value + topic.searchSummaries
+ * (Stage 1's web_search snippets from the other outlets covering the same
+ * story) for the deal-detail signal — deliberately broader than just the
+ * Stage 3 sourceArticleText fact, since a real multi-outlet story (JARS/
+ * Sonoran Roots: 7+ outlets) often has the concrete detail sitting in a
+ * search snippet even when the one page Stage 3 fetched came back thin.
+ */
+function checkBusinessDealPath(topic: TopicInput, validFacts: Fact[]): BusinessDealCheck {
+  const title = typeof topic.title === 'string' ? topic.title : '';
+  const isBusinessDealShaped = BUSINESS_DEAL_KEYWORD_RE.test(title);
+  if (!isBusinessDealShaped) {
+    return { qualifies: false, isBusinessDealShaped: false, hasDealDetail: false };
+  }
+
+  const titleMatch = title.match(ENTITY_TITLE_RE);
+  const primaryEntity = titleMatch?.[1]?.trim();
+  const secondaryEntity = titleMatch?.[2]?.trim();
+
+  const searchSummaries = Array.isArray(topic.searchSummaries)
+    ? (topic.searchSummaries as { title?: string; summary?: string }[])
+    : [];
+  const corpus = [
+    title,
+    ...validFacts.map((f) => f.value),
+    ...searchSummaries.map((s) => `${s.title ?? ''} ${s.summary ?? ''}`),
+  ].join('\n');
+  const hasDealDetail = DEAL_DETAIL_RE.test(corpus);
+
+  const qualifies = Boolean(primaryEntity) && Boolean(secondaryEntity) && hasDealDetail;
+  return { qualifies, isBusinessDealShaped: true, primaryEntity, secondaryEntity, hasDealDetail };
+}
+
 function decideFormat(
   qualifyingFactCount: number,
   hasCoreWhat: boolean,
   hasCoreWhen: boolean,
-  hasSubstantialSourceText: boolean
+  hasSubstantialSourceText: boolean,
+  hasBusinessDealSufficiency: boolean
 ): FormatDecision {
   if (qualifyingFactCount >= MIN_FACTS_FULL_ARTICLE && hasCoreWhat && hasCoreWhen) {
     return 'full-article';
   }
   if (hasSubstantialSourceText) {
+    return 'full-article';
+  }
+  if (hasBusinessDealSufficiency) {
     return 'full-article';
   }
   if (qualifyingFactCount >= MIN_FACTS_BLURB) {
@@ -306,11 +403,12 @@ function buildReasoning(params: {
   hasCoreWhat: boolean;
   hasCoreWhen: boolean;
   hasSubstantialSourceText: boolean;
+  businessDeal: BusinessDealCheck;
   conflicts: FactConflict[];
   disqualifiedFields: string[];
   primarySourceFound: boolean;
 }): string {
-  const { decision, qualifyingFactCount, qualifyingFields, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, conflicts, disqualifiedFields, primarySourceFound } = params;
+  const { decision, qualifyingFactCount, qualifyingFields, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, businessDeal, conflicts, disqualifiedFields, primarySourceFound } = params;
   const parts: string[] = [];
 
   parts.push(
@@ -322,6 +420,11 @@ function buildReasoning(params: {
   parts.push(
     `Substantial sourceArticleText (>=${MIN_SOURCE_ARTICLE_TEXT_CHARS} chars, >=${MIN_SOURCE_ARTICLE_SUBSTANTIAL_SENTENCES} real sentences): ${hasSubstantialSourceText ? 'present' : 'absent'}.`
   );
+  if (businessDeal.isBusinessDealShaped) {
+    parts.push(
+      `Business/deal exception: title matched acquisition/merger keyword — primary entity: ${businessDeal.primaryEntity ?? 'MISSING'}, secondary entity: ${businessDeal.secondaryEntity ?? 'MISSING'}, concrete deal detail (dollar/store-count/timeline/exec-change): ${businessDeal.hasDealDetail ? 'present' : 'absent'} → ${businessDeal.qualifies ? 'QUALIFIES via business/deal path' : 'does not qualify via business/deal path'}.`
+    );
+  }
   if (disqualifiedFields.length > 0) {
     parts.push(`${disqualifiedFields.length} raw fact(s) discarded as malformed (empty value or no source): ${disqualifiedFields.join(', ')} — not counted toward the total.`);
   }
@@ -342,9 +445,13 @@ function buildReasoning(params: {
         parts.push(
           `→ full-article: meets MIN_FACTS_FULL_ARTICLE=${MIN_FACTS_FULL_ARTICLE} with both core fields present.`
         );
-      } else {
+      } else if (hasSubstantialSourceText) {
         parts.push(
           `→ full-article: substantial sourceArticleText fact present — sufficient on its own, independent of the event WHAT/WHEN fields (which don't apply to this topic shape).`
+        );
+      } else {
+        parts.push(
+          `→ full-article: business/deal exception — primary entity + secondary entity + a concrete deal detail are sufficient on their own for this topic shape, independent of the event WHAT/WHEN fields (which don't apply to an acquisition story).`
         );
       }
       break;
@@ -403,9 +510,10 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
   const hasCoreWhat = WHAT_FIELDS.some((f) => byField.has(f));
   const hasCoreWhen = WHEN_FIELDS.some((f) => byField.has(f));
   const hasSubstantialSourceText = hasSubstantialSourceArticleText(validFacts);
+  const businessDeal = checkBusinessDealPath(result.topic, validFacts);
   const conflicts = detectConflicts(byField);
 
-  const decision = decideFormat(qualifyingFactCount, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText);
+  const decision = decideFormat(qualifyingFactCount, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, businessDeal.qualifies);
 
   const reasoning = buildReasoning({
     decision,
@@ -414,6 +522,7 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
     hasCoreWhat,
     hasCoreWhen,
     hasSubstantialSourceText,
+    businessDeal,
     conflicts,
     disqualifiedFields,
     primarySourceFound: result.primarySourceFound,
@@ -515,6 +624,65 @@ const FIXTURES: Fixture[] = [
       ],
       primarySourceFound: true,
       factCount: 3,
+    },
+  },
+  {
+    label: '7. Business/deal exception (JARS/Sonoran Roots acquisition — confirmed real case, no venue/date)',
+    input: {
+      topic: {
+        title: "JARS Cannabis Acquires Sonoran Roots to Create Arizona's Largest Retail Network",
+        section: 'cannabis',
+        subjectTag: 'acquisition',
+        searchSummaries: [
+          {
+            title: 'JARS Cannabis to acquire Sonoran Roots dispensaries',
+            url: 'https://mjbizdaily.example/jars-sonoran-roots',
+            summary:
+              'The deal combines JARS Cannabis and Sonoran Roots into a 27-store network across Arizona, including 8 Ponderosa locations, with the transaction expected to close in Q3 2026.',
+          },
+        ],
+      },
+      facts: [
+        {
+          field: 'sourceArticleText',
+          value:
+            'JARS Cannabis announced Tuesday it will acquire Sonoran Roots, a move that creates the largest cannabis retail network in Arizona. The combined company will operate 27 stores statewide, including 8 former Ponderosa locations. "This acquisition strengthens our footprint across the Valley," said JARS Cannabis CEO in a statement. The deal is expected to close in Q3 2026 pending regulatory approval.',
+          source: 'PRNewswire — HTTP fetch (https://prnewswire.example/jars-sonoran-roots)',
+          sourceUrl: 'https://prnewswire.example/jars-sonoran-roots',
+        },
+        { field: 'writingGuidance', value: 'Write an original piece informed by this source material.', source: 'source-gathering (Stage 3 editorial instruction)' },
+      ],
+      primarySourceFound: true,
+      factCount: 2,
+      // Deliberately false — models the real failure: the fetched press-release
+      // page came back thin/short, so Stage 3 didn't trust it as substantial,
+      // which is exactly what made the venue+date AND the sourceArticleText
+      // paths both fail before this exception existed.
+      sourceArticleTextSubstantial: false,
+    },
+  },
+  {
+    label: '8. Thin/bad business news (title matches the acquisition keyword, but no real entities or deal detail — must still fail)',
+    input: {
+      topic: {
+        title: 'Local Company Acquires Another Business',
+        section: 'cannabis',
+        subjectTag: 'business',
+        searchSummaries: [],
+      },
+      facts: [
+        {
+          field: 'sourceArticleText',
+          value:
+            'A local company said it is acquiring another business. No further details, terms, or timeline were disclosed at this time.',
+          source: 'example.com — HTTP fetch (https://example.com/vague-cannabis-news)',
+          sourceUrl: 'https://example.com/vague-cannabis-news',
+        },
+        { field: 'writingGuidance', value: 'Write an original piece informed by this source material.', source: 'source-gathering (Stage 3 editorial instruction)' },
+      ],
+      primarySourceFound: true,
+      factCount: 2,
+      sourceArticleTextSubstantial: false,
     },
   },
 ];
