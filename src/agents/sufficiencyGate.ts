@@ -114,6 +114,96 @@ const DEAL_DETAIL_RE =
   /\$[\d,.]+\s*(?:million|billion|[MB])?\b|\b\d+[\s-]*(?:stores?|locations?|outlets?|dispensar(?:y|ies))\b|\bQ[1-4]\s*20\d{2}\b|\bexpected\s+to\s+close\b|\b(?:CEO|CFO|president|chairman|co-founder)\b[^.]{0,60}\b(?:said|says|will|named|appointed|to lead)\b/i;
 
 /**
+ * Recap-completion gate — a NARROWING check (unlike the business/deal path
+ * above, which is an additive way to *reach* full-article, this one instead
+ * *blocks* full-article/blurb when it fails). A topic whose title claims to
+ * be a completed-game recap/summary must show actual evidence of a
+ * finished game — a score or a completion word — somewhere in its facts,
+ * or it doesn't get to pass as full-article/blurb on the strength of
+ * hasSubstantialSourceArticleText/business-deal/event-field sufficiency
+ * alone.
+ *
+ * Confirmed real failure case: "Rangers at Diamondbacks: Game summary from
+ * Chase Field on Sept. 12, 2026" — published 9:41am, ~9 hours before that
+ * evening's first pitch. The body is entirely betting odds, team records,
+ * and ATS/over-under trend stats; it literally contains the phrase "before
+ * the first pitch." Source was USA Today's own /event/{id}/summary/ page,
+ * which uses "summary" branding on a page that's pre-game right up until
+ * the game is actually played. hasSubstantialSourceArticleText only checks
+ * length + sentence-shape — completely blind to whether the "summary" is
+ * of a finished game or a preview. No other check anywhere in this file
+ * (or Stage 3/Stage 5) considers game-completion status.
+ *
+ * Classification signal is the title alone (same choice as
+ * BUSINESS_DEAL_KEYWORD_RE, and for the same reason — the comment at
+ * checkBusinessDealPath's call site below is deliberate: topic.queryClass
+ * is a Stage 0/1 sourcing concept, never used for Stage 4+ content
+ * decisions in this codebase; the title is what's actually being published
+ * and is stable across category/section). Recap-shaped keywords are kept
+ * narrow and specifically about claiming a *result* exists (recap, game
+ * summary, final score, box score, highlights, postgame, walk-off) — a
+ * genuine preview ("...prediction, picks and odds...", "...what to know
+ * before...") never matches this and is correctly left ungated.
+ */
+const RECAP_KEYWORD_RE =
+  /\b(recap|game\s+summary|final\s+score|box\s*score|post[\s-]?game|highlights)\b/i;
+/**
+ * Evidence a game actually concluded: a completion word/verb. Deliberately
+ * word-based only, NOT a bare digits-dash-digits score pattern — tried that
+ * first and it was a real false positive against fixture 9 below: preview
+ * content is full of "78-64"/"71-71"-shaped win-loss records, ATS records,
+ * and over/under trend stats, which are indistinguishable from a final
+ * score ("6-3") by shape alone. A completion verb is a far more reliable
+ * signal that a game actually happened, and previews essentially never use
+ * these words about the game they're previewing (a preview discussing a
+ * past head-to-head result reads as "has beaten Texas in 3 of the last 4
+ * meetings" — plural/habitual phrasing distinct from "defeated the Rangers
+ * 6-3" — accepted as a rare, safe-direction false-negative risk rather than
+ * reintroducing the record/score ambiguity).
+ *
+ * False negatives here just mean a genuine recap gets held to the same bar
+ * a preview always was (skip), which is a safe direction to fail in; false
+ * positives (a preview coincidentally matching) are what this exists to
+ * prevent for RECAP_KEYWORD_RE-matched titles specifically.
+ */
+const COMPLETION_SIGNAL_RE =
+  /\b(final(?:\s+score)?|won|wins|beat|beats|defeated|defeats|topped|edged|outlasted|routed|blanked|swept|fell\s+to|lost\s+to|walked?[\s-]?off|walk-off|clinch(?:ed|es)?|shut\s?out|no-hitter)\b/i;
+
+/** Result of the recap-completion gate check — see RECAP_KEYWORD_RE above. */
+type RecapCompletionCheck = {
+  isRecapShaped: boolean;
+  hasCompletionSignal: boolean;
+};
+
+/**
+ * Only even looks for a completion signal when the title matches
+ * RECAP_KEYWORD_RE (classification signal); a non-recap-shaped topic
+ * returns immediately and is completely unaffected. Searches title +
+ * every valid fact's value + topic.searchSummaries — same corpus
+ * construction as checkBusinessDealPath, for the same reason (a completion
+ * signal can legitimately live in a search snippet even when the one page
+ * Stage 3 fetched came back thin or was itself pre-game).
+ */
+function checkRecapCompletionGate(topic: TopicInput, validFacts: Fact[]): RecapCompletionCheck {
+  const title = typeof topic.title === 'string' ? topic.title : '';
+  const isRecapShaped = RECAP_KEYWORD_RE.test(title);
+  if (!isRecapShaped) {
+    return { isRecapShaped: false, hasCompletionSignal: false };
+  }
+
+  const searchSummaries = Array.isArray(topic.searchSummaries)
+    ? (topic.searchSummaries as { title?: string; summary?: string }[])
+    : [];
+  const corpus = [
+    title,
+    ...validFacts.map((f) => f.value),
+    ...searchSummaries.map((s) => `${s.title ?? ''} ${s.summary ?? ''}`),
+  ].join('\n');
+
+  return { isRecapShaped: true, hasCompletionSignal: COMPLETION_SIGNAL_RE.test(corpus) };
+}
+
+/**
  * ADDITIONAL full-article path, independent of the event-field
  * (WHAT/WHEN) check above — for sourceGathering.ts's general-purpose
  * default checker (gatherDefaultSources), whose output has no
@@ -379,8 +469,21 @@ function decideFormat(
   hasCoreWhat: boolean,
   hasCoreWhen: boolean,
   hasSubstantialSourceText: boolean,
-  hasBusinessDealSufficiency: boolean
+  hasBusinessDealSufficiency: boolean,
+  recapCompletion: RecapCompletionCheck
 ): FormatDecision {
+  // Recap-completion gate runs FIRST and overrides every other path — a
+  // title that claims a finished-game result with no corroborating score/
+  // completion evidence anywhere in the facts must not reach full-article
+  // or blurb on the strength of length/sentence-shape (or any other
+  // signal) alone. No preview-shaped decision path exists in this
+  // pipeline (FormatDecision is exactly full-article/blurb/skip — verified
+  // no other value or downstream reclassification exists), so the correct
+  // outcome here is 'skip', matching how every other insufficiency case in
+  // this file is handled.
+  if (recapCompletion.isRecapShaped && !recapCompletion.hasCompletionSignal) {
+    return 'skip';
+  }
   if (qualifyingFactCount >= MIN_FACTS_FULL_ARTICLE && hasCoreWhat && hasCoreWhen) {
     return 'full-article';
   }
@@ -404,11 +507,12 @@ function buildReasoning(params: {
   hasCoreWhen: boolean;
   hasSubstantialSourceText: boolean;
   businessDeal: BusinessDealCheck;
+  recapCompletion: RecapCompletionCheck;
   conflicts: FactConflict[];
   disqualifiedFields: string[];
   primarySourceFound: boolean;
 }): string {
-  const { decision, qualifyingFactCount, qualifyingFields, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, businessDeal, conflicts, disqualifiedFields, primarySourceFound } = params;
+  const { decision, qualifyingFactCount, qualifyingFields, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, businessDeal, recapCompletion, conflicts, disqualifiedFields, primarySourceFound } = params;
   const parts: string[] = [];
 
   parts.push(
@@ -423,6 +527,11 @@ function buildReasoning(params: {
   if (businessDeal.isBusinessDealShaped) {
     parts.push(
       `Business/deal exception: title matched acquisition/merger keyword — primary entity: ${businessDeal.primaryEntity ?? 'MISSING'}, secondary entity: ${businessDeal.secondaryEntity ?? 'MISSING'}, concrete deal detail (dollar/store-count/timeline/exec-change): ${businessDeal.hasDealDetail ? 'present' : 'absent'} → ${businessDeal.qualifies ? 'QUALIFIES via business/deal path' : 'does not qualify via business/deal path'}.`
+    );
+  }
+  if (recapCompletion.isRecapShaped) {
+    parts.push(
+      `Recap-completion gate: title matched recap/summary keyword — completion signal (a won/beat/defeated/final/walk-off-type word) in facts/search snippets: ${recapCompletion.hasCompletionSignal ? 'present' : 'MISSING'} → ${recapCompletion.hasCompletionSignal ? 'passes the gate' : 'BLOCKS full-article/blurb — title claims a result with no evidence the game actually concluded'}.`
     );
   }
   if (disqualifiedFields.length > 0) {
@@ -467,7 +576,11 @@ function buildReasoning(params: {
       }
       break;
     case 'skip':
-      parts.push(`→ skip: 0 qualifying fields after discarding malformed facts — nothing usable to write from.`);
+      if (recapCompletion.isRecapShaped && !recapCompletion.hasCompletionSignal) {
+        parts.push(`→ skip: recap-completion gate failed — overrides every other path regardless of qualifying-field count.`);
+      } else {
+        parts.push(`→ skip: 0 qualifying fields after discarding malformed facts — nothing usable to write from.`);
+      }
       break;
   }
 
@@ -511,9 +624,10 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
   const hasCoreWhen = WHEN_FIELDS.some((f) => byField.has(f));
   const hasSubstantialSourceText = hasSubstantialSourceArticleText(validFacts);
   const businessDeal = checkBusinessDealPath(result.topic, validFacts);
+  const recapCompletion = checkRecapCompletionGate(result.topic, validFacts);
   const conflicts = detectConflicts(byField);
 
-  const decision = decideFormat(qualifyingFactCount, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, businessDeal.qualifies);
+  const decision = decideFormat(qualifyingFactCount, hasCoreWhat, hasCoreWhen, hasSubstantialSourceText, businessDeal.qualifies, recapCompletion);
 
   const reasoning = buildReasoning({
     decision,
@@ -523,6 +637,7 @@ export function evaluateSufficiency(result: SourceGatheringResult): SufficiencyR
     hasCoreWhen,
     hasSubstantialSourceText,
     businessDeal,
+    recapCompletion,
     conflicts,
     disqualifiedFields,
     primarySourceFound: result.primarySourceFound,
@@ -683,6 +798,54 @@ const FIXTURES: Fixture[] = [
       primarySourceFound: true,
       factCount: 2,
       sourceArticleTextSubstantial: false,
+    },
+  },
+  {
+    label: '9. Recap-completion gate FAILS (confirmed real case: Rangers/Diamondbacks "Game summary" published pre-game, zero result content — must skip despite substantial sourceArticleText)',
+    input: {
+      topic: {
+        title: 'Rangers at Diamondbacks: Game summary from Chase Field on Sept. 12, 2026',
+        section: 'sports',
+        subjectTag: 'MLB',
+        searchSummaries: [],
+      },
+      facts: [
+        {
+          field: 'sourceArticleText',
+          value:
+            'The Texas Rangers visit the Arizona Diamondbacks at Chase Field on Friday, before the first pitch odds makers have set the line at Diamondbacks -1.5 with an over/under of 8 runs. The Diamondbacks enter the game with a 78-64 record while the Rangers sit at 71-71 on the season. Arizona is 6-4 in its last 10 games and has covered the spread in 7 of its last 10 home games. Texas has gone under the total in 6 of its last 9 road games. First pitch is scheduled for 6:40 PM local time at Chase Field in Phoenix.',
+          source: 'USA Today — HTTP fetch (https://www.usatoday.com/sports/mlb/event/2026/2940163/summary/)',
+          sourceUrl: 'https://www.usatoday.com/sports/mlb/event/2026/2940163/summary/',
+        },
+        { field: 'writingGuidance', value: 'Write an original piece informed by this source material.', source: 'source-gathering (Stage 3 editorial instruction)' },
+      ],
+      primarySourceFound: true,
+      factCount: 2,
+      sourceArticleTextSubstantial: true,
+    },
+  },
+  {
+    label: '10. Recap-completion gate PASSES (genuine finished-game recap with a real score — same title shape as #9, must still reach full-article)',
+    input: {
+      topic: {
+        title: 'Diamondbacks at Rangers: Game summary from Globe Life Field on Sept. 13, 2026',
+        section: 'sports',
+        subjectTag: 'MLB',
+        searchSummaries: [],
+      },
+      facts: [
+        {
+          field: 'sourceArticleText',
+          value:
+            'The Arizona Diamondbacks defeated the Texas Rangers 6-3 on Saturday night at Globe Life Field, closing out the road trip on a high note in front of a sellout crowd. Ketel Marte drove in three runs for Arizona, including a two-run homer in the top of the seventh inning that put the game out of reach for good. Zac Gallen earned the win for the Diamondbacks, allowing just two runs over six strong innings while striking out seven Texas batters along the way. Corbin Carroll added a solo home run of his own in the fourth inning, his twenty-second of the season, and reached base three times overall. The Diamondbacks bullpen held firm behind Gallen, retiring the final nine batters in order to preserve the win. The Diamondbacks improve to 79-64 on the season with the victory, while the Rangers fall to 71-72 and have now dropped three of their last four games. Arizona returns home to Chase Field on Monday to open a three-game series, while Texas heads back to Globe Life Field for a matchup with the Astros.',
+          source: 'USA Today — HTTP fetch (https://www.usatoday.com/sports/mlb/event/2026/2940200/summary/)',
+          sourceUrl: 'https://www.usatoday.com/sports/mlb/event/2026/2940200/summary/',
+        },
+        { field: 'writingGuidance', value: 'Write an original piece informed by this source material.', source: 'source-gathering (Stage 3 editorial instruction)' },
+      ],
+      primarySourceFound: true,
+      factCount: 2,
+      sourceArticleTextSubstantial: true,
     },
   },
 ];
