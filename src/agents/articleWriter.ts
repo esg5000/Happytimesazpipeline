@@ -210,6 +210,27 @@ The permission to write short applies ONLY when the input genuinely has few dist
 const BLURB_LENGTH_BLOCK = `LENGTH & STRUCTURE — BLURB:
 Write 150-250 words. Tight and to the point: what's happening, and why a Valley reader should care. End with a clearly-labeled, prominent link-out to the original source — an actual pointer, not a passing mention (e.g. "Full details at [outlet name]"). Do not attempt to stretch thin material into a longer piece.`;
 
+/**
+ * Confirmed real bug: persona pieces sometimes got the base prompt's
+ * standalone "Full details at [outlet]" closer (ATTRIBUTION block in
+ * stage5Write.prompt.txt) appended AFTER the persona's own sign-off (e.g.
+ * "— Sloan Rivers" followed immediately by "Full details at [KTAR.com]"),
+ * undercutting the persona voice. Root cause: the base ATTRIBUTION
+ * instruction is gated only on full-article-vs-blurb length, with zero
+ * awareness of persona, and the persona prompt files (which instruct a
+ * sign-off) say nothing about the closer either — two independent prompt
+ * fragments concatenated with no cross-reference, so the model's ordering
+ * was pure chance of generation. This block is appended ONLY when a
+ * persona is selected (never touches the non-persona path) and placed
+ * last in the system prompt — after personaAppend/styleAppend — so it's
+ * the most recent, most emphatic instruction the model sees, explicitly
+ * superseding the base prompt's length-gated closer instruction for both
+ * full-article AND blurb (the base BLURB_LENGTH_BLOCK's closer requirement
+ * does not apply once a persona is active).
+ */
+const PERSONA_ATTRIBUTION_OVERRIDE_BLOCK = `PERSONA ATTRIBUTION OVERRIDE (must obey — supersedes the base prompt's ATTRIBUTION instruction and the BLURB length block's closer-line requirement above, for both full-article and blurb):
+Do NOT add a standalone "Full details at [outlet]"-style closer line, at any length. Instead, weave attribution into the prose itself — name the outlet naturally near where you use its fact, the way this persona would actually reference a source in their own voice, not as a bolted-on link-out line. The persona's sign-off above must be the true final line of the piece — nothing, including any attribution or closer text, follows it.`;
+
 const REFRAME_BLOCK = `REFRAME — NATIONAL STORY WITH AN ARIZONA ANGLE:
 This story is fundamentally national/global, not a Valley-native event. Structure the piece in two clear parts:
 (1) Briefly state what the national/global story actually is — a sentence or two, don't over-invest word count here.
@@ -324,7 +345,8 @@ export async function writeArticle(
     `\n\n--- LENGTH & STRUCTURE ---\n${lengthBlock}` +
     (needsReframe ? `\n\n--- REFRAME ---\n${REFRAME_BLOCK}` : '') +
     personaAppend +
-    styleAppend;
+    styleAppend +
+    (persona ? `\n\n--- PERSONA ATTRIBUTION OVERRIDE ---\n${PERSONA_ATTRIBUTION_OVERRIDE_BLOCK}` : '');
 
   const factLines = sourcingResult.facts.map(
     (f) => `- [${factId(f)}] ${f.field} = "${f.value}"${f.sourceUrl ? ` (${f.sourceUrl})` : ''}`
