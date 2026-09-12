@@ -117,6 +117,152 @@ const LIFESTYLE_RESERVED_SLOTS = 6;
  */
 const SPORTS_RESERVED_SLOTS = 6;
 /**
+ * Per-team/entity cap WITHIN sports-az's own reserved quota — confirmed
+ * real problem (2026-09 investigation): pure recency-within-class ranking
+ * let one hot subject (e.g. the Diamondbacks on a game day, publishing
+ * fresh coverage every few hours) mathematically sweep 7-8 of ~15 final
+ * pool slots, crowding out equally-newsworthy but less frequently-updated
+ * subjects (Arizona Cardinals season-opening-week news, ASU). This does
+ * NOT reduce SPORTS_RESERVED_SLOTS or change its fill mechanism when
+ * there's genuine team diversity available — it only kicks in when one
+ * team's raw supply would otherwise dominate. 2 was chosen (not 3) to
+ * guarantee at least 3 distinct teams get represented across the 6 slots
+ * whenever that many teams have real coverage that day, while still
+ * allowing a single very newsy team to take 2 of the 6 when diversity
+ * genuinely isn't available (see capSportsReservedSlotsByEntity's overflow
+ * handling for what happens to the rest of that team's candidates).
+ */
+const SPORTS_ENTITY_MAX_PER_SLOT = 2;
+/**
+ * Keyword-based entity identification for sports-az candidates — matched
+ * directly from STAGE0_QUERIES' own sports-az team list below, the same
+ * "classify from title text, no separate extraction pipeline" approach
+ * already used by sufficiencyGate.ts's BUSINESS_DEAL_KEYWORD_RE/
+ * ENTITY_TITLE_RE (checked first as the reusable precedent per this
+ * build's own instructions) — reused here as a philosophy, not literal
+ * code, since that module classifies acquisition-shaped titles by capturing
+ * two free-text entity names, a different problem (open-ended entities)
+ * from this one (a small, known, enumerable list of AZ teams). A fixed
+ * alias list is simpler and more reliable than generic NER for a list this
+ * short and this static. Order matters where one name is a substring
+ * concern (none currently overlap, but keep specific-before-generic if a
+ * future alias ever would).
+ */
+const SPORTS_ENTITY_ALIASES: { entity: string; re: RegExp }[] = [
+  { entity: 'Arizona Cardinals', re: /\bcardinals\b/i },
+  { entity: 'Phoenix Suns', re: /\bsuns\b/i },
+  { entity: 'Arizona Diamondbacks', re: /\b(diamondbacks|d-?backs)\b/i },
+  { entity: 'ASU Sun Devils', re: /\b(asu|arizona state|sun devils)\b/i },
+  { entity: 'Phoenix Mercury', re: /\bmercury\b/i },
+  { entity: 'Arizona Wildcats', re: /\b(arizona wildcats|u of a wildcats|\bwildcats\b)\b/i },
+  { entity: 'Grand Canyon University', re: /\b(grand canyon university|\bgcu\b)\b/i },
+  { entity: 'NAU Lumberjacks', re: /\b(nau|northern arizona university|lumberjacks)\b/i },
+  { entity: 'Arizona Rattlers', re: /\brattlers\b/i },
+  { entity: 'Phoenix Rising', re: /\bphoenix rising\b/i },
+];
+
+/**
+ * Best-effort team/entity name for a sports-az candidate — matches the
+ * fixed alias list above via its title. Falls back to the item's own title
+ * (a unique, never-shared key) when no known team matches, so an
+ * unrecognized item is never accidentally lumped in with — or capped
+ * against — anything else; the per-entity cap only ever constrains
+ * candidates this function can confidently identify as the same team.
+ */
+function extractSportsEntity(item: RawNewsItem): string {
+  for (const { entity, re } of SPORTS_ENTITY_ALIASES) {
+    if (re.test(item.title)) return entity;
+  }
+  return `unrecognized:${item.title}`;
+}
+
+/**
+ * Same recency ordering as capStage0PoolByRecency (undated items sort
+ * last), extracted as its own function so capSportsReservedSlotsByEntity
+ * below can walk the list in recency order while applying the per-entity
+ * cap, without duplicating the comparator.
+ */
+function sortByRecencyDesc(items: RawNewsItem[]): RawNewsItem[] {
+  const tagged = items.map((it, idx) => ({ it, idx }));
+  tagged.sort((a, b) => {
+    const ta = a.it.publishedDate?.getTime();
+    const tb = b.it.publishedDate?.getTime();
+    if (ta != null && tb != null && tb !== ta) return tb - ta;
+    if (ta != null && tb == null) return -1;
+    if (ta == null && tb != null) return 1;
+    return a.idx - b.idx;
+  });
+  return tagged.map((x) => x.it);
+}
+
+/**
+ * Fills sports-az's reserved quota by recency, same as every other reserved
+ * class, but skips a candidate once its team/entity has already filled
+ * SPORTS_ENTITY_MAX_PER_SLOT reserved slots — the next-freshest candidate
+ * from a DIFFERENT team takes that slot instead. Candidates skipped purely
+ * for hitting the per-entity cap (not for running out of slots) are
+ * returned separately as `overflow`, distinct from `reserved` — see Part B
+ * (runStage0Discovery's general-pool eligibility logic) for how overflow is
+ * treated: it must NOT quietly slip into a general-pool slot instead, which
+ * would undo the whole point of capping it here.
+ *
+ * The per-entity cap is a DIVERSITY PREFERENCE, not a hard ceiling on the
+ * reserve's total size: a second backfill pass relaxes it to fill any
+ * slots still open after the first pass, from the same recency-ordered
+ * overflow, whenever there simply aren't enough distinct teams in supply
+ * that day to reach `maxSlots` on diversity alone (confirmed real gap
+ * found while testing this function: 3 teams x cap-of-2 = 6 in theory, but
+ * with only 3 distinct teams and one of them (Cardinals) supplying just 1
+ * candidate, the first pass alone left slot 6 unfilled at 5/6 — which
+ * incorrectly read as sportsQuotaFull=false downstream, letting the
+ * remaining Diamondbacks overflow leak into the general pool anyway and
+ * defeating Part B's whole purpose). Backfilling keeps the diversity
+ * benefit whenever real diversity exists, while still fully consuming
+ * sports-az's own quota (and therefore correctly triggering Part B's
+ * double-dip exclusion) whenever total sports-az supply is genuinely high,
+ * which is exactly the over-supplied-day scenario this whole fix targets.
+ */
+function capSportsReservedSlotsByEntity(
+  items: RawNewsItem[],
+  maxSlots: number,
+  maxPerEntity: number
+): { reserved: RawNewsItem[]; overflow: RawNewsItem[] } {
+  const sorted = sortByRecencyDesc(items);
+  const reserved: RawNewsItem[] = [];
+  const firstPassOverflow: RawNewsItem[] = [];
+  const perEntityCount = new Map<string, number>();
+
+  for (const it of sorted) {
+    if (reserved.length >= maxSlots) {
+      firstPassOverflow.push(it);
+      continue;
+    }
+    const entity = extractSportsEntity(it);
+    const count = perEntityCount.get(entity) ?? 0;
+    if (count >= maxPerEntity) {
+      firstPassOverflow.push(it);
+      continue;
+    }
+    reserved.push(it);
+    perEntityCount.set(entity, count + 1);
+  }
+
+  // Backfill pass — already in recency order (firstPassOverflow was built
+  // by walking `sorted` in order), so simply taking from the front fills
+  // the remaining slots with the next-freshest candidates regardless of
+  // which team they're from.
+  const overflow: RawNewsItem[] = [];
+  for (const it of firstPassOverflow) {
+    if (reserved.length < maxSlots) {
+      reserved.push(it);
+    } else {
+      overflow.push(it);
+    }
+  }
+
+  return { reserved, overflow };
+}
+/**
  * Same mechanism again, mirrored exactly for health-wellness-az —
  * investigation (2026-08-20) found zero health-wellness-section topics
  * survived across two consecutive runs while weather/sports dominated:
@@ -1127,6 +1273,166 @@ function capStage0PoolByRecency(items: RawNewsItem[], max: number): RawNewsItem[
 /** How many near-deduped-pool items to log/persist as a readable sample, per class — the full pool (~260 items) is logged as counts + this sample, not dumped line-by-line into the console, but the FULL list is still returned/persisted to the shadow JSON so a future investigation can search it. */
 const NEAR_DEDUPED_SAMPLE_PER_CLASS = 5;
 
+/**
+ * Fills the 4 reserved quotas (cannabis-az/lifestyle-az/sports-az/
+ * health-wellness-az) and the general pool from an already near-deduped
+ * candidate list — pure function, no network I/O, extracted out of
+ * runStage0Discovery specifically so this pool-selection logic (including
+ * the sports-az per-team cap and general-pool double-dip exclusion added
+ * in this build) can be exercised directly against synthetic data in a
+ * test script, the same "pure logic separated from the network-calling
+ * stage" pattern already used by sufficiencyGate.ts and articleWriter.ts.
+ */
+export function buildCappedStage0Pool(nearDeduped: RawNewsItem[]): {
+  capped: RawNewsItem[];
+  reservedCannabisItems: RawNewsItem[];
+  reservedLifestyleItems: RawNewsItem[];
+  reservedSportsItems: RawNewsItem[];
+  reservedHealthWellnessItems: RawNewsItem[];
+  sportsEntityCapOverflow: RawNewsItem[];
+  sportsQuotaFull: boolean;
+  generalCapped: RawNewsItem[];
+} {
+  // Reserved cannabis-az quota: filled by recency WITHIN cannabis-az only
+  // (no other pre-Stage-1 quality signal exists yet), so it doesn't have to
+  // win a combined-recency race against same-day breaking local/national news.
+  const cannabisCandidates = nearDeduped.filter((it) => it.queryClass === 'cannabis-az');
+  const reservedCannabisItems = capStage0PoolByRecency(cannabisCandidates, CANNABIS_RESERVED_SLOTS);
+  console.log(
+    `[topic-discovery] Cannabis reserved quota: ${reservedCannabisItems.length}/${CANNABIS_RESERVED_SLOTS} slot(s) filled from ${cannabisCandidates.length} cannabis-az candidate(s) (recency within class).`
+  );
+  reservedCannabisItems.forEach((it, idx) => {
+    console.log(`[topic-discovery]   reserved-cannabis-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
+  });
+
+  // Reserved lifestyle-az quota — identical mechanism, mirrored exactly.
+  const lifestyleCandidates = nearDeduped.filter((it) => it.queryClass === 'lifestyle-az');
+  const reservedLifestyleItems = capStage0PoolByRecency(lifestyleCandidates, LIFESTYLE_RESERVED_SLOTS);
+  console.log(
+    `[topic-discovery] Lifestyle reserved quota: ${reservedLifestyleItems.length}/${LIFESTYLE_RESERVED_SLOTS} slot(s) filled from ${lifestyleCandidates.length} lifestyle-az candidate(s) (recency within class).`
+  );
+  reservedLifestyleItems.forEach((it, idx) => {
+    console.log(`[topic-discovery]   reserved-lifestyle-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
+  });
+
+  // Reserved sports-az quota — same recency-within-class mechanism as the
+  // other three reserves, PLUS a per-team/entity cap (SPORTS_ENTITY_MAX_PER_SLOT)
+  // so one hot team (e.g. Diamondbacks on a game day) can't sweep all 6
+  // slots on recency alone; see capSportsReservedSlotsByEntity's own header
+  // comment. Runs against `nearDeduped`, which already excludes the
+  // schedule-stub domain (filtered out of `all` before dedupe), so this
+  // quota can only be filled by real sports coverage, not stub pages.
+  const sportsCandidates = nearDeduped.filter((it) => it.queryClass === 'sports-az');
+  const { reserved: reservedSportsItems, overflow: sportsEntityCapOverflow } = capSportsReservedSlotsByEntity(
+    sportsCandidates,
+    SPORTS_RESERVED_SLOTS,
+    SPORTS_ENTITY_MAX_PER_SLOT
+  );
+  console.log(
+    `[topic-discovery] Sports reserved quota: ${reservedSportsItems.length}/${SPORTS_RESERVED_SLOTS} slot(s) filled from ${sportsCandidates.length} sports-az candidate(s) (recency within class, max ${SPORTS_ENTITY_MAX_PER_SLOT} per team/entity).`
+  );
+  reservedSportsItems.forEach((it, idx) => {
+    console.log(
+      `[topic-discovery]   reserved-sports-slot #${idx + 1}: "${it.title.slice(0, 90)}" [${extractSportsEntity(it)}]`
+    );
+  });
+  if (sportsEntityCapOverflow.length > 0) {
+    console.log(
+      `[topic-discovery]   ${sportsEntityCapOverflow.length} sports-az candidate(s) did not win a reserved slot (cap full or per-team limit reached) — sample: ` +
+        sportsEntityCapOverflow
+          .slice(0, NEAR_DEDUPED_SAMPLE_PER_CLASS)
+          .map((it) => `"${it.title.slice(0, 60)}" [${extractSportsEntity(it)}]`)
+          .join(', ')
+    );
+  }
+  // Part B: whether sports-az's reserved quota is genuinely full (enough
+  // real candidates existed to fill all 6 slots). Only when full is the
+  // rest of sports-az's pool (both entity-cap overflow AND, degenerately,
+  // any reserved winners) excluded from the general pool below — an
+  // under-filled sports-az (fewer than SPORTS_RESERVED_SLOTS real
+  // candidates that day) still needs its leftover to be eligible for
+  // general-pool backfill, exactly like every other reserved class, so the
+  // total pool doesn't shrink on a genuinely slow sports day.
+  const sportsQuotaFull = reservedSportsItems.length >= SPORTS_RESERVED_SLOTS;
+
+  // Reserved health-wellness-az quota — identical mechanism, mirrored exactly.
+  const healthWellnessCandidates = nearDeduped.filter((it) => it.queryClass === 'health-wellness-az');
+  const reservedHealthWellnessItems = capStage0PoolByRecency(
+    healthWellnessCandidates,
+    HEALTH_WELLNESS_RESERVED_SLOTS
+  );
+  console.log(
+    `[topic-discovery] Health-wellness reserved quota: ${reservedHealthWellnessItems.length}/${HEALTH_WELLNESS_RESERVED_SLOTS} slot(s) filled from ${healthWellnessCandidates.length} health-wellness-az candidate(s) (recency within class).`
+  );
+  reservedHealthWellnessItems.forEach((it, idx) => {
+    console.log(`[topic-discovery]   reserved-health-wellness-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
+  });
+
+  // Remaining slots (8, or more if any reserve didn't fill — backfill, not
+  // left empty) fill from the combined pool of all six classes by recency,
+  // same as before. Reserved items are excluded from re-selection here so
+  // they aren't double-counted, and non-reserved cannabis-az/lifestyle-az/
+  // health-wellness-az items remain eligible to also win a general slot on
+  // merit — unchanged from before this build.
+  //
+  // sports-az is the one exception (Part B): confirmed real problem
+  // (2026-09 investigation) was that an OVER-supplied sports-az could sweep
+  // its own 6 reserved slots via SPORTS_ENTITY_MAX_PER_SLOT diversity AND
+  // still have its leftover (entity-cap overflow) candidates win several of
+  // the 12 general slots too, on the strength of same-day recency alone —
+  // directly crowding out cannabis-az/lifestyle-az, which have no
+  // comparable daily supply. Once sports-az's reserved quota is genuinely
+  // full (sportsQuotaFull), its ENTIRE candidate pool — reserved winners
+  // and entity-cap overflow alike — is excluded from the general pool, so
+  // that headroom goes to other verticals instead. When sports-az's quota
+  // is NOT full (a genuinely slow sports day, fewer than
+  // SPORTS_RESERVED_SLOTS real candidates existed), there's nothing to
+  // double-dip from — sports-az's leftover remains eligible for general-pool
+  // backfill exactly as before, so total pool size never shrinks because of
+  // this change.
+  const reservedLinks = new Set(
+    [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems, ...reservedHealthWellnessItems].map(
+      (it) => it.link
+    )
+  );
+  const sportsExclusionLinks = new Set(
+    (sportsQuotaFull ? sportsCandidates : reservedSportsItems).map((it) => it.link)
+  );
+  const remainingSlots =
+    STAGE1_CANDIDATE_CAP -
+    reservedCannabisItems.length -
+    reservedLifestyleItems.length -
+    reservedSportsItems.length -
+    reservedHealthWellnessItems.length;
+  const remainingPool = nearDeduped.filter(
+    (it) => !reservedLinks.has(it.link) && !sportsExclusionLinks.has(it.link)
+  );
+  const generalCapped = capStage0PoolByRecency(remainingPool, remainingSlots);
+  console.log(
+    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 6 classes` +
+      `${sportsQuotaFull ? ` (sports-az fully quota'd — its ${sportsCandidates.length - reservedSportsItems.length} leftover candidate(s) excluded from general-pool eligibility)` : ' (sports-az under quota — its leftover remains eligible, same as every other reserved class)'}.`
+  );
+
+  const capped = [
+    ...reservedCannabisItems,
+    ...reservedLifestyleItems,
+    ...reservedSportsItems,
+    ...reservedHealthWellnessItems,
+    ...generalCapped,
+  ];
+
+  return {
+    capped,
+    reservedCannabisItems,
+    reservedLifestyleItems,
+    reservedSportsItems,
+    reservedHealthWellnessItems,
+    sportsEntityCapOverflow,
+    sportsQuotaFull,
+    generalCapped,
+  };
+}
+
 /** Exported for provider-swap verification (scripts/*) — not used by any other module. */
 export async function runStage0Discovery(): Promise<{
   pool: RawNewsItem[];
@@ -1210,84 +1516,14 @@ export async function runStage0Discovery(): Promise<{
     );
   }
 
-  // Reserved cannabis-az quota: filled by recency WITHIN cannabis-az only
-  // (no other pre-Stage-1 quality signal exists yet), so it doesn't have to
-  // win a combined-recency race against same-day breaking local/national news.
-  const cannabisCandidates = nearDeduped.filter((it) => it.queryClass === 'cannabis-az');
-  const reservedCannabisItems = capStage0PoolByRecency(cannabisCandidates, CANNABIS_RESERVED_SLOTS);
-  console.log(
-    `[topic-discovery] Cannabis reserved quota: ${reservedCannabisItems.length}/${CANNABIS_RESERVED_SLOTS} slot(s) filled from ${cannabisCandidates.length} cannabis-az candidate(s) (recency within class).`
-  );
-  reservedCannabisItems.forEach((it, idx) => {
-    console.log(`[topic-discovery]   reserved-cannabis-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
-  });
-
-  // Reserved lifestyle-az quota — identical mechanism, mirrored exactly.
-  const lifestyleCandidates = nearDeduped.filter((it) => it.queryClass === 'lifestyle-az');
-  const reservedLifestyleItems = capStage0PoolByRecency(lifestyleCandidates, LIFESTYLE_RESERVED_SLOTS);
-  console.log(
-    `[topic-discovery] Lifestyle reserved quota: ${reservedLifestyleItems.length}/${LIFESTYLE_RESERVED_SLOTS} slot(s) filled from ${lifestyleCandidates.length} lifestyle-az candidate(s) (recency within class).`
-  );
-  reservedLifestyleItems.forEach((it, idx) => {
-    console.log(`[topic-discovery]   reserved-lifestyle-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
-  });
-
-  // Reserved sports-az quota — identical mechanism, mirrored exactly. Runs
-  // against `nearDeduped`, which already excludes the schedule-stub domain
-  // (filtered out of `all` before dedupe), so this quota can only be filled
-  // by real sports coverage, not stub pages.
-  const sportsCandidates = nearDeduped.filter((it) => it.queryClass === 'sports-az');
-  const reservedSportsItems = capStage0PoolByRecency(sportsCandidates, SPORTS_RESERVED_SLOTS);
-  console.log(
-    `[topic-discovery] Sports reserved quota: ${reservedSportsItems.length}/${SPORTS_RESERVED_SLOTS} slot(s) filled from ${sportsCandidates.length} sports-az candidate(s) (recency within class).`
-  );
-  reservedSportsItems.forEach((it, idx) => {
-    console.log(`[topic-discovery]   reserved-sports-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
-  });
-
-  // Reserved health-wellness-az quota — identical mechanism, mirrored exactly.
-  const healthWellnessCandidates = nearDeduped.filter((it) => it.queryClass === 'health-wellness-az');
-  const reservedHealthWellnessItems = capStage0PoolByRecency(
-    healthWellnessCandidates,
-    HEALTH_WELLNESS_RESERVED_SLOTS
-  );
-  console.log(
-    `[topic-discovery] Health-wellness reserved quota: ${reservedHealthWellnessItems.length}/${HEALTH_WELLNESS_RESERVED_SLOTS} slot(s) filled from ${healthWellnessCandidates.length} health-wellness-az candidate(s) (recency within class).`
-  );
-  reservedHealthWellnessItems.forEach((it, idx) => {
-    console.log(`[topic-discovery]   reserved-health-wellness-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
-  });
-
-  // Remaining slots (8, or more if any reserve didn't fill — backfill, not
-  // left empty) fill from the combined pool of all six classes by recency,
-  // same as before. Reserved items are excluded from re-selection here so
-  // they aren't double-counted, but non-reserved cannabis-az/lifestyle-az/
-  // sports-az/health-wellness-az items remain eligible to also win a general
-  // slot on merit.
-  const reservedLinks = new Set(
-    [...reservedCannabisItems, ...reservedLifestyleItems, ...reservedSportsItems, ...reservedHealthWellnessItems].map(
-      (it) => it.link
-    )
-  );
-  const remainingSlots =
-    STAGE1_CANDIDATE_CAP -
-    reservedCannabisItems.length -
-    reservedLifestyleItems.length -
-    reservedSportsItems.length -
-    reservedHealthWellnessItems.length;
-  const remainingPool = nearDeduped.filter((it) => !reservedLinks.has(it.link));
-  const generalCapped = capStage0PoolByRecency(remainingPool, remainingSlots);
-  console.log(
-    `[topic-discovery] General pool: ${generalCapped.length}/${remainingSlots} slot(s) filled by combined recency across all 6 classes.`
-  );
-
-  const capped = [
-    ...reservedCannabisItems,
-    ...reservedLifestyleItems,
-    ...reservedSportsItems,
-    ...reservedHealthWellnessItems,
-    ...generalCapped,
-  ];
+  const {
+    capped,
+    reservedCannabisItems,
+    reservedLifestyleItems,
+    reservedSportsItems,
+    reservedHealthWellnessItems,
+    generalCapped,
+  } = buildCappedStage0Pool(nearDeduped);
 
   console.log(
     `[topic-discovery] Stage 0 done: ${STAGE0_QUERIES.length} queries, ${usage.apiCalls} total provider calls ` +
