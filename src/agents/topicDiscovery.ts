@@ -58,20 +58,29 @@ const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
 
 /**
  * After Stage 0 pool + dedupe, keep at most this many candidates (newest
- * first) before Stage 1. 36 = 6 (cannabis) + 6 (lifestyle) + 6 (sports) +
- * 6 (health-wellness) reserved slots + 12 general pool — raised from 24 to
- * 36 (uniform 1.5x scale of every slot, ratio unchanged) on 2026-09-04 to
- * lift kept-candidate yield from ~13-15/run toward ~20-22/run. Verified
- * before raising that the cap itself, not Stage 1's ~56-63% pass rate, was
- * the bottleneck: all 24 capped slots reliably filled and reached Stage 1
- * every run across 3 real logged runs, and raw per-category supply was
- * nowhere near exhausted (55-97 candidates/category before reserve-capping,
- * 400+ in the general near-deduped pool) — so more raw input predictably
- * yields proportionally more kept candidates. See STAGE1_CANDIDATE_CAP raise
- * history: 20→24 added HEALTH_WELLNESS_RESERVED_SLOTS; this raise keeps
- * every existing reserve's ratio to the general pool unchanged.
+ * first) before Stage 1. 44 = 10 (cannabis) + 10 (lifestyle) + 6 (sports) +
+ * 6 (health-wellness) reserved slots + 12 general pool — raised from 36 to
+ * 44 on 2026-09-14 specifically to grow CANNABIS_RESERVED_SLOTS and
+ * LIFESTYLE_RESERVED_SLOTS 6→10 each (+8 total); sports-az and
+ * health-wellness-az reserves are UNCHANGED, and the 12-slot general pool
+ * is unchanged too — this raise only enlarges the two reserves. Confirmed
+ * via investigation (2026-09-14, real run + Sept 6 shadow log) that
+ * cannabis-az and lifestyle-az each had 54-99 raw near-deduped
+ * candidates/day against only 6 reserved slots, discarding 89-94% of raw
+ * supply purely on same-class recency — including genuinely good, on-brand,
+ * AZ-specific candidates (e.g. "Phoenix's best Labor Day weekend parties",
+ * "Phoenix Curaleaf workers win first union contract") that lost only
+ * because they were a day or two older than whatever published same-day.
+ * health-wellness-az was deliberately left at 6: its raw supply skews
+ * national/generic (Harvard Health, NYT wire content) rather than
+ * AZ-specific, so raising its slice has lower expected value. sports-az was
+ * deliberately left at 6 too — it already has its own per-team diversity
+ * cap (SPORTS_ENTITY_MAX_PER_SLOT) from a prior fix and isn't exhibiting
+ * the same problem. Prior history: 24→36 (2026-09-04, uniform 1.5x scale)
+ * verified the cap itself, not Stage 1's ~56-63% pass rate, was the
+ * bottleneck; 20→24 added HEALTH_WELLNESS_RESERVED_SLOTS.
  */
-export const STAGE1_CANDIDATE_CAP = 36;
+export const STAGE1_CANDIDATE_CAP = 44;
 /** Stage 1 in-flight concurrency — batches, not one Promise.all across the whole capped list. */
 const STAGE1_BATCH_SIZE = 4;
 /**
@@ -83,8 +92,14 @@ const STAGE1_BATCH_SIZE = 4;
  * from the general combined pool if cannabis-az has fewer than this many
  * candidates (see runStage0Discovery). Raised 4→6 on 2026-09-04 alongside
  * STAGE1_CANDIDATE_CAP's 24→36 raise (uniform 1.5x scale, ratio unchanged).
+ * Raised 6→10 on 2026-09-14 (alongside LIFESTYLE_RESERVED_SLOTS, alongside
+ * STAGE1_CANDIDATE_CAP's 36→44 raise): confirmed cannabis-az averages
+ * 54+ raw near-deduped candidates/day, so the old 6-slot reserve was
+ * discarding ~89% of same-day-or-recent AZ cannabis coverage purely on
+ * recency-within-class, not quality. sports-az/health-wellness-az were not
+ * touched in this raise — see STAGE1_CANDIDATE_CAP's comment for why.
  */
-const CANNABIS_RESERVED_SLOTS = 6;
+const CANNABIS_RESERVED_SLOTS = 10;
 /**
  * Same mechanism as CANNABIS_RESERVED_SLOTS, mirrored exactly for
  * lifestyle-az (food/nightlife/events discovery) — confirmed the same
@@ -95,8 +110,16 @@ const CANNABIS_RESERVED_SLOTS = 6;
  * backfilled from the general pool if under-filled (see
  * runStage0Discovery). Raised 4→6 on 2026-09-04 alongside
  * STAGE1_CANDIDATE_CAP's 24→36 raise (uniform 1.5x scale, ratio unchanged).
+ * Raised 6→10 on 2026-09-14 (alongside CANNABIS_RESERVED_SLOTS, alongside
+ * STAGE1_CANDIDATE_CAP's 36→44 raise): confirmed lifestyle-az averages
+ * 99+ raw near-deduped candidates/day, so the old 6-slot reserve was
+ * discarding ~94% of same-day-or-recent AZ food/nightlife/events coverage
+ * purely on recency-within-class — including specific, on-brand, usable
+ * candidates like "Phoenix's best Labor Day weekend parties of 2026" that
+ * lost only on age, not quality. sports-az/health-wellness-az were not
+ * touched in this raise — see STAGE1_CANDIDATE_CAP's comment for why.
  */
-const LIFESTYLE_RESERVED_SLOTS = 6;
+const LIFESTYLE_RESERVED_SLOTS = 10;
 /**
  * Same mechanism again, mirrored exactly for sports-az (Cardinals/Suns/
  * Diamondbacks/ASU/real game coverage) — added after an investigation
