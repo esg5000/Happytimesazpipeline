@@ -129,6 +129,18 @@ export type SourceGatheringResult = {
    * content — see 2026-08-25's "No game recap available" incident).
    */
   sourceArticleTextSubstantial?: boolean;
+  /**
+   * True only when gatherDefaultSources() had to fall back to a
+   * paywall-flagged candidate (subscribe/sign-in-wall phrasing detected in
+   * the fetched text) as the best available source — either because every
+   * known candidate (topic.link + searchSummaries) was paywalled/thin, or
+   * because the extra targeted fallback search it then tried also only
+   * turned up paywalled/nothing. Undefined (not false) whenever the final
+   * source was clean, and for every other checker. Not consumed by Stage
+   * 4/5/6 today — this is visibility only, for a future stricter check to
+   * key off.
+   */
+  sourceIsPaywalled?: boolean;
 };
 
 type CategoryChecker = (topic: TopicInput) => Promise<SourceGatheringResult>;
@@ -269,6 +281,24 @@ function isMeaningfulProseTextForUrl(text: string, url: string): boolean {
   if (!override) return isMeaningfulProseText(text);
   if (meaningfulPlainTextLength(text) < override.minChars) return false;
   return countSubstantialSentences(text) >= override.minSentences;
+}
+
+/**
+ * Cheap, deliberately non-exhaustive paywall heuristic — a handful of
+ * common teaser-page phrasings, not a real paywall classifier. Exists
+ * because a paywall teaser (real lead paragraph + subscription pitch, then
+ * a wall) can easily clear isMeaningfulProseText's length/sentence-count
+ * bar on marketing prose alone, while containing none of the actual story
+ * specifics behind the wall. Checked BEFORE the meaningfulness gate in
+ * gatherDefaultSources's fetch loop — a paywall-flagged candidate is never
+ * allowed to become `chosen`, regardless of how "substantial" its teaser
+ * text measures.
+ */
+const PAYWALL_INDICATOR_RE =
+  /\b(subscribe to continue|sign in to read|create a free account|article views? remaining|become a member|for full access|continue reading|log in to continue)\b/i;
+
+function isPaywalledText(text: string): boolean {
+  return PAYWALL_INDICATOR_RE.test(text);
 }
 
 /** Headless Chromium: rendered DOM text when static HTTP fetch yields little content. Ported from researchAgent.ts's fetchPagePlainTextWithPlaywright. */
@@ -1324,6 +1354,164 @@ function buildFetchCandidates(topic: TopicInput): FetchCandidate[] {
   return candidates;
 }
 
+// ---------------------------------------------------------------------------
+// Targeted fallback search — only fired from gatherDefaultSources() when
+// every known candidate (topic.link + searchSummaries) came back paywalled
+// or too thin to trust as a primary source; never on the normal success
+// path. One extra, topic-specific search ("who/what is this story actually
+// about, with named specifics") rather than a repeat of Stage 0-2's broad
+// discovery queries. Same OpenAI Responses API + hosted web_search tool
+// call shape as topicDiscovery.ts's runStage1VerdictForCandidate() — ported,
+// not imported, per this file's own "STANDALONE, does not import
+// topicDiscovery.ts" rule (see file header).
+// ---------------------------------------------------------------------------
+
+const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
+const FALLBACK_SEARCH_MODEL = 'gpt-5.4-mini';
+
+type FallbackSearchResult = { title?: string; url: string };
+
+/** Minimal copy of topicDiscovery.ts's private extractOutputTextFromResponse — generic Responses API envelope parsing. */
+function extractFallbackOutputText(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const d = data as Record<string, unknown>;
+  if (typeof d.output_text === 'string' && d.output_text.trim()) {
+    return d.output_text.trim();
+  }
+  const output = d.output;
+  if (!Array.isArray(output)) return '';
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    if (o.type === 'message' && Array.isArray(o.content)) {
+      for (const c of o.content as unknown[]) {
+        if (!c || typeof c !== 'object') continue;
+        const block = c as Record<string, unknown>;
+        if (block.type === 'output_text' && typeof block.text === 'string') {
+          parts.push(block.text);
+        }
+      }
+    }
+  }
+  return parts.join('\n').trim();
+}
+
+function tryParseFallbackSourcesJson(text: string): FallbackSearchResult[] {
+  const cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end <= start) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== 'object') return [];
+  const rawSources = (parsed as Record<string, unknown>).sources;
+  if (!Array.isArray(rawSources)) return [];
+  const out: FallbackSearchResult[] = [];
+  for (const r of rawSources) {
+    if (r && typeof r === 'object' && typeof (r as Record<string, unknown>).url === 'string') {
+      const url = (r as Record<string, unknown>).url as string;
+      if (!url.startsWith('http')) continue;
+      const title =
+        typeof (r as Record<string, unknown>).title === 'string' ? ((r as Record<string, unknown>).title as string) : undefined;
+      out.push({ url, title });
+    }
+  }
+  return out;
+}
+
+/**
+ * One OpenAI Responses API call with the hosted web_search tool, scoped to
+ * this specific topic's subject. Only called from gatherDefaultSources()
+ * on the failure path described above — never fires on a normal successful
+ * fetch. Returns at most 3 candidate URLs; empty array (never throws) on
+ * any failure, matching every other checker's "a miss just means try the
+ * next thing" discipline.
+ */
+async function fetchTargetedFallbackSources(topic: TopicInput): Promise<FallbackSearchResult[]> {
+  const key = config.openai.apiKey;
+  if (!key) {
+    console.warn('[source-gathering] default: fallback search skipped — OPENAI_API_KEY not set.');
+    return [];
+  }
+
+  const specificSubject = typeof topic.specificSubject === 'string' ? topic.specificSubject : undefined;
+  const subject = specificSubject || topic.title;
+  const instructions = 'You output only valid JSON, no markdown fences, no commentary.';
+  const user = `Use search to find 2-3 credible news sources reporting on this specific story, with concrete named specifics (the actual company, person, organization, or entity names involved) rather than generic descriptions: "${subject}"${topic.snippet ? `\n\nContext: ${topic.snippet}` : ''}
+
+Return ONLY this JSON shape: {"sources":[{"title":"string","url":"string starting with http"}]}`;
+
+  try {
+    const res = await axios.post(
+      OPENAI_RESPONSES_URL,
+      {
+        model: FALLBACK_SEARCH_MODEL,
+        instructions,
+        input: user,
+        tools: [{ type: 'web_search' }],
+        tool_choice: 'auto',
+        max_output_tokens: 4096,
+        temperature: 0.3,
+      },
+      {
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        timeout: 60_000,
+        validateStatus: () => true,
+      }
+    );
+    if (res.status >= 400) {
+      console.warn(`[source-gathering] default: fallback search HTTP ${res.status}`);
+      return [];
+    }
+    const text = extractFallbackOutputText(res.data);
+    const sources = tryParseFallbackSourcesJson(text).slice(0, 3);
+    console.log(`[source-gathering] default: fallback search returned ${sources.length} candidate URL(s) for "${subject}".`);
+    return sources;
+  } catch (err: unknown) {
+    console.warn('[source-gathering] default: fallback search call failed:', err instanceof Error ? err.message : err);
+    return [];
+  }
+}
+
+type FetchedPage = { url: string; pageResult: { text: string; method: 'http' | 'playwright' } };
+
+/**
+ * Fetches one candidate URL and classifies it for the tiering in
+ * gatherDefaultSources(): 'clean' (clears isMeaningfulProseTextForUrl, not
+ * paywalled — the only outcome eligible to become `chosen`), 'paywalled'
+ * (paywall phrasing detected — never eligible for `chosen`, worst fallback
+ * tier), 'thin' (real text, but neither substantial nor paywall-flagged —
+ * the existing fallbackChoice tier), or 'none' (nothing usable came back).
+ */
+type CandidateOutcome =
+  | { kind: 'clean'; page: FetchedPage }
+  | { kind: 'paywalled'; page: FetchedPage }
+  | { kind: 'thin'; page: FetchedPage }
+  | { kind: 'none' };
+
+async function fetchAndClassifyCandidate(url: string): Promise<CandidateOutcome> {
+  const pageResult = await fetchVenuePageText(url);
+  if (!pageResult || pageResult.text.length <= 80) {
+    return { kind: 'none' };
+  }
+  const page: FetchedPage = { url, pageResult };
+  // Paywall check runs BEFORE the meaningfulness gate — see
+  // isPaywalledText's doc comment for why a paywall teaser can otherwise
+  // pass isMeaningfulProseTextForUrl on marketing prose alone.
+  if (isPaywalledText(pageResult.text)) {
+    return { kind: 'paywalled', page };
+  }
+  if (isMeaningfulProseTextForUrl(pageResult.text, url)) {
+    return { kind: 'clean', page };
+  }
+  return { kind: 'thin', page };
+}
+
 async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringResult> {
   const candidates = buildFetchCandidates(topic);
   if (candidates.length === 0) {
@@ -1332,36 +1520,83 @@ async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringR
     return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
   }
 
-  let chosen: { url: string; pageResult: { text: string; method: 'http' | 'playwright' } } | null = null;
-  let fallbackChoice: { url: string; pageResult: { text: string; method: 'http' | 'playwright' } } | null = null;
+  let chosen: FetchedPage | null = null;
+  let fallbackChoice: FetchedPage | null = null;
+  let paywalledFallback: FetchedPage | null = null;
+  const triedUrls = new Set<string>();
 
+  // Pass 1 — every known candidate (topic.link + searchSummaries, in
+  // order). A paywalled candidate is tracked as the worst-tier fallback and
+  // the loop CONTINUES to the next candidate instead of breaking — only a
+  // 'clean' outcome stops the chain early.
   for (const candidate of candidates) {
     console.log(`[source-gathering] default: trying ${candidate.label} — ${candidate.url}`);
-    const pageResult = await fetchVenuePageText(candidate.url);
-    if (!pageResult || pageResult.text.length <= 80) {
+    triedUrls.add(candidate.url);
+    const outcome = await fetchAndClassifyCandidate(candidate.url);
+
+    if (outcome.kind === 'none') {
       console.log(`[source-gathering] default: nothing usable from ${candidate.url}`);
       continue;
     }
-    if (isMeaningfulProseTextForUrl(pageResult.text, candidate.url)) {
-      console.log(`[source-gathering] default: substantial content found at ${candidate.url} — stopping fallback chain here.`);
-      chosen = { url: candidate.url, pageResult };
+    if (outcome.kind === 'clean') {
+      console.log(`[source-gathering] default: substantial, non-paywalled content found at ${candidate.url} — stopping fallback chain here.`);
+      chosen = outcome.page;
       break;
     }
-    // Not substantial, but keep the first non-empty fetch as a last-resort
-    // fallback in case every candidate (including searchSummaries) is thin —
-    // a thin fact is still better than nothing for a 'blurb'-level decision.
-    if (!fallbackChoice) {
-      fallbackChoice = { url: candidate.url, pageResult };
+    if (outcome.kind === 'paywalled') {
+      console.log(`[source-gathering] default: ${candidate.url} looks paywalled (subscribe/sign-in wall detected) — not eligible as primary source, trying next candidate if any.`);
+      if (!paywalledFallback) paywalledFallback = outcome.page;
+      continue;
     }
-    console.log(`[source-gathering] default: ${candidate.url} fetched but not substantial (${pageResult.text.length} chars) — trying next candidate if any.`);
+    // 'thin': real text, not paywalled, but not substantial either — keep
+    // the first one as a last-resort fallback, same as before.
+    if (!fallbackChoice) fallbackChoice = outcome.page;
+    console.log(`[source-gathering] default: ${candidate.url} fetched but not substantial (${outcome.page.pageResult.text.length} chars) — trying next candidate if any.`);
   }
 
-  const final = chosen ?? fallbackChoice;
+  // Pass 2 — only when NOTHING among the known candidates was clean (every
+  // candidate was either paywalled, thin, or unfetchable). One targeted
+  // search for this topic's own subject, then the same fetch+classify
+  // treatment for whatever URLs it returns.
+  if (!chosen) {
+    console.log(
+      `[source-gathering] default: no clean (non-paywalled, substantial) candidate among ${candidates.length} known URL(s) — firing one targeted fallback search for "${topic.title}".`
+    );
+    const fallbackSources = await fetchTargetedFallbackSources(topic);
+    for (const fs of fallbackSources) {
+      if (triedUrls.has(fs.url)) continue;
+      triedUrls.add(fs.url);
+      console.log(`[source-gathering] default: trying fallback-search result — ${fs.url}`);
+      const outcome = await fetchAndClassifyCandidate(fs.url);
+
+      if (outcome.kind === 'none') {
+        console.log(`[source-gathering] default: nothing usable from fallback-search result ${fs.url}`);
+        continue;
+      }
+      if (outcome.kind === 'clean') {
+        console.log(`[source-gathering] default: fallback search found substantial, non-paywalled content at ${fs.url} — stopping here.`);
+        chosen = outcome.page;
+        break;
+      }
+      if (outcome.kind === 'paywalled') {
+        if (!paywalledFallback) paywalledFallback = outcome.page;
+        continue;
+      }
+      if (!fallbackChoice) fallbackChoice = outcome.page;
+    }
+  }
+
+  const final = chosen ?? fallbackChoice ?? paywalledFallback;
   if (!final) {
-    const checkerNote = `Fetched nothing usable from ${candidates.length} candidate URL(s) (topic.link + searchSummaries).`;
+    const checkerNote = `Fetched nothing usable from ${triedUrls.size} candidate URL(s) (topic.link + searchSummaries + fallback search).`;
     console.warn(`[source-gathering] default: ${checkerNote}`);
     return { topic, facts: [], primarySourceFound: false, factCount: 0, checkerNote };
   }
+
+  // paywalledFallback is only ever assigned a paywall-flagged page, so
+  // reference equality here is exactly "the source we're using is the
+  // paywalled one" — true whether it came from pass 1 or pass 2.
+  const finalIsPaywalled = final === paywalledFallback;
 
   const outlet = deriveOutletName(final.url);
   const source = `${outlet} — ${final.pageResult.method === 'playwright' ? 'Playwright render' : 'HTTP fetch'} (${final.url})`;
@@ -1372,7 +1607,7 @@ async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringR
   ];
 
   console.log(
-    `[source-gathering] default: fetched via ${final.pageResult.method} (${final.pageResult.text.length} chars) from ${outlet} — ${final.url}${chosen ? '' : ' (fallback: not substantial, used as best available)'}`
+    `[source-gathering] default: fetched via ${final.pageResult.method} (${final.pageResult.text.length} chars) from ${outlet} — ${final.url}${chosen ? '' : ` (fallback: ${finalIsPaywalled ? 'paywalled, worst-tier' : 'not substantial'}, used as best available)`}`
   );
   return {
     topic,
@@ -1380,6 +1615,7 @@ async function gatherDefaultSources(topic: TopicInput): Promise<SourceGatheringR
     primarySourceFound: true,
     factCount: facts.length,
     sourceArticleTextSubstantial: chosen != null,
+    ...(finalIsPaywalled ? { sourceIsPaywalled: true } : {}),
   };
 }
 
