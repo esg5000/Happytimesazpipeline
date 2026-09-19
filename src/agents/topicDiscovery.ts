@@ -888,21 +888,24 @@ async function fetchStage0NewsForQuery(
   q: Stage0Query,
   usage: Stage0Usage
 ): Promise<RawNewsItem[]> {
+  const t0 = Date.now();
   try {
     const items = await fetchBrightDataNewsForQuery(q, usage);
+    const elapsed = Date.now() - t0;
     if (items.length > 0) {
       usage.brightData.served += 1;
-      console.log(`[topic-discovery] Stage 0: "${q.query}" served by Bright Data (${items.length} result(s))`);
+      console.log(`[topic-discovery] Stage 0: "${q.query}" served by Bright Data (${items.length} result(s)) in ${elapsed}ms`);
       return items;
     }
     console.warn(
-      `[topic-discovery] Stage 0: Bright Data returned 0 results for "${q.query}" — falling back to SerpAPI`
+      `[topic-discovery] Stage 0: Bright Data returned 0 results for "${q.query}" in ${elapsed}ms — falling back to SerpAPI`
     );
   } catch (e) {
+    const elapsed = Date.now() - t0;
     usage.brightData.errors += 1;
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(
-      `[topic-discovery] Stage 0: Bright Data errored for "${q.query}": ${msg} — falling back to SerpAPI`
+      `[topic-discovery] Stage 0: Bright Data errored for "${q.query}" after ${elapsed}ms: ${msg} — falling back to SerpAPI`
     );
   }
 
