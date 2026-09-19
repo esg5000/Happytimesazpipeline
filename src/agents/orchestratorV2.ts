@@ -47,6 +47,7 @@ import { verifyArticle, type VerificationResult } from './verificationGate';
 import { sourceImage, loadCrossRunRecentlyUsedUnsplashPhotoIds } from './imageSourcing';
 import { assemblePublishDocument, publishAssembledDocument, type AssemblyResult } from './publishAssembly';
 import { checkForDuplicates, normalizeSourceUrl, type SeenThisRunEntry } from './dedupeFeature';
+import { startHeartbeat, stopHeartbeat } from '../../selfHeartbeat';
 
 // ---------------------------------------------------------------------------
 // Run-log types — every topic that entered, and exactly which stage/gate
@@ -515,6 +516,15 @@ function toTopicCandidateDoc(topic: TopicDiscoveryResult, discoveredAt: string):
 }
 
 export async function discoverAndPersistTopics(): Promise<DiscoverAndPersistTopicsResult> {
+  startHeartbeat('discoverAndPersistTopics');
+  try {
+    return await discoverAndPersistTopicsInner();
+  } finally {
+    stopHeartbeat('discoverAndPersistTopics');
+  }
+}
+
+async function discoverAndPersistTopicsInner(): Promise<DiscoverAndPersistTopicsResult> {
   const startedAt = Date.now();
   console.log('[orchestrator-v2] ========== discoverAndPersistTopics start ==========');
 

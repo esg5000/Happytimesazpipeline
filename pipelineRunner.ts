@@ -1,5 +1,6 @@
 import { recordScheduledPipelineFinish } from './pipelineStatus';
 import { runPipeline, type RunPipelineOptions } from './orchestrator';
+import { startHeartbeat, stopHeartbeat } from './selfHeartbeat';
 
 let pipelineRunning = false;
 
@@ -14,6 +15,7 @@ export async function runPipelineJob(
     return { skipped: true };
   }
   pipelineRunning = true;
+  startHeartbeat('runPipelineJob');
   try {
     await runPipeline(options);
     recordScheduledPipelineFinish(true);
@@ -23,6 +25,7 @@ export async function runPipelineJob(
     recordScheduledPipelineFinish(false, msg);
     throw err;
   } finally {
+    stopHeartbeat('runPipelineJob');
     pipelineRunning = false;
   }
 }
