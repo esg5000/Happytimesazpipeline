@@ -5,6 +5,7 @@ import post from './post'
 import restaurant from './restaurant'
 import syncRun from './syncRun'
 import topicCandidate from './topicCandidate'
+import topicDiscoveryDebugLog from './topicDiscoveryDebugLog'
 
-export const schemaTypes = [post, event, dispensary, restaurant, nightlife, syncRun, topicCandidate]
+export const schemaTypes = [post, event, dispensary, restaurant, nightlife, syncRun, topicCandidate, topicDiscoveryDebugLog]
 

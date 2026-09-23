@@ -422,6 +422,26 @@ export type DiscoverAndPersistTopicsResult = {
   queriesAttempted: number;
   /** Stage 0 per-provider call accounting, passed through from runTopicDiscoveryShadow — same shape syncNewsV2 already records on its syncRun docs. */
   stage0Usage: Stage0Usage;
+  /**
+   * The full near-deduped, pre-cap Stage 0 pool (runTopicDiscoveryShadow's
+   * nearDedupedPool, ~260 items) — for the topicDiscoveryDebugLog Sanity doc
+   * (see recordTopicDiscoveryDebugLog call in telegramHttpServer.ts). Same
+   * data already written to the local /tmp shadow-mode JSON log, just also
+   * durably persisted here.
+   */
+  nearDedupedPool: {
+    title: string;
+    link: string;
+    queryClass: string;
+    sourceOutlet: string | null;
+    publishedDate: string | null;
+  }[];
+  /** Kept candidates skipped at persist time as already-seen — see fetchKnownSourceUrls. */
+  alreadySeenSkips: {
+    title: string;
+    link: string;
+    reason: 'existing-candidate' | 'published-post';
+  }[];
 };
 
 /**
@@ -557,11 +577,13 @@ async function discoverAndPersistTopicsInner(): Promise<DiscoverAndPersistTopics
   const knownSourceUrls = await fetchKnownSourceUrls(client);
   const toPersist: TopicDiscoveryResult[] = [];
   let skippedAsAlreadySeenCount = 0;
+  const alreadySeenSkips: DiscoverAndPersistTopicsResult['alreadySeenSkips'] = [];
   for (const topic of discovery.kept) {
     const norm = normalizeSourceUrl(topic.link);
     const matchType = norm ? knownSourceUrls.get(norm) : undefined;
     if (matchType) {
       skippedAsAlreadySeenCount++;
+      alreadySeenSkips.push({ title: topic.title, link: topic.link, reason: matchType });
       console.log(
         `[orchestrator-v2] discoverAndPersistTopics: SKIP (already seen — ${matchType}) "${topic.title.slice(0, 80)}" (${topic.link})`
       );
@@ -598,6 +620,14 @@ async function discoverAndPersistTopicsInner(): Promise<DiscoverAndPersistTopics
     wallClockMs,
     queriesAttempted: STAGE0_QUERY_COUNT,
     stage0Usage: discovery.stage0Usage,
+    nearDedupedPool: discovery.nearDedupedPool.map((it) => ({
+      title: it.title,
+      link: it.link,
+      queryClass: it.queryClass,
+      sourceOutlet: it.sourceOutlet ?? null,
+      publishedDate: it.publishedDate ? it.publishedDate.toISOString() : null,
+    })),
+    alreadySeenSkips,
   };
   console.log(`[orchestrator-v2] ========== discoverAndPersistTopics end (${(wallClockMs / 1000).toFixed(1)}s) ==========`);
   return result;

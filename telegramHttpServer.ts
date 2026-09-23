@@ -1,5 +1,3 @@
-import { promises as fs } from 'fs';
-import path from 'path';
 import express from 'express';
 import multer from 'multer';
 import convertHeic from 'heic-convert';
@@ -21,7 +19,7 @@ import { ingestToTopic } from './agents/ingestAgent';
 import { writeArticle } from './agents/writerAgent';
 import { ensureUniqueSlug } from './utils/slug';
 import { appendActivityLog, getPipelineStatusSnapshot } from './pipelineStatus';
-import { recordSyncRun } from './syncRunLogger';
+import { recordSyncRun, recordTopicDiscoveryDebugLog } from './syncRunLogger';
 import { syncNightlifeToSanity } from './agents/syncNightlife';
 import { runFetchRestaurants } from './scripts/fetchRestaurants';
 import { runPipelineJob } from './pipelineRunner';
@@ -32,35 +30,6 @@ import { run as runContentAuditor } from './scripts/auditContent';
 import { runEventsRoundup } from './agents/eventsRoundup';
 
 const RENDER_HOST = '0.0.0.0';
-
-/**
- * Mirrors topicDiscovery.ts's SHADOW_OUTPUT_DIR — must match exactly since these
- * debug routes read the files that shadow-mode run writes there. Temporary
- * debugging tool: Render's /tmp is ephemeral, so only recent runs are readable.
- */
-const TOPIC_DISCOVERY_LOG_DIR = path.join(
-  process.env.TEMP || process.env.TMPDIR || '/tmp',
-  'happytimesaz-topic-discovery'
-);
-
-const TOPIC_DISCOVERY_LOG_FILENAME_RE = /^topic-discovery-[0-9T\-]+\.json$/;
-
-async function listTopicDiscoveryLogFiles(): Promise<{ name: string; mtimeMs: number; size: number }[]> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(TOPIC_DISCOVERY_LOG_DIR);
-  } catch {
-    return [];
-  }
-  const jsonFiles = entries.filter((f) => TOPIC_DISCOVERY_LOG_FILENAME_RE.test(f));
-  const stats = await Promise.all(
-    jsonFiles.map(async (name) => {
-      const st = await fs.stat(path.join(TOPIC_DISCOVERY_LOG_DIR, name));
-      return { name, mtimeMs: st.mtimeMs, size: st.size };
-    })
-  );
-  return stats.sort((a, b) => b.mtimeMs - a.mtimeMs);
-}
 
 /**
  * iPhones set to "High Efficiency" (the default) share photos as HEIC. Browsers
@@ -653,82 +622,6 @@ function registerDaemonApiRoutes(app: express.Application): void {
     }
   });
 
-  /**
-   * TEMPORARY debug route — lists topic-discovery-*.json shadow-mode log files
-   * currently sitting in Render's ephemeral /tmp, since only recent runs survive.
-   */
-  app.get('/api/debug/topic-discovery-log/list', requireApiKey, async (_req, res) => {
-    try {
-      const files = await listTopicDiscoveryLogFiles();
-      res.json({
-        ok: true,
-        dir: TOPIC_DISCOVERY_LOG_DIR,
-        count: files.length,
-        files: files.map((f) => ({
-          name: f.name,
-          sizeBytes: f.size,
-          modifiedAt: new Date(f.mtimeMs).toISOString(),
-        })),
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[api] /api/debug/topic-discovery-log/list failed:', msg);
-      res.status(500).json({ error: msg });
-    }
-  });
-
-  /**
-   * TEMPORARY debug route — dumps a topic-discovery-*.json shadow-mode log's raw
-   * contents so it can be viewed/downloaded from a browser instead of copy-pasting
-   * out of the Render Shell tab. `?latest=true` for the most recently modified file,
-   * or `?file=<filename>` for a specific one; with neither, lists available files.
-   */
-  app.get('/api/debug/topic-discovery-log', requireApiKey, async (req, res) => {
-    try {
-      const files = await listTopicDiscoveryLogFiles();
-      if (files.length === 0) {
-        res.status(404).json({ error: `No topic-discovery-*.json files found in ${TOPIC_DISCOVERY_LOG_DIR}` });
-        return;
-      }
-
-      const latestRequested = req.query.latest === 'true' || req.query.latest === '1';
-      const requestedFile = typeof req.query.file === 'string' ? req.query.file.trim() : '';
-
-      let target: string;
-      if (requestedFile) {
-        if (!TOPIC_DISCOVERY_LOG_FILENAME_RE.test(requestedFile)) {
-          res.status(400).json({ error: 'Invalid file name' });
-          return;
-        }
-        if (!files.some((f) => f.name === requestedFile)) {
-          res.status(404).json({
-            error: `File not found: ${requestedFile}`,
-            available: files.map((f) => f.name),
-          });
-          return;
-        }
-        target = requestedFile;
-      } else if (latestRequested) {
-        target = files[0]!.name;
-      } else {
-        res.json({
-          ok: true,
-          message: 'Specify ?latest=true or ?file=<filename>.',
-          available: files.map((f) => f.name),
-        });
-        return;
-      }
-
-      const contents = await fs.readFile(path.join(TOPIC_DISCOVERY_LOG_DIR, target), 'utf8');
-      res.setHeader('Content-Type', 'application/json');
-      res.send(contents);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[api] /api/debug/topic-discovery-log failed:', msg);
-      res.status(500).json({ error: msg });
-    }
-  });
-
   app.post(
     '/api/command',
     requireApiKey,
@@ -1063,7 +956,7 @@ function registerDaemonApiRoutes(app: express.Application): void {
           // to whichever host ran it), this is queryable from Sanity regardless of host,
           // and survives process restarts — see the 2026-09 low-volume investigation this
           // was added for.
-          await recordSyncRun({
+          const syncRunId = await recordSyncRun({
             syncType: 'discoverTopics',
             startedAt,
             finishedAt: new Date().toISOString(),
@@ -1082,6 +975,18 @@ function registerDaemonApiRoutes(app: express.Application): void {
             },
             triggeredBy: 'manual',
           });
+          // Durable counterpart to the local-only /tmp shadow-mode JSON log
+          // (topicDiscovery.ts's writeShadowLog, still written as-is) — same
+          // near-deduped pre-cap pool data, queryable from Sanity regardless
+          // of which host ran the job.
+          if (syncRunId) {
+            await recordTopicDiscoveryDebugLog({
+              syncRunId,
+              createdAt: new Date().toISOString(),
+              nearDedupedPool: result.nearDedupedPool,
+              alreadySeenSkips: result.alreadySeenSkips,
+            });
+          }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           console.error('[api] /api/command discoverTopics failed:', msg);

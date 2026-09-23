@@ -33,12 +33,14 @@ const ACTIONS_SAMPLE_MAX = 5;
 /**
  * Writes one syncRun document. Best-effort: a failure to write this record
  * must never fail the sync it's describing, so errors here are caught and
- * logged, not thrown.
+ * logged, not thrown. Returns the created document's _id (or undefined on
+ * failure) so callers — e.g. discoverTopics's topicDiscoveryDebugLog write —
+ * can link a follow-up document back to this run.
  */
-export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
+export async function recordSyncRun(record: SyncRunRecord): Promise<string | undefined> {
   try {
     const client = getSanityClient();
-    await client.create({
+    const doc = await client.create({
       _type: 'syncRun',
       syncType: record.syncType,
       startedAt: record.startedAt,
@@ -55,9 +57,54 @@ export async function recordSyncRun(record: SyncRunRecord): Promise<void> {
       ...(record.topicDiscoveryUsage ? { topicDiscoveryUsage: record.topicDiscoveryUsage } : {}),
       triggeredBy: record.triggeredBy,
     });
+    return doc._id;
   } catch (err: unknown) {
     console.error(
       '[sync-run-logger] Failed to write syncRun record (non-fatal):',
+      err instanceof Error ? err.message : err
+    );
+    return undefined;
+  }
+}
+
+export type TopicDiscoveryDebugLogRecord = {
+  /** The syncRun doc's _id this debug data belongs to (from recordSyncRun's return value). */
+  syncRunId: string;
+  createdAt: string;
+  nearDedupedPool: {
+    title: string;
+    link: string;
+    queryClass: string;
+    sourceOutlet: string | null;
+    publishedDate: string | null;
+  }[];
+  alreadySeenSkips: {
+    title: string;
+    link: string;
+    reason: 'existing-candidate' | 'published-post';
+  }[];
+};
+
+/**
+ * Writes one topicDiscoveryDebugLog document, linked to its syncRun doc.
+ * Durable counterpart to topicDiscovery.ts's local-only /tmp shadow-mode JSON
+ * log — same nearDedupedPool data, queryable from Sanity regardless of which
+ * host ran the job. Best-effort: never fails the discoverTopics run it
+ * describes.
+ */
+export async function recordTopicDiscoveryDebugLog(record: TopicDiscoveryDebugLogRecord): Promise<void> {
+  try {
+    const client = getSanityClient();
+    await client.create({
+      _type: 'topicDiscoveryDebugLog',
+      syncRun: { _type: 'reference', _ref: record.syncRunId },
+      createdAt: record.createdAt,
+      nearDedupedPool: record.nearDedupedPool,
+      alreadySeenSkips: record.alreadySeenSkips,
+    });
+  } catch (err: unknown) {
+    console.error(
+      '[sync-run-logger] Failed to write topicDiscoveryDebugLog record (non-fatal):',
       err instanceof Error ? err.message : err
     );
   }
