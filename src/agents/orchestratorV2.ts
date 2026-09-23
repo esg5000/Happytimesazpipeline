@@ -435,6 +435,9 @@ export type DiscoverAndPersistTopicsResult = {
     queryClass: string;
     sourceOutlet: string | null;
     publishedDate: string | null;
+    /** OBSERVE-ONLY (see topicDiscovery.ts's flagPossibleNearDupes) — never merged, just flagged for manual review. */
+    possibleNearDupe: boolean;
+    possibleNearDupeReason: string | null;
   }[];
   /** Kept candidates skipped at persist time as already-seen — see fetchKnownSourceUrls. */
   alreadySeenSkips: {
@@ -626,6 +629,8 @@ async function discoverAndPersistTopicsInner(): Promise<DiscoverAndPersistTopics
       queryClass: it.queryClass,
       sourceOutlet: it.sourceOutlet ?? null,
       publishedDate: it.publishedDate ? it.publishedDate.toISOString() : null,
+      possibleNearDupe: it.possibleNearDupe ?? false,
+      possibleNearDupeReason: it.possibleNearDupeReason ?? null,
     })),
     alreadySeenSkips,
   };

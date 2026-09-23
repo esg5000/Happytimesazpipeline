@@ -77,6 +77,9 @@ export type TopicDiscoveryDebugLogRecord = {
     queryClass: string;
     sourceOutlet: string | null;
     publishedDate: string | null;
+    /** OBSERVE-ONLY (see topicDiscovery.ts's flagPossibleNearDupes) — never merged, just flagged for manual review. */
+    possibleNearDupe: boolean;
+    possibleNearDupeReason: string | null;
   }[];
   alreadySeenSkips: {
     title: string;

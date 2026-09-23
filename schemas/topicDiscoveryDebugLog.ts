@@ -37,6 +37,17 @@ export default defineType({
             defineField({ name: 'queryClass', type: 'string' }),
             defineField({ name: 'sourceOutlet', type: 'string' }),
             defineField({ name: 'publishedDate', type: 'datetime' }),
+            defineField({
+              name: 'possibleNearDupe',
+              type: 'boolean',
+              description:
+                'OBSERVE-ONLY (topicDiscovery.ts\'s flagPossibleNearDupes) — shares a distinguishing title phrase + publish-time proximity with another pool item but fell under the Jaccard merge threshold, so it was NOT actually merged. For manual review only.',
+            }),
+            defineField({
+              name: 'possibleNearDupeReason',
+              type: 'string',
+              description: 'The matched phrase and which other pool item it matched, when possibleNearDupe is true.',
+            }),
           ],
         },
       ],

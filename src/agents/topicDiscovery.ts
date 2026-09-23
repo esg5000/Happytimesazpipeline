@@ -479,11 +479,11 @@ const STAGE0_QUERIES: Stage0Query[] = [
   { query: 'Arizona cannabis industry growth', queryClass: 'cannabis-az' },
   { query: 'Arizona recreational marijuana news', queryClass: 'cannabis-az' },
   { query: 'Phoenix new restaurant opening', queryClass: 'lifestyle-az' },
-  { query: 'Valley nightlife bars clubs new', queryClass: 'lifestyle-az' },
+  { query: 'Metro Phoenix nightlife bars clubs new', queryClass: 'lifestyle-az' },
   { query: 'Phoenix Scottsdale events this weekend', queryClass: 'lifestyle-az' },
   { query: 'Arizona food festival event', queryClass: 'lifestyle-az' },
-  { query: 'Valley nightlife news this week', queryClass: 'lifestyle-az' },
-  { query: 'Valley concert festival event announcement', queryClass: 'lifestyle-az' },
+  { query: 'Metro Phoenix nightlife news this week', queryClass: 'lifestyle-az' },
+  { query: 'Phoenix Valley concert festival announcement', queryClass: 'lifestyle-az' },
   { query: 'Phoenix restaurant openings and closings', queryClass: 'lifestyle-az' },
   { query: 'Phoenix new bar opening this month', queryClass: 'lifestyle-az' },
   { query: 'Scottsdale restaurant dining new', queryClass: 'lifestyle-az' },
@@ -523,6 +523,18 @@ export type RawNewsItem = {
   publishedDate?: Date;
   queryClass: QueryClass;
   matchedQuery: string;
+  /**
+   * OBSERVE-ONLY near-dedupe signal (see nearDedupeStage0Pool's second pass):
+   * true when this item shares a distinguishing title phrase + publish-time
+   * proximity with another surviving item, but the pair fell under
+   * NEAR_DUP_JACCARD_THRESHOLD so neither was actually merged. Never affects
+   * what reaches Stage 1 or gets persisted as a topicCandidate — purely
+   * visibility into the debug log data for manually reviewing whether this
+   * signal should later be promoted to a real auto-merge path.
+   */
+  possibleNearDupe?: boolean;
+  /** Set alongside possibleNearDupe — the matched phrase and which other item it matched. */
+  possibleNearDupeReason?: string;
 };
 
 /** Per-provider Stage 0 call accounting — calls attempted, unrecoverable errors, and queries this provider's result was actually used for. */
@@ -1023,8 +1035,9 @@ const TITLE_STOPWORDS = new Set([
  * ("These 8 ... are now closed" vs "These 17 ... are now closed") and must
  * not be silently dropped just because it's short.
  */
-function normalizeTitleTokens(title: string): Set<string> {
-  const words = title
+/** Ordered (not deduped) version of normalizeTitleTokens — needed for phrase/n-gram extraction, where word order matters and normalizeTitleTokens' Set discards it. */
+function normalizeTitleTokenList(title: string): string[] {
+  return title
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
@@ -1033,7 +1046,10 @@ function normalizeTitleTokens(title: string): Set<string> {
       if (/^\d+$/.test(w)) return true;
       return w.length > 2 && !TITLE_STOPWORDS.has(w);
     });
-  return new Set(words);
+}
+
+function normalizeTitleTokens(title: string): Set<string> {
+  return new Set(normalizeTitleTokenList(title));
 }
 
 function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
@@ -1189,6 +1205,104 @@ export type NearDuplicateMerge = {
   similarity: number;
 };
 
+// ---- OBSERVE-ONLY possible-near-dupe signal ------------------------------
+//
+// 2026-09 investigation (full nearDedupedPool review) found several
+// confirmed-same-event clusters that the Jaccard threshold above misses
+// entirely — "Arizona gets low score in maternal mental health" vs "Arizona
+// scores a 'C' on maternal mental health report card" (0.44), a 3-outlet
+// "toddler found alive in hospital morgue" story (0.46-0.56), and a 5-outlet
+// Arizona Boardwalk Ferris wheel opening (0.12-0.39) — all below
+// NEAR_DUP_JACCARD_THRESHOLD (0.6), and low enough that lowering the global
+// threshold to catch them would merge unrelated stories sharing a couple of
+// generic nouns. Title-bag-of-words Jaccard structurally under-scores these:
+// either the same fact is reworded with different verbs/nouns (only the
+// entity words overlap), or a short teaser headline's tokens get diluted by
+// a much longer detailed headline's extra tokens in the union denominator.
+//
+// Rather than changing what merges, this adds a SEPARATE signal — a shared
+// bigram/trigram of non-stopword tokens (in original order) plus publish-time
+// proximity — that only TAGS surviving (already not-merged) pool items with
+// possibleNearDupe/possibleNearDupeReason for manual review in the debug log
+// (see runTopicDiscoveryShadow's writeShadowLog and
+// syncRunLogger.ts's recordTopicDiscoveryDebugLog). It never merges, never
+// changes cluster membership, and never touches what reaches Stage 1 —
+// purely additive metadata on RawNewsItem, read nowhere else. Once reviewed
+// across a few real runs and confirmed not to flag genuinely distinct
+// stories, this can be promoted to an actual merge path.
+
+/** Corroborating publish-time window for the phrase-match signal — same order of magnitude as how long one local story runs across outlets. */
+const NEAR_DUP_PHRASE_DATE_WINDOW_MS = 5 * 24 * 60 * 60 * 1000;
+
+/** Bigrams and trigrams of consecutive non-stopword tokens, in original order — a much stronger "same specific thing" signal than raw bag-of-words overlap. */
+function extractPhraseNGrams(tokens: string[]): Set<string> {
+  const grams = new Set<string>();
+  for (let n = 2; n <= 3; n++) {
+    for (let i = 0; i + n <= tokens.length; i++) {
+      grams.add(tokens.slice(i, i + n).join(' '));
+    }
+  }
+  return grams;
+}
+
+/** Longest n-gram present in both sets, or undefined if none — prefers a trigram match over a bigram one (a longer joined string implies a longer phrase here). */
+function longestSharedNGram(gramsA: Set<string>, gramsB: Set<string>): string | undefined {
+  let best: string | undefined;
+  for (const g of gramsA) {
+    if (!gramsB.has(g)) continue;
+    if (!best || g.length > best.length) best = g;
+  }
+  return best;
+}
+
+/** True if both publish times are within the corroboration window, OR either is unknown — a missing date can't corroborate, but shouldn't suppress the flag either, since this is observe-only and erring toward more visibility (not more merging) is the safe direction. */
+function isWithinNearDupeDateWindow(a: Date | undefined, b: Date | undefined): boolean {
+  if (!a || !b) return true;
+  return Math.abs(a.getTime() - b.getTime()) <= NEAR_DUP_PHRASE_DATE_WINDOW_MS;
+}
+
+/**
+ * Second pass over the already-deduped pool (real merges from
+ * nearDedupeStage0Pool's Jaccard clustering are unaffected and excluded —
+ * this only ever compares items that are NOT in the same cluster). Tags
+ * items in place; does not reorder, merge, or drop anything. Reuses the same
+ * three conflict short-circuits as the real merge path (differing dates,
+ * differing listicle counts, differing AZ place names) so this observe-only
+ * signal doesn't flag pairs already known to be genuinely different — e.g.
+ * two distinct dispensary openings in different cities sharing "opens
+ * dispensary" would otherwise be a false flag.
+ */
+function flagPossibleNearDupes(deduped: RawNewsItem[]): void {
+  const n = deduped.length;
+  const gramSets = deduped.map((it) => extractPhraseNGrams(normalizeTitleTokenList(it.title)));
+
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const a = deduped[i]!;
+      const b = deduped[j]!;
+
+      const sharedPhrase = longestSharedNGram(gramSets[i]!, gramSets[j]!);
+      if (!sharedPhrase) continue;
+      if (!isWithinNearDupeDateWindow(a.publishedDate, b.publishedDate)) continue;
+      if (hasConflictingDateTokens(a.title, b.title)) continue;
+      if (hasConflictingListicleCounts(a.title, b.title).conflict) continue;
+      if (hasConflictingPlaceNames(a.title, b.title).conflict) continue;
+
+      if (!a.possibleNearDupe) {
+        a.possibleNearDupe = true;
+        a.possibleNearDupeReason = `shared phrase "${sharedPhrase}" with: "${b.title.slice(0, 90)}"`;
+        console.log(
+          `[topic-discovery] POSSIBLE near-dupe (observe-only, not merged) — shared phrase "${sharedPhrase}": "${a.title.slice(0, 80)}" ~ "${b.title.slice(0, 80)}"`
+        );
+      }
+      if (!b.possibleNearDupe) {
+        b.possibleNearDupe = true;
+        b.possibleNearDupeReason = `shared phrase "${sharedPhrase}" with: "${a.title.slice(0, 90)}"`;
+      }
+    }
+  }
+}
+
 /** Preference order when picking the cluster representative: has a snippet > most recent publish time > stable original order. */
 function isMoreCompleteRepresentative(candidate: RawNewsItem, current: RawNewsItem): boolean {
   const candHasSnippet = Boolean(candidate.snippet && candidate.snippet.trim());
@@ -1304,6 +1418,12 @@ function nearDedupeStage0Pool(
       );
     }
   }
+
+  // Observe-only: tags surviving items that share a distinguishing phrase +
+  // publish-time proximity but weren't merged above. Never changes `deduped`
+  // membership/order/count, so this has zero effect on Stage 1 or anything
+  // downstream — see flagPossibleNearDupes' header comment.
+  flagPossibleNearDupes(deduped);
 
   return { deduped, merges };
 }
@@ -2655,6 +2775,9 @@ export async function runTopicDiscoveryShadow(): Promise<ShadowRunResult> {
         queryClass: it.queryClass,
         sourceOutlet: it.sourceOutlet ?? null,
         publishedDate: it.publishedDate ? it.publishedDate.toISOString() : null,
+        // OBSERVE-ONLY (see flagPossibleNearDupes) — never merged, just flagged for review.
+        possibleNearDupe: it.possibleNearDupe ?? false,
+        possibleNearDupeReason: it.possibleNearDupeReason ?? null,
       })),
       nearDuplicateMerges,
       cappedPoolSize: dedupeCounts.cappedCount,
