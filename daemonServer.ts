@@ -4,6 +4,7 @@ import { config, validateConfig } from './config';
 import { deactivatePastEvents } from './agents/eventCleanup';
 import { syncNewsApiToSanity } from './agents/newsApiSync';
 import { syncSerpApiEventsToSanity } from './agents/serpApiEventsSync';
+import { cleanupOldTopicDiscoveryDebugLogs } from './agents/topicDiscoveryDebugLogCleanup';
 import { runPipelineJob } from './pipelineRunner';
 import { recordSyncRun } from './syncRunLogger';
 import { startApiServer } from './telegramHttpServer';
@@ -12,6 +13,7 @@ let scheduledPipelineRunning = false;
 let serpApiEventsSyncRunning = false;
 let eventsCleanupRunning = false;
 let googleNewsSyncRunning = false;
+let topicDiscoveryDebugLogCleanupRunning = false;
 
 /**
  * Scheduled daily batch only. Runs in the background; does not block Telegram HTTP handlers.
@@ -193,6 +195,50 @@ async function runScheduledPastEventsCleanup(): Promise<void> {
 }
 
 /**
+ * Daily: deletes topicDiscoveryDebugLog documents older than 14 days
+ * (agents/topicDiscoveryDebugLogCleanup.ts). Debug data only — scoped
+ * strictly to that one document type, independent of the past-events
+ * cleanup above (separate running-flag/log/syncRun record) even though it
+ * shares the same cron schedule.
+ */
+async function runScheduledTopicDiscoveryDebugLogCleanup(): Promise<void> {
+  if (topicDiscoveryDebugLogCleanupRunning) {
+    console.log('[topic-discovery-debug-log-cleanup] Skipping tick: previous run still in progress');
+    return;
+  }
+  topicDiscoveryDebugLogCleanupRunning = true;
+  const startedAt = new Date().toISOString();
+  try {
+    console.log('[topic-discovery-debug-log-cleanup] Deleting topicDiscoveryDebugLog docs older than 14 days…');
+    const { deleted, errors, errorSample } = await cleanupOldTopicDiscoveryDebugLogs();
+    console.log(
+      `[topic-discovery-debug-log-cleanup] Done — deleted: ${deleted}, errors: ${errors}`
+    );
+    await recordSyncRun({
+      syncType: 'topicDiscoveryDebugLogCleanup',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      itemsSynced: deleted,
+      errors,
+      errorSample,
+      triggeredBy: 'cron',
+    });
+  } catch (err) {
+    console.error('[topic-discovery-debug-log-cleanup] Failed:', err);
+    await recordSyncRun({
+      syncType: 'topicDiscoveryDebugLogCleanup',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      errors: 1,
+      errorSample: [err instanceof Error ? err.message : String(err)],
+      triggeredBy: 'cron',
+    });
+  } finally {
+    topicDiscoveryDebugLogCleanupRunning = false;
+  }
+}
+
+/**
  * Long-lived process for Render (or similar): Telegram webhook + daily pipeline via node-cron.
  * Does not exit after a pipeline run. Telegram and the scheduler share the process only; handlers are independent.
  *
@@ -225,6 +271,13 @@ async function main(): Promise<void> {
     `[scheduler] Past-events cleanup cron registered (${cleanupCron}, server local timezone)`
   );
 
+  cron.schedule(cleanupCron, () => {
+    void runScheduledTopicDiscoveryDebugLogCleanup();
+  });
+  console.log(
+    `[scheduler] Topic-discovery debug-log cleanup cron registered (${cleanupCron}, 14-day retention, server local timezone)`
+  );
+
   const googleNewsCron = config.googleNews.cronSchedule;
   cron.schedule(googleNewsCron, () => {
     void runScheduledGoogleNewsSync();
@@ -249,6 +302,7 @@ export {
   runScheduledPastEventsCleanup,
   runScheduledSerpApiEventsSync,
   runScheduledPipeline,
+  runScheduledTopicDiscoveryDebugLogCleanup,
 };
 /** Alias for older imports — same as runScheduledGoogleNewsSync */
 export { runScheduledGoogleNewsSync as runScheduledNewsApiSync };
