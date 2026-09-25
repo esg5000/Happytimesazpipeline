@@ -58,9 +58,11 @@ const STAGE1_OPENAI_MODEL = 'gpt-5.4-mini';
 
 /**
  * After Stage 0 pool + dedupe, keep at most this many candidates (newest
- * first) before Stage 1. 80 = 20 (cannabis) + 20 (lifestyle) + 6 (sports) +
- * 6 (health-wellness) reserved slots + 28 general pool — raised from 44 to
- * 80 on 2026-09-18 specifically to grow CANNABIS_RESERVED_SLOTS and
+ * first) before Stage 1. 80 = 20 (cannabis) + 20 (lifestyle) + 18 (sports) +
+ * 6 (health-wellness) reserved slots + 16 general pool. On 2026-09-25
+ * SPORTS_RESERVED_SLOTS was raised 6→18 WITHOUT changing this cap — funded
+ * entirely by the general pool shrinking 28→16 (see SPORTS_RESERVED_SLOTS'
+ * comment for why). Before that: raised from 44 to 80 on 2026-09-18 specifically to grow CANNABIS_RESERVED_SLOTS and
  * LIFESTYLE_RESERVED_SLOTS 10→20 each (+20 total, the two verticals with
  * the worst raw-supply-discard ratios); sports-az and health-wellness-az
  * reserves are UNCHANGED, per the same reasoning as the prior raise below
@@ -163,9 +165,14 @@ const LIFESTYLE_RESERVED_SLOTS = 20;
  * two reserves. Filled by recency WITHIN sports-az only, backfilled from
  * the general pool if under-filled (see runStage0Discovery). Raised 4→6
  * on 2026-09-04 alongside STAGE1_CANDIDATE_CAP's 24→36 raise (uniform
- * 1.5x scale, ratio unchanged).
+ * 1.5x scale, ratio unchanged). Raised 6→18 on 2026-09-25, funded by
+ * shrinking the general pool 28→16 (STAGE1_CANDIDATE_CAP unchanged at 80):
+ * real pool data showed 239 raw sports-az candidates competing for 6
+ * slots (39.8:1, the worst ratio of any reserved class), and sports
+ * coverage is daily/fresh rather than evergreen, so extra slots here
+ * should yield genuinely new topics rather than already-seen noise.
  */
-const SPORTS_RESERVED_SLOTS = 6;
+const SPORTS_RESERVED_SLOTS = 18;
 /**
  * Per-team/entity cap WITHIN sports-az's own reserved quota — confirmed
  * real problem (2026-09 investigation): pure recency-within-class ranking
@@ -176,9 +183,10 @@ const SPORTS_RESERVED_SLOTS = 6;
  * NOT reduce SPORTS_RESERVED_SLOTS or change its fill mechanism when
  * there's genuine team diversity available — it only kicks in when one
  * team's raw supply would otherwise dominate. 2 was chosen (not 3) to
- * guarantee at least 3 distinct teams get represented across the 6 slots
- * whenever that many teams have real coverage that day, while still
- * allowing a single very newsy team to take 2 of the 6 when diversity
+ * guarantee at least 3 distinct teams got represented across the original
+ * 6 slots (at 18 slots, up to 9 distinct teams) whenever that many teams
+ * have real coverage that day, while still allowing a single very newsy
+ * team to take 2 of the reserved slots when diversity
  * genuinely isn't available (see capSportsReservedSlotsByEntity's overflow
  * handling for what happens to the rest of that team's candidates).
  */
@@ -1490,8 +1498,8 @@ export function buildCappedStage0Pool(nearDeduped: RawNewsItem[]): {
 
   // Reserved sports-az quota — same recency-within-class mechanism as the
   // other three reserves, PLUS a per-team/entity cap (SPORTS_ENTITY_MAX_PER_SLOT)
-  // so one hot team (e.g. Diamondbacks on a game day) can't sweep all 6
-  // slots on recency alone; see capSportsReservedSlotsByEntity's own header
+  // so one hot team (e.g. Diamondbacks on a game day) can't sweep the whole
+  // reserve on recency alone; see capSportsReservedSlotsByEntity's own header
   // comment. Runs against `nearDeduped`, which already excludes the
   // schedule-stub domain (filtered out of `all` before dedupe), so this
   // quota can only be filled by real sports coverage, not stub pages.
@@ -1519,8 +1527,8 @@ export function buildCappedStage0Pool(nearDeduped: RawNewsItem[]): {
     );
   }
   // Part B: whether sports-az's reserved quota is genuinely full (enough
-  // real candidates existed to fill all 6 slots). Only when full is the
-  // rest of sports-az's pool (both entity-cap overflow AND, degenerately,
+  // real candidates existed to fill all SPORTS_RESERVED_SLOTS slots). Only
+  // when full is the rest of sports-az's pool (both entity-cap overflow AND, degenerately,
   // any reserved winners) excluded from the general pool below — an
   // under-filled sports-az (fewer than SPORTS_RESERVED_SLOTS real
   // candidates that day) still needs its leftover to be eligible for
@@ -1541,7 +1549,7 @@ export function buildCappedStage0Pool(nearDeduped: RawNewsItem[]): {
     console.log(`[topic-discovery]   reserved-health-wellness-slot #${idx + 1}: "${it.title.slice(0, 90)}"`);
   });
 
-  // Remaining slots (8, or more if any reserve didn't fill — backfill, not
+  // Remaining slots (16, or more if any reserve didn't fill — backfill, not
   // left empty) fill from the combined pool of all six classes by recency,
   // same as before. Reserved items are excluded from re-selection here so
   // they aren't double-counted, and non-reserved cannabis-az/lifestyle-az/
@@ -1550,9 +1558,9 @@ export function buildCappedStage0Pool(nearDeduped: RawNewsItem[]): {
   //
   // sports-az is the one exception (Part B): confirmed real problem
   // (2026-09 investigation) was that an OVER-supplied sports-az could sweep
-  // its own 6 reserved slots via SPORTS_ENTITY_MAX_PER_SLOT diversity AND
+  // its own (then 6) reserved slots via SPORTS_ENTITY_MAX_PER_SLOT diversity AND
   // still have its leftover (entity-cap overflow) candidates win several of
-  // the 12 general slots too, on the strength of same-day recency alone —
+  // the (then 12) general slots too, on the strength of same-day recency alone —
   // directly crowding out cannabis-az/lifestyle-az, which have no
   // comparable daily supply. Once sports-az's reserved quota is genuinely
   // full (sportsQuotaFull), its ENTIRE candidate pool — reserved winners
